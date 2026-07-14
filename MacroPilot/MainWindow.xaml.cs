@@ -115,6 +115,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             if (_plans.Count > 0) PlansList.SelectedIndex = 0; else ShowNoPlan();
             AddLog("Info", _plans.Count == 0 ? "就绪。请先新建方案。" : "已自动加载保存的方案。");
             AddLog("Info", App.IsRunningAsAdmin() ? "当前以管理员权限运行。" : "当前为普通权限。");
+            OvVersionText.Text = "版本 " + Services.UpdateService.CurrentVersionText;
+            _ = StartupUpdateCheck();   // 启动后静默查一次更新，有新版才弹窗提示
         };
     }
 
@@ -1614,6 +1616,61 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{Services.Storage.TraceDir}\"") { UseShellExecute = true });
         }
         catch { }
+    }
+
+    // ================= 在线更新（查 GitHub 公开 release → 提示 → 下载安装器自更新） =================
+    private bool _updateBusy;
+    private async System.Threading.Tasks.Task StartupUpdateCheck()
+    {
+        try { await System.Threading.Tasks.Task.Delay(1500); await CheckForUpdate(silent: true); } catch { }
+    }
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdate(silent: false);
+
+    private async System.Threading.Tasks.Task CheckForUpdate(bool silent)
+    {
+        if (_updateBusy) return;
+        try
+        {
+            if (!silent) { CheckUpdateButton.IsEnabled = false; UpdateStatusText.Text = "正在检查…"; }
+            var info = await Services.UpdateService.CheckLatestAsync();
+            if (info == null) { UpdateStatusText.Text = silent ? "" : "无法获取更新信息（请检查网络）"; return; }
+            if (!Services.UpdateService.IsNewer(info))
+            {
+                UpdateStatusText.Text = silent ? "" : $"已是最新版本（{Services.UpdateService.CurrentVersionText}）";
+                return;
+            }
+            UpdateStatusText.Text = $"发现新版本 {info.Tag}";
+            var notes = string.IsNullOrWhiteSpace(info.Notes) ? ""
+                : "\n\n更新内容：\n" + (info.Notes!.Length > 500 ? info.Notes![..500] + "…" : info.Notes);
+            var r = Services.ThemedDialog.Show(
+                $"发现新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}）。{notes}\n\n是否现在下载并更新？",
+                "发现新版本", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Information);
+            if (r == System.Windows.MessageBoxResult.Yes) await DownloadAndRun(info);
+        }
+        catch (Exception ex) { UpdateStatusText.Text = "检查更新失败：" + ex.Message; }
+        finally { if (!silent && !_updateBusy) CheckUpdateButton.IsEnabled = true; }
+    }
+
+    private async System.Threading.Tasks.Task DownloadAndRun(Services.UpdateInfo info)
+    {
+        _updateBusy = true;
+        CheckUpdateButton.IsEnabled = false;
+        try
+        {
+            var prog = new Progress<double>(p =>
+                UpdateStatusText.Text = p < 0 ? "正在下载更新…" : $"正在下载更新… {p * 100:0}%");
+            var file = await Services.UpdateService.DownloadAsync(info, prog);
+            UpdateStatusText.Text = "下载完成，即将关闭本程序并启动安装器…";
+            Services.UpdateService.LaunchInstallerAndExit(file);   // 安装器结束本实例、覆盖安装
+        }
+        catch (Exception ex)
+        {
+            _updateBusy = false;
+            CheckUpdateButton.IsEnabled = true;
+            UpdateStatusText.Text = "更新失败：" + ex.Message;
+            Services.ThemedDialog.Show("下载更新失败：" + ex.Message + "\n\n可前往发布页手动下载。", "更新失败",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
     }
 
     // ================= 窗口快捷键 / 关闭 =================

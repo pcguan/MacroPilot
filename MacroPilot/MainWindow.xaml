@@ -61,6 +61,13 @@
             <TextBlock Text="键鼠宏助手" FontSize="26" FontWeight="Bold" />
             <TextBlock Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"
                        Text="一个用于编排并自动执行键盘 / 鼠标动作的工具。可将一系列点击、移动、滚轮、按键、等待等动作组成“方案”，按设定的循环次数与间隔重复执行。" />
+            <StackPanel Orientation="Horizontal" Margin="0,16,0,0" VerticalAlignment="Center">
+              <TextBlock Name="OvVersionText" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Text="版本 —" />
+              <Button Name="CheckUpdateButton" Margin="14,0,0,0" Padding="12,5" Style="{StaticResource GhostButton}"
+                      Content="检查更新" Click="CheckUpdate_Click" />
+              <TextBlock Name="UpdateStatusText" VerticalAlignment="Center" Margin="12,0,0,0"
+                         Foreground="{DynamicResource Accent}" TextWrapping="Wrap" />
+            </StackPanel>
             <TextBlock Text="设备状态" FontSize="16" FontWeight="Bold" Margin="0,22,0,8" />
             <TextBlock Name="OvSerialStatus" TextWrapping="Wrap" Margin="0,2" />
             <TextBlock Name="OvNativeStatus" TextWrapping="Wrap" Margin="0,2" />
