@@ -142,6 +142,8 @@ public static class UpdateService
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            // 关键：别让 PowerShell 继承本体的当前目录(=安装目录)，否则 PS 自己占着该目录 → 改名时"目录正在使用中"。
+            WorkingDirectory = dir,
             Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{ps1}\" " +
                         $"-Zip \"{zipPath}\" -Dir \"{installDir}\" -AppPid {pid}",
         };
@@ -167,40 +169,46 @@ public static class UpdateService
     }
 
     // PowerShell 就地更新助手（纯 ASCII，避免编码坑）。日志写 %TEMP%\MacroPilotUpdate\update.log。
+    // 要点：① Set-Location 到临时目录，别占住安装目录（否则改名报"目录正在使用中"）；② 改名带重试等句柄释放；
+    // ③ finally 里【无论成败都把本体拉起来】——绝不让进程凭空消失。
     private const string ZipUpdateScript = @"
 param([string]$Zip, [string]$Dir, [int]$AppPid)
 $ErrorActionPreference = 'Stop'
 $logDir = Join-Path $env:TEMP 'MacroPilotUpdate'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+Set-Location -LiteralPath $logDir
 $log = Join-Path $logDir 'update.log'
 function Log($m){ Add-Content -LiteralPath $log -Value ((Get-Date).ToString('HH:mm:ss.fff') + ' ' + $m) }
-Log ""=== start dir=$Dir zip=$Zip pid=$AppPid ===""
+$exe = Join-Path $Dir 'MacroPilot.exe'
+$leaf = Split-Path $Dir -Leaf
+$backup = ""$Dir.bak_"" + ([DateTimeOffset]::Now.ToUnixTimeSeconds())
+$renamed = $false
+Log ""=== start dir=$Dir pid=$AppPid ===""
 try {
   if ($AppPid -gt 0) { try { Wait-Process -Id $AppPid -Timeout 30 -ErrorAction SilentlyContinue } catch {} }
-  $exe = Join-Path $Dir 'MacroPilot.exe'
-  for ($i=0; $i -lt 40; $i++) {
-    try { $fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break } catch { Start-Sleep -Milliseconds 500 }
+  for ($i=0; $i -lt 60; $i++) {
+    try { $fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break } catch { Start-Sleep -Milliseconds 300 }
   }
-  $leaf = Split-Path $Dir -Leaf
-  $backup = ""$Dir.bak_"" + ([DateTimeOffset]::Now.ToUnixTimeSeconds())
-  $backupLeaf = Split-Path $backup -Leaf
-  if (Test-Path -LiteralPath $Dir) { Rename-Item -LiteralPath $Dir -NewName $backupLeaf -Force; Log ""backup -> $backup"" }
-  try {
-    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-    Expand-Archive -LiteralPath $Zip -DestinationPath $Dir -Force
-    Log 'extracted'
-    $uninsSrc = Join-Path $backup 'unins'
-    if (Test-Path -LiteralPath $uninsSrc) { Copy-Item -LiteralPath $uninsSrc -Destination (Join-Path $Dir 'unins') -Recurse -Force; Log 'unins preserved' }
-    if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
-    Log 'success'
-  } catch {
-    Log ""extract FAILED: $_ -> rollback""
-    try { if (Test-Path -LiteralPath $Dir) { Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
-    if (Test-Path -LiteralPath $backup) { Rename-Item -LiteralPath $backup -NewName $leaf -Force; Log 'rolled back to old version' }
+  for ($i=0; $i -lt 20 -and (-not $renamed); $i++) {
+    try { Rename-Item -LiteralPath $Dir -NewName (Split-Path $backup -Leaf) -Force; $renamed = $true }
+    catch { Start-Sleep -Milliseconds 300 }
   }
-  if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe -WorkingDirectory $Dir; Log 'relaunched' }
+  if (-not $renamed) { throw 'backup rename failed: dir still in use' }
+  Log ""backup -> $backup""
+  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+  Expand-Archive -LiteralPath $Zip -DestinationPath $Dir -Force
+  $uninsSrc = Join-Path $backup 'unins'
+  if (Test-Path -LiteralPath $uninsSrc) { Copy-Item -LiteralPath $uninsSrc -Destination (Join-Path $Dir 'unins') -Recurse -Force }
+  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+  Log 'success'
+} catch {
+  Log ""FAILED: $_ -> rollback""
+  try { if ($renamed -and (Test-Path -LiteralPath $Dir)) { Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
+  if ($renamed -and (Test-Path -LiteralPath $backup)) { try { Rename-Item -LiteralPath $backup -NewName $leaf -Force; Log 'rolled back' } catch { Log ""rollback FAILED: $_"" } }
+} finally {
+  if (Test-Path -LiteralPath $exe) { try { Start-Process -FilePath $exe -WorkingDirectory $Dir; Log 'relaunched' } catch { Log ""relaunch FAILED: $_"" } }
   try { Remove-Item -LiteralPath $Zip -Force -ErrorAction SilentlyContinue } catch {}
   Log '=== done ==='
-} catch { Log ""fatal: $_"" }
+}
 ";
 }
