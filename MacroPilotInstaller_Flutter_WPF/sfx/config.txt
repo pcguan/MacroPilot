@@ -1,0 +1,4 @@
+;!@Install@!UTF-8!
+Progress="no"
+RunProgram="macropilot_installer.exe"
+;!@InstallEnd@!

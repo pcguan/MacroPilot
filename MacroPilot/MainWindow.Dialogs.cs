@@ -1,0 +1,1621 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Shapes;
+using MacroPilot.Input;
+using MacroPilot.Models;
+using MacroPilot.Services;
+
+namespace MacroPilot;
+
+// 动作 / 组合编辑对话框（代码构建，主题化，与参考标准一致）。
+public partial class MainWindow
+{
+    // 激活窗口下拉项：包住 WinInfo，ToString 返回可搜索/显示的定长文本。
+    private sealed class WinPick
+    {
+        public Services.WindowActivator.WinInfo Info { get; init; } = null!;
+        public string Display { get; init; } = "";
+        public override string ToString() => Display;
+    }
+
+    // ---------- 通用小部件 ----------
+    // 字段标签：单个输入项上方的说明文字，比分组标题弱一档。
+    private static TextBlock FieldLabel(string text) =>
+        new() { Text = text, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) };
+
+    // 分组卡片：把一组相关设置包进带描边的面板 + 强调色标题，和其它配置组清晰隔开。
+    private Border GroupCard(string title, params UIElement[] children)
+    {
+        var content = new StackPanel();
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
+        head.Children.Add(new Border
+        {
+            Width = 3, Height = 14, CornerRadius = new CornerRadius(2),
+            Background = (Brush)FindResource("Accent"),
+            Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center,
+        });
+        head.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+        content.Children.Add(head);
+        foreach (var c in children) content.Children.Add(c);
+        return new Border
+        {
+            Background = (Brush)FindResource("Panel"),
+            BorderBrush = (Brush)FindResource("Line"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 12, 14, 2),
+            Margin = new Thickness(0, 0, 0, 12),
+            Child = content,
+        };
+    }
+
+
+    private Window MakeDialog(string title)
+    {
+        var win = new Window
+        {
+            Title = title, Owner = this, Width = 460, SizeToContent = SizeToContent.Height,
+            MaxHeight = 640,   // 初始按内容自适应，超出则内容区滚动
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize,
+            Background = Background,
+            FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI Variable Text, Segoe UI"),
+        };
+        win.SetResourceReference(ForegroundProperty, "Ink");
+        win.SourceInitialized += (_, _) => ThemeManager.ApplyWindowTitleBar(win, ThemeManager.EffectiveDark);
+        win.Loaded += (_, _) =>
+        {
+            PositionWindowAtCursor(win, this);
+            // 先按内容自适应出初始高度，加载后冻结为手动尺寸；宽高都可拖动调整
+            // （嵌套监听等内容多时能拉大看全，不再锁死宽度导致文本被截断）。
+            win.Height = win.ActualHeight;
+            win.SizeToContent = SizeToContent.Manual;
+            win.MinWidth = 460;
+            win.MinHeight = 320;
+            win.MaxWidth = double.PositiveInfinity;
+            win.MaxHeight = double.PositiveInfinity;
+        };
+        return win;
+    }
+
+    // 把对话框内容放进可滚动宿主：内容超高时用滚轮/滑块滚动，配现代细滚动条（仅作用于本宿主子树）。
+    private ScrollViewer MakeScrollHost(FrameworkElement content)
+    {
+        var scroller = new ScrollViewer
+        {
+            Content = content,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Padding = new Thickness(0),
+            Style = (Style)FindResource("ThinScrollViewer"),
+        };
+        return scroller;
+    }
+
+    // 在指定显示器上盖一个透明全屏覆盖层，用户点击选位（带十字准星 + 实时坐标）。
+    // 返回 (设备名, nx, ny)；Esc/无选择返回 null。用物理像素精确覆盖，避开 DPI 换算。
+    private (string dev, double nx, double ny)? PickOnMonitor(ScreenInfo.Monitor mon, Window dialog)
+    {
+        (string dev, double nx, double ny)? result = null;
+        var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
+        // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用透过透明覆盖层清晰可见。
+        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);  // SWP_NOSIZE|NOMOVE|NOACTIVATE
+        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var overlay = new Window
+        {
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross,
+            Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
+        };
+        var accent = (Brush)FindResource("Accent");
+        var root = new Grid();
+        var canvas = new Canvas();
+        var vLine = new Line { Stroke = accent, StrokeThickness = 1 };
+        var hLine = new Line { Stroke = accent, StrokeThickness = 1 };
+        var coord = new TextBlock
+        {
+            Foreground = Brushes.White, FontSize = 12,
+            Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3),
+        };
+        canvas.Children.Add(vLine); canvas.Children.Add(hLine); canvas.Children.Add(coord);
+        var hint = new TextBlock
+        {
+            Text = $"在「{mon.Label}」上点击选择位置（Esc 取消）",
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 28, 0, 0),
+            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold,
+            Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+        };
+        root.Children.Add(canvas); root.Children.Add(hint);
+        overlay.Content = root;
+
+        overlay.SourceInitialized += (_, _) =>
+        {
+            var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
+            SetWindowPos(h, HWND_TOPMOST, mon.Left, mon.Top, mon.Width, mon.Height, 0x0040); // SWP_SHOWWINDOW
+        };
+        overlay.Loaded += (_, _) => { overlay.Activate(); overlay.Focus(); };
+        overlay.MouseMove += (_, e) =>
+        {
+            var p = e.GetPosition(canvas);
+            vLine.X1 = vLine.X2 = p.X; vLine.Y1 = 0; vLine.Y2 = canvas.ActualHeight;
+            hLine.Y1 = hLine.Y2 = p.Y; hLine.X1 = 0; hLine.X2 = canvas.ActualWidth;
+            var (cx, cy) = ScreenInfo.CursorPos();
+            var f = ScreenInfo.FromPoint(cx, cy);
+            coord.Text = $"{f.nx * 100:0.#}% , {f.ny * 100:0.#}%";
+            Canvas.SetLeft(coord, Math.Min(p.X + 14, Math.Max(0, canvas.ActualWidth - 96)));
+            Canvas.SetTop(coord, Math.Min(p.Y + 14, Math.Max(0, canvas.ActualHeight - 26)));
+        };
+        overlay.MouseLeftButtonDown += (_, _) =>
+        {
+            var (cx, cy) = ScreenInfo.CursorPos();
+            result = ScreenInfo.FromPoint(cx, cy);
+            overlay.Close();
+        };
+        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; overlay.Close(); } };
+        overlay.ShowDialog();
+        // 拾取结束：把本体与编辑窗口切回前台。
+        Services.WindowActivator.ActivateHwnd(mainH);
+        Services.WindowActivator.ActivateHwnd(dlgH);
+        return result;
+    }
+
+    // 在目标显示器上以高亮标记回显当前选中的位置（归一化 nx/ny）。点击任意处 / Esc 关闭。
+    private void PreviewPositionOnMonitor(ScreenInfo.Monitor mon, double nx, double ny, Window dialog)
+    {
+        var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
+        // 与点选一致：预览期间把编辑窗口与本体下沉，露出目标屏内容。
+        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var overlay = new Window
+        {
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Arrow,
+            Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
+        };
+        var accent = (Brush)FindResource("Accent");
+        var root = new Grid();
+        var canvas = new Canvas();
+        // 十字准星贯穿全屏 + 中心实心点 + 外圈光环，突出位置。
+        var vLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 } };
+        var hLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 } };
+        var ring = new Ellipse { Width = 40, Height = 40, Stroke = accent, StrokeThickness = 2 };
+        var dot = new Ellipse { Width = 14, Height = 14, Fill = accent, Stroke = Brushes.White, StrokeThickness = 2 };
+        var coord = new TextBlock
+        {
+            Foreground = Brushes.White, FontSize = 12,
+            Text = $"{mon.Label}（{nx * 100:0.#}%, {ny * 100:0.#}%）",
+            Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3),
+        };
+        canvas.Children.Add(vLine); canvas.Children.Add(hLine); canvas.Children.Add(ring); canvas.Children.Add(dot); canvas.Children.Add(coord);
+        var hint = new TextBlock
+        {
+            Text = $"这是选中的位置（点击任意处或按 Esc 关闭）",
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 28, 0, 0),
+            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold,
+            Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+        };
+        root.Children.Add(canvas); root.Children.Add(hint);
+        overlay.Content = root;
+
+        void PlaceMarker()
+        {
+            double px = nx * mon.Width, py = ny * mon.Height;
+            vLine.X1 = vLine.X2 = px; vLine.Y1 = 0; vLine.Y2 = mon.Height;
+            hLine.Y1 = hLine.Y2 = py; hLine.X1 = 0; hLine.X2 = mon.Width;
+            Canvas.SetLeft(ring, px - ring.Width / 2); Canvas.SetTop(ring, py - ring.Height / 2);
+            Canvas.SetLeft(dot, px - dot.Width / 2); Canvas.SetTop(dot, py - dot.Height / 2);
+            Canvas.SetLeft(coord, Math.Min(px + 26, Math.Max(0, mon.Width - 160)));
+            Canvas.SetTop(coord, Math.Min(py + 14, Math.Max(0, mon.Height - 26)));
+        }
+
+        overlay.SourceInitialized += (_, _) =>
+        {
+            var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
+            SetWindowPos(h, HWND_TOPMOST, mon.Left, mon.Top, mon.Width, mon.Height, 0x0040);
+        };
+        overlay.Loaded += (_, _) => { PlaceMarker(); overlay.Activate(); overlay.Focus(); };
+        overlay.MouseLeftButtonDown += (_, _) => overlay.Close();
+        // e.Handled=true：吞掉这次 Esc，否则会继续传到编辑窗口触发 IsCancel 按钮把编辑窗口也关掉。
+        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; overlay.Close(); } };
+        overlay.ShowDialog();
+        Services.WindowActivator.ActivateHwnd(mainH);
+        Services.WindowActivator.ActivateHwnd(dlgH);
+    }
+
+    private static (int ox, int oy, int w, int h) VirtualBounds()
+    {
+        var all = ScreenInfo.All();
+        int minL = all.Min(m => m.Left), minT = all.Min(m => m.Top);
+        int maxR = all.Max(m => m.Right), maxB = all.Max(m => m.Bottom);
+        return (minL, minT, Math.Max(1, maxR - minL), Math.Max(1, maxB - minT));
+    }
+
+    // 在每块屏顶部显示编号徽标(类似 Windows"标识")。点击穿透、不抢焦点。返回窗口列表，由调用方在退出编辑窗口时关闭（不自动消失）。
+    // 屏幕序号标签按【所属对话框】分别管理，嵌套对话框各自独立、互不干扰；
+    // 也让"真实截图"(CaptureTargetImage) 能先把当前对话框的标签藏起来，别被拍进目标图。
+    private readonly Dictionary<Window, List<Window>> _idScreensByDialog = new();
+    private void ShowIdScreens(Window owner)
+    {
+        if (_idScreensByDialog.TryGetValue(owner, out var cur) && cur.Count > 0) return;  // 已显示
+        _idScreensByDialog[owner] = IdentifyScreens();
+    }
+    private void HideIdScreens(Window owner)
+    {
+        if (!_idScreensByDialog.TryGetValue(owner, out var wins)) return;
+        foreach (var w in wins) { try { w.Close(); } catch { } }
+        _idScreensByDialog.Remove(owner);
+    }
+
+    private List<Window> IdentifyScreens()
+    {
+        var wins = new List<Window>();
+        foreach (var m in ScreenInfo.All())
+        {
+            var stack = new StackPanel();
+            stack.Children.Add(new TextBlock { Text = m.Number > 0 ? m.Number.ToString() : "?", Foreground = Brushes.White, FontSize = 84, FontWeight = FontWeights.Bold, HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center });
+            stack.Children.Add(new TextBlock { Text = (m.Primary ? "主屏 · " : "") + $"{m.Width}×{m.Height}", Foreground = Brushes.White, FontSize = 18, HorizontalAlignment = HorizontalAlignment.Center });
+            var badge = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0xE0, 0x14, 0x14, 0x14)),
+                BorderBrush = Brushes.White, BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(32, 16, 32, 16), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(30, 30, 0, 0), Child = stack,
+            };
+            var w = new Window
+            {
+                WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false, Topmost = true, ShowActivated = false, Background = Brushes.Transparent, Content = badge,
+            };
+            var mm = m;
+            w.SourceInitialized += (_, _) =>
+            {
+                var h = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+                int ex = GetWindowLongPtr(h, -20).ToInt32();                        // GWL_EXSTYLE
+                SetWindowLongPtr(h, -20, new IntPtr(ex | 0x80000 | 0x20 | 0x08000000)); // LAYERED|TRANSPARENT|NOACTIVATE → 点击穿透
+                SetWindowPos(h, HWND_TOPMOST, mm.Left, mm.Top, mm.Width, mm.Height, 0x0010 | 0x0040); // NOACTIVATE|SHOWWINDOW
+            };
+            w.Show();
+            wins.Add(w);
+        }
+        return wins;
+    }
+
+    // System.Drawing.Bitmap(32bppArgb) → 冻结的 WPF BitmapSource（复制像素，源可随后释放）。
+    private static System.Windows.Media.Imaging.BitmapSource ToBitmapSource(System.Drawing.Bitmap bmp)
+    {
+        var rect = new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height);
+        var data = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
+        {
+            var src = System.Windows.Media.Imaging.BitmapSource.Create(
+                bmp.Width, bmp.Height, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null,
+                data.Scan0, data.Stride * bmp.Height, data.Stride);
+            src.Freeze();
+            return src;
+        }
+        finally { bmp.UnlockBits(data); }
+    }
+
+    // 手动截取目标图片：先下沉本体+编辑窗口，浮动工具条让用户自由整理桌面（把目标窗口拖到前台）；
+    // 点“开始框选”后冻结整屏快照，在其上橡皮筋选区；结果从快照裁剪（不含覆盖层）。返回 PNG + 绑定的虚拟像素区域。
+    private (byte[] png, int vx, int vy, int w, int h)? CaptureTargetImage(Window dialog)
+    {
+        // 屏幕序号标签是常显置顶窗口，会被拍进冻结快照/目标图——截图期间先藏起来，截完若原本在显示则恢复。
+        bool hadIds = _idScreensByDialog.TryGetValue(dialog, out var ids) && ids.Count > 0;
+        HideIdScreens(dialog);
+
+        var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
+        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+
+        // --- 浮动工具条（非模态于其它程序）：用户整理好桌面再点“开始框选” ---
+        bool proceed = false;
+        var toolbar = new Window
+        {
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Background = Brushes.Transparent, SizeToContent = SizeToContent.WidthAndHeight,
+        };
+        var pClr = ((SolidColorBrush)FindResource("Panel")).Color;
+        var tbCard = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0xC0, pClr.R, pClr.G, pClr.B)),  // 半透明，露出底下桌面
+            BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 10, 14, 10), Cursor = Cursors.SizeAll,
+            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 2, Opacity = 0.2, Color = Colors.Black },
+        };
+        var tbStack = new StackPanel();
+        tbStack.Children.Add(new TextBlock { Text = "整理好桌面后点下方按钮框选（可拖动本条移动位置）", Foreground = (Brush)FindResource("Ink"), FontSize = 13, TextWrapping = TextWrapping.Wrap, MaxWidth = 320, Margin = new Thickness(0, 0, 0, 10) });
+        var tbBtns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var startBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "开始框选目标区域" };
+        var cancelBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "取消", Margin = new Thickness(4, 0, 0, 0) };
+        tbBtns.Children.Add(startBtn); tbBtns.Children.Add(cancelBtn);
+        tbStack.Children.Add(tbBtns); tbCard.Child = tbStack; toolbar.Content = tbCard;
+        startBtn.Click += (_, _) => { proceed = true; toolbar.Close(); };
+        cancelBtn.Click += (_, _) => { proceed = false; toolbar.Close(); };
+        tbCard.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) toolbar.DragMove(); };  // 拖动移动
+        toolbar.Loaded += (_, _) =>
+        {
+            var pm = ScreenInfo.Primary();
+            toolbar.Left = pm.Left + (pm.Width - toolbar.ActualWidth) / 2;
+            toolbar.Top = pm.Top + 40;
+        };
+        toolbar.ShowDialog();
+
+        if (!proceed) { Services.WindowActivator.ActivateHwnd(mainH); Services.WindowActivator.ActivateHwnd(dlgH); return null; }
+
+        // 关闭模态工具条会让 WPF 重新激活本体（owner）弹到前台——重新下沉，并留时间让被盖住的目标窗口重绘，
+        // 保证冻屏抓到的就是“开始框选”那一刻的桌面（与整理阶段一致，不含本体）。
+        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        System.Threading.Thread.Sleep(180);
+
+        // --- 冻结整屏快照 ---
+        var (ox, oy, vw, vh) = VirtualBounds();
+        var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
+
+        // --- 选区覆盖层：把冻结快照当背景图显示（跨全部显示器 1:1），选区在“快照像素空间”里算，
+        // 视觉与裁剪同源，多屏/混合 DPI 都不会错位。 ---
+        (int x, int y, int w, int h)? sel = null;
+        var accent = (Brush)FindResource("Accent");
+        var overlay = new Window
+        {
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross, Background = Brushes.Transparent,
+        };
+        var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
+        var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };  // 轻微压暗，突出选框
+        var canvas = new Canvas();
+        var rubber = new System.Windows.Shapes.Rectangle { Stroke = accent, StrokeThickness = 1.5, Fill = new SolidColorBrush(Color.FromArgb(0x22, 0x8A, 0x78, 0x60)), Visibility = Visibility.Collapsed };
+        var sizeLbl = new TextBlock { Foreground = Brushes.White, FontSize = 12, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3), Visibility = Visibility.Collapsed };
+        canvas.Children.Add(rubber); canvas.Children.Add(sizeLbl);
+        var hint = new TextBlock
+        {
+            Text = "拖拽框选目标图片（Esc 取消）", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+        };
+        var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); overlay.Content = root;
+        overlay.SourceInitialized += (_, _) =>
+        {
+            var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
+            SetWindowPos(h, HWND_TOPMOST, ox, oy, vw, vh, 0x0040);
+        };
+        overlay.Loaded += (_, _) => { overlay.Activate(); overlay.Focus(); };
+        // 快照像素/DIP 比例：图片铺满窗口，其像素宽=vw；无论多屏/DPI，映射恒定。
+        double PixPerDip() => vw / Math.Max(1.0, snapImg.ActualWidth);
+        System.Windows.Point? downDip = null;
+        void UpdateSel(System.Windows.Point cur)
+        {
+            var d = downDip!.Value;
+            double x = Math.Min(cur.X, d.X), y = Math.Min(cur.Y, d.Y), w = Math.Abs(cur.X - d.X), h = Math.Abs(cur.Y - d.Y);
+            Canvas.SetLeft(rubber, x); Canvas.SetTop(rubber, y); rubber.Width = w; rubber.Height = h;
+            double r = PixPerDip();
+            int px = ox + (int)Math.Round(x * r), py = oy + (int)Math.Round(y * r);
+            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(w * r)}×{(int)Math.Round(h * r)}";
+            Canvas.SetLeft(sizeLbl, x); Canvas.SetTop(sizeLbl, Math.Max(0, y - 24));
+        }
+        overlay.MouseLeftButtonDown += (_, e) =>
+        {
+            downDip = e.GetPosition(snapImg);
+            rubber.Visibility = Visibility.Visible; sizeLbl.Visibility = Visibility.Visible;
+            UpdateSel(downDip.Value);
+        };
+        overlay.MouseMove += (_, e) => { if (downDip != null) UpdateSel(e.GetPosition(snapImg)); };
+        overlay.MouseLeftButtonUp += (_, e) =>
+        {
+            if (downDip is { } d)
+            {
+                var up = e.GetPosition(snapImg);
+                double r = PixPerDip();
+                int px = (int)Math.Round(Math.Min(d.X, up.X) * r), py = (int)Math.Round(Math.Min(d.Y, up.Y) * r);
+                int pw = (int)Math.Round(Math.Abs(up.X - d.X) * r), ph = (int)Math.Round(Math.Abs(up.Y - d.Y) * r);
+                sel = (ox + px, oy + py, pw, ph);
+            }
+            overlay.Close();
+        };
+        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; sel = null; overlay.Close(); } };
+        overlay.ShowDialog();
+
+        byte[]? png = null; int rx = 0, ry = 0, rw = 0, rh = 0;
+        if (sel is { } s && s.w >= 4 && s.h >= 4)
+        {
+            rx = s.x; ry = s.y; rw = s.w; rh = s.h;
+            try
+            {
+                using var crop = new System.Drawing.Bitmap(rw, rh, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (var g = System.Drawing.Graphics.FromImage(crop))
+                    g.DrawImage(snapshot, new System.Drawing.Rectangle(0, 0, rw, rh), new System.Drawing.Rectangle(rx - ox, ry - oy, rw, rh), System.Drawing.GraphicsUnit.Pixel);
+                png = Services.ScreenMatch.ToPng(crop);
+            }
+            catch { png = null; }
+        }
+        snapshot.Dispose();
+        Services.WindowActivator.ActivateHwnd(mainH);
+        Services.WindowActivator.ActivateHwnd(dlgH);
+        if (hadIds) ShowIdScreens(dialog);   // 恢复原先显示的屏幕序号标签
+        return png == null ? null : (png, rx, ry, rw, rh);
+    }
+
+    // 在屏幕上用白色方框回显已截取的图片区域（虚拟像素），点任意处 / Esc 关闭。
+    private void PreviewRegion(int vx, int vy, int w, int h, Window dialog)
+    {
+        var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
+        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var (ox, oy, vw, vh) = VirtualBounds();
+        var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
+        var overlay = new Window
+        {
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Arrow, Background = Brushes.Transparent,
+        };
+        var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
+        var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };
+        var canvas = new Canvas();
+        var glow = new System.Windows.Shapes.Rectangle { Stroke = new SolidColorBrush(Color.FromArgb(0xAA, 0, 0, 0)), StrokeThickness = 4 };
+        var box = new System.Windows.Shapes.Rectangle { Stroke = Brushes.White, StrokeThickness = 2 };
+        var label = new TextBlock { Foreground = Brushes.White, FontSize = 12, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3), Text = $"截取区域：({vx}, {vy})  {w}×{h}" };
+        canvas.Children.Add(glow); canvas.Children.Add(box); canvas.Children.Add(label);
+        var hint = new TextBlock
+        {
+            Text = "这是截取的图片区域（点击任意处或按 Esc 关闭）", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+        };
+        var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); overlay.Content = root;
+        overlay.Closed += (_, _) => snapshot.Dispose();
+        overlay.SourceInitialized += (_, _) =>
+        {
+            var hh = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
+            SetWindowPos(hh, HWND_TOPMOST, ox, oy, vw, vh, 0x0040);
+        };
+        overlay.Loaded += (_, _) =>
+        {
+            // DIP = 像素 / 比例；比例 = 快照像素宽 / 图片 DIP 宽（多屏/DPI 恒定）。
+            double r = vw / Math.Max(1.0, snapImg.ActualWidth);
+            double lx = (vx - ox) / r, ly = (vy - oy) / r, lw = w / r, lh = h / r;
+            Canvas.SetLeft(box, lx); Canvas.SetTop(box, ly); box.Width = lw; box.Height = lh;
+            Canvas.SetLeft(glow, lx - 1); Canvas.SetTop(glow, ly - 1); glow.Width = lw + 2; glow.Height = lh + 2;
+            Canvas.SetLeft(label, lx); Canvas.SetTop(label, Math.Max(0, ly - 24));
+            overlay.Activate(); overlay.Focus();
+        };
+        overlay.MouseLeftButtonDown += (_, _) => overlay.Close();
+        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; overlay.Close(); } };
+        overlay.ShowDialog();
+        Services.WindowActivator.ActivateHwnd(mainH);
+        Services.WindowActivator.ActivateHwnd(dlgH);
+    }
+
+    private FrameworkElement BuildHookRow(string label, Func<MacroStep?> get, Action<MacroStep?> set)
+    {
+        var row = new DockPanel { Margin = new Thickness(0, 4, 0, 4), LastChildFill = true };
+        var lbl = new TextBlock { Text = label, Width = 52, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
+        DockPanel.SetDock(lbl, Dock.Left); row.Children.Add(lbl);
+        var clearBtn = new Button { Content = "清除", Width = 56, Height = 30, Margin = new Thickness(8, 0, 0, 0) };
+        DockPanel.SetDock(clearBtn, Dock.Right); row.Children.Add(clearBtn);
+        var setBtn = new Button { Content = "设置", Width = 56, Height = 30, Margin = new Thickness(8, 0, 0, 0) };
+        DockPanel.SetDock(setBtn, Dock.Right); row.Children.Add(setBtn);
+        // 摘要自动换行（不再 … 截断）：配置复杂的监听动作描述很长，让它多行显示看全，与外层文本一致。
+        var summary = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("Muted") };
+        row.Children.Add(summary);
+
+        void Refresh()
+        {
+            var s = get();
+            summary.Text = s != null ? s.ToString() : "未设置";
+            clearBtn.IsEnabled = s != null;
+        }
+        // 监听动作＝完整动作：用与外层同款的完整对话框（可配循环/运行条件/备注，且能继续配监听——递归下去）。
+        setBtn.Click += (_, _) => { var s = ShowAddActionDialog(get()); if (s != null) { set(s); Refresh(); } };
+        clearBtn.Click += (_, _) => { set(null); Refresh(); };
+        Refresh();
+        return row;
+    }
+
+    // ImageMatch 编辑态：目标图 PNG + 绑定的虚拟像素区域 + 相似度阈值。
+    private sealed class ImageCond
+    {
+        public byte[]? Png;
+        public string Monitor = "";     // 绑定的屏幕设备名
+        public int RelX, RelY, W, H;    // 屏内相对像素矩形
+        public double Threshold = 0.9;
+        public bool Has => Png != null && Png.Length > 0 && W > 0 && H > 0;
+    }
+
+    // 运行条件面板：启用勾选后才展开明细。typeCombo+img 非空时（仅动作级）提供“时间段/图片出现”两类，
+    // 否则仅时间段（方案级/组合级复用）。
+    private StackPanel BuildRunConditionPanel(
+        CheckBox enabled,
+        CheckBox invert,
+        ComboBox startHour,
+        ComboBox startMinute,
+        ComboBox endHour,
+        ComboBox endMinute,
+        ComboBox? typeCombo = null,
+        ImageCond? img = null)
+    {
+        bool withImage = typeCombo != null && img != null;
+
+        var timeRow = new StackPanel { Orientation = Orientation.Horizontal };
+        timeRow.Children.Add(BuildTimeField("从", startHour, startMinute));
+        timeRow.Children.Add(new Border { Width = 22 });
+        timeRow.Children.Add(BuildTimeField("到", endHour, endMinute));
+        var timeSub = new StackPanel();
+        timeSub.Children.Add(timeRow);
+        timeSub.Children.Add(new TextBlock
+        {
+            Text = "某侧选“不限”表示开放边界（例：只设“到 18:00”即 18:00 前均执行）。",
+            Foreground = (Brush)FindResource("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0),
+        });
+
+        var detail = new StackPanel();
+
+        if (!withImage)
+        {
+            enabled.Content = "仅在时间段内执行";
+            invert.Content = "取反（不在该时间段内执行）";
+            invert.Margin = new Thickness(0, 12, 0, 0);
+            detail.Children.Add(timeSub);
+            detail.Children.Add(invert);
+        }
+        else
+        {
+            enabled.Content = "启用运行条件";
+            invert.Content = "取反（条件不满足时才执行）";
+            invert.Margin = new Thickness(0, 12, 0, 0);
+
+            typeCombo!.Items.Clear();
+            typeCombo.Items.Add("时间段"); typeCombo.Items.Add("图片出现");
+            typeCombo.Height = 32; typeCombo.Margin = new Thickness(0, 0, 0, 10);
+            if (typeCombo.SelectedIndex < 0) typeCombo.SelectedIndex = 0;
+
+            var imageSub = new StackPanel();
+            var capBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "截取目标图片" };
+            var previewImgBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览截取区域（白框标示）", IsEnabled = false };
+            var capStatus = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
+            var capRow = new StackPanel { Orientation = Orientation.Horizontal };
+            capRow.Children.Add(capBtn); capRow.Children.Add(previewImgBtn); capRow.Children.Add(capStatus);
+            imageSub.Children.Add(capRow);
+            var posText = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
+            imageSub.Children.Add(posText);
+            var thumb = new System.Windows.Controls.Image { MaxWidth = 220, MaxHeight = 150, Stretch = System.Windows.Media.Stretch.Uniform };
+            var thumbBorder = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Child = thumb, Visibility = Visibility.Collapsed };
+            imageSub.Children.Add(thumbBorder);
+            var thrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+            thrRow.Children.Add(new TextBlock { Text = "相似度阈值(%)", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+            var thrText = new TextBox { Width = 64, Height = 30, Text = ((int)Math.Round(img!.Threshold * 100)).ToString() };
+            thrRow.Children.Add(thrText);
+            thrRow.Children.Add(new TextBlock { Text = "（越高越严格，默认 90）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), FontSize = 12, Margin = new Thickness(8, 0, 0, 0) });
+            imageSub.Children.Add(thrRow);
+            imageSub.Children.Add(new TextBlock { Text = "图片需出现在截取时的同一屏幕位置。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+
+            void RefreshThumb()
+            {
+                if (img.Has)
+                {
+                    capStatus.Text = $"已截取（{img.W}×{img.H}）";
+                    capBtn.ToolTip = "重新截取目标图片";
+                    posText.Text = $"屏幕 {ScreenInfo.ByDevice(img.Monitor).Label}：屏内 ({img.RelX}, {img.RelY})  尺寸 {img.W}×{img.H}";
+                    posText.Visibility = Visibility.Visible;
+                    previewImgBtn.IsEnabled = true;
+                    try
+                    {
+                        var bi = new System.Windows.Media.Imaging.BitmapImage();
+                        using var ms = new System.IO.MemoryStream(img.Png!);
+                        bi.BeginInit(); bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad; bi.StreamSource = ms; bi.EndInit();
+                        thumb.Source = bi; thumbBorder.Visibility = Visibility.Visible;
+                    }
+                    catch { thumbBorder.Visibility = Visibility.Collapsed; }
+                }
+                else { capStatus.Text = "未截取"; capBtn.ToolTip = "截取目标图片"; posText.Visibility = Visibility.Collapsed; previewImgBtn.IsEnabled = false; thumbBorder.Visibility = Visibility.Collapsed; }
+            }
+            capBtn.Click += (_, _) =>
+            {
+                var w = Window.GetWindow(capBtn);
+                if (w == null) return;
+                var r = CaptureTargetImage(w);
+                if (r is { } c)
+                {
+                    var (dev, _, _) = ScreenInfo.FromPoint(c.vx, c.vy);
+                    var mon = ScreenInfo.ByDevice(dev);
+                    img.Png = c.png; img.Monitor = dev; img.RelX = c.vx - mon.Left; img.RelY = c.vy - mon.Top; img.W = c.w; img.H = c.h;
+                    RefreshThumb();
+                }
+            };
+            previewImgBtn.Click += (_, _) =>
+            {
+                var w = Window.GetWindow(previewImgBtn);
+                if (w != null && img.Has) { var mon = ScreenInfo.ByDevice(img.Monitor); PreviewRegion(mon.Left + img.RelX, mon.Top + img.RelY, img.W, img.H, w); }
+            };
+            thrText.TextChanged += (_, _) => { if (double.TryParse(thrText.Text, out var v)) img.Threshold = Math.Clamp(v / 100.0, 0.1, 1.0); };
+            RefreshThumb();
+
+            detail.Children.Add(typeCombo);
+            detail.Children.Add(timeSub);
+            detail.Children.Add(imageSub);
+            detail.Children.Add(invert);
+
+            void RefreshType()
+            {
+                bool image = typeCombo.SelectedIndex == 1;
+                timeSub.Visibility = image ? Visibility.Collapsed : Visibility.Visible;
+                imageSub.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
+                if (image)
+                {
+                    // 阈值框在建面板时按默认值(90)初始化，回填既有条件是在那之后才还原 img.Threshold 的——
+                    // 切到图片视图时把阈值框同步到实际值，否则一直显示 90（改了保存后再打开还显示 90）。
+                    thrText.Text = ((int)Math.Round(img.Threshold * 100)).ToString();
+                    RefreshThumb();   // 编辑既有图片条件时，切到图片视图即回显缩略图
+                }
+            }
+            typeCombo.SelectionChanged += (_, _) => RefreshType();
+            RefreshType();
+        }
+
+        // 勾选开关后，明细收进一个缩进 + 弱底色 + 强调左条的面板里，一眼看出属于该开关的“势力范围”。
+        var detailWrap = new Border
+        {
+            Background = (Brush)FindResource("Hover"),
+            BorderBrush = (Brush)FindResource("Accent"),
+            BorderThickness = new Thickness(2, 0, 0, 0),
+            CornerRadius = new CornerRadius(0, 6, 6, 0),
+            Padding = new Thickness(12, 10, 12, 12),
+            Margin = new Thickness(2, 10, 0, 0),
+            Child = detail,
+        };
+        var panel = new StackPanel();
+        panel.Children.Add(enabled);
+        panel.Children.Add(detailWrap);
+        void Refresh() => detailWrap.Visibility = enabled.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        enabled.Checked += (_, _) => Refresh();
+        enabled.Unchecked += (_, _) => Refresh();
+        Refresh();
+        return panel;
+    }
+
+    // 单个时间字段：标签 + [时]:[分]；小时选“不限”时禁用分钟。
+    private StackPanel BuildTimeField(string label, ComboBox hour, ComboBox minute)
+    {
+        FillHourCombo(hour);
+        FillMinuteCombo(minute);
+        hour.Width = 66; hour.Height = 32;
+        minute.Width = 58; minute.Height = 32;
+
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        panel.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0), FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(hour);
+        panel.Children.Add(new TextBlock { Text = ":", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 5, 0), FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(minute);
+
+        void Refresh() => minute.IsEnabled = hour.SelectedIndex > 0; // 0 = 不限
+        hour.SelectionChanged += (_, _) => Refresh();
+        Refresh();
+        return panel;
+    }
+
+    private static void FillHourCombo(ComboBox combo)
+    {
+        combo.Items.Clear();
+        combo.Items.Add("不限");
+        for (int i = 0; i < 24; i++) combo.Items.Add($"{i:00}");
+        combo.SelectedIndex = 0;
+    }
+
+    private static void FillMinuteCombo(ComboBox combo)
+    {
+        combo.Items.Clear();
+        for (int i = 0; i < 60; i++) combo.Items.Add($"{i:00}");
+        combo.SelectedIndex = 0;
+    }
+
+    // 小时为“不限”(index 0) → 该侧开放，返回 null；否则 (时)*60 + 分。
+    private static int? SelectedMinute(ComboBox hour, ComboBox minute)
+    {
+        if (hour.SelectedIndex <= 0) return null;
+        int h = hour.SelectedIndex - 1;
+        int m = Math.Max(0, minute.SelectedIndex);
+        return h * 60 + m;
+    }
+
+    private static void SetTimeSelection(ComboBox hour, ComboBox minute, int? value)
+    {
+        if (value is not int v)
+        {
+            hour.SelectedIndex = 0;   // 不限
+            minute.SelectedIndex = 0;
+            return;
+        }
+        v = ((v % 1440) + 1440) % 1440;
+        hour.SelectedIndex = v / 60 + 1;
+        minute.SelectedIndex = v % 60;
+    }
+
+    // ---------- 动作编辑对话框 ----------
+    private MacroStep? ShowAddActionDialog(MacroStep? source = null)
+    {
+        string capturedKey = "";
+        byte capturedModifier = 0;
+        bool capturingKey = false;
+
+        var win = MakeDialog(source == null ? "添加动作" : "编辑动作");
+        // 屏幕编号标记：在"目标显示器/选择窗口"视图常显，退出编辑窗口时关闭（见 UpdatePanels / win.Closed）。
+        win.Closed += (_, _) => HideIdScreens(win);
+        var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) }; // 右侧小边距，让滚动条贴近窗口右缘
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var sp = new StackPanel { Margin = new Thickness(0) };
+        var scroller = MakeScrollHost(sp); Grid.SetRow(scroller, 0); grid.Children.Add(scroller);
+
+        // 基础设置组：动作类型 + 其对应的类型面板（鼠标/键盘/等待/激活窗口），整组包进一张卡片。
+        var baseContent = new StackPanel();
+        baseContent.Children.Add(FieldLabel("动作类型"));
+        var typeCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        typeCombo.Items.Add("鼠标"); typeCombo.Items.Add("键盘"); typeCombo.Items.Add("等待"); typeCombo.Items.Add("激活窗口"); typeCombo.SelectedIndex = 0;
+        baseContent.Children.Add(typeCombo);
+
+        // 鼠标面板
+        var mousePanel = new StackPanel(); baseContent.Children.Add(mousePanel);
+        mousePanel.Children.Add(FieldLabel("鼠标动作"));
+        var mouseActionCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("滚轮"); mouseActionCombo.SelectedIndex = 0;
+        mousePanel.Children.Add(mouseActionCombo);
+
+        var mouseButtonPanel = new StackPanel(); mousePanel.Children.Add(mouseButtonPanel);
+        mouseButtonPanel.Children.Add(FieldLabel("鼠标按钮"));
+        var buttonCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键"); buttonCombo.SelectedIndex = 0;
+        mouseButtonPanel.Children.Add(buttonCombo);
+        mouseButtonPanel.Children.Add(FieldLabel("按住时间"));
+        var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs); mouseButtonPanel.Children.Add(holdRow.Panel);
+
+        // 鼠标移动：目标显示器 + 屏内归一化百分比，支持 F8 热键拾取光标位置。
+        var mouseMovePanel = new StackPanel { Visibility = Visibility.Collapsed }; mousePanel.Children.Add(mouseMovePanel);
+        var monHeader = new DockPanel { LastChildFill = false };
+        monHeader.Children.Add(new TextBlock { Text = "目标显示器", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+        var idBtnMove = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "标识屏幕（在各屏显示编号）" };
+        DockPanel.SetDock(idBtnMove, Dock.Right); monHeader.Children.Add(idBtnMove);
+        idBtnMove.Click += (_, _) => ShowIdScreens(win);
+        mouseMovePanel.Children.Add(monHeader);
+        var monitorCombo = new ComboBox { Margin = new Thickness(0, 6, 0, 12), Height = 32 };
+        void FillMonitors()
+        {
+            monitorCombo.Items.Clear();
+            foreach (var m in ScreenInfo.All())
+                monitorCombo.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Device });
+            if (monitorCombo.Items.Count > 0) monitorCombo.SelectedIndex = 0;
+        }
+        void SelectMonitor(string dev)
+        {
+            foreach (var it in monitorCombo.Items)
+                if (it is ComboBoxItem c && c.Tag is string d && string.Equals(d, dev, StringComparison.OrdinalIgnoreCase))
+                { monitorCombo.SelectedItem = it; return; }
+            if (monitorCombo.Items.Count > 0) monitorCombo.SelectedIndex = 0;
+        }
+        mouseMovePanel.Children.Add(monitorCombo);
+        var pctGrid = new Grid();
+        pctGrid.ColumnDefinitions.Add(new ColumnDefinition());
+        pctGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        pctGrid.ColumnDefinitions.Add(new ColumnDefinition());
+        var pxPanel = new StackPanel();
+        pxPanel.Children.Add(FieldLabel("屏内 X（%）"));
+        var pctXText = new TextBox { Text = "50", Margin = new Thickness(0, 0, 0, 12), Height = 32 };
+        pxPanel.Children.Add(pctXText); Grid.SetColumn(pxPanel, 0); pctGrid.Children.Add(pxPanel);
+        var pyPanel = new StackPanel();
+        pyPanel.Children.Add(FieldLabel("屏内 Y（%）"));
+        var pctYText = new TextBox { Text = "50", Margin = new Thickness(0, 0, 0, 12), Height = 32 };
+        pyPanel.Children.Add(pctYText); Grid.SetColumn(pyPanel, 2); pctGrid.Children.Add(pyPanel);
+        mouseMovePanel.Children.Add(pctGrid);
+        var pickRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var pickOverlayBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "在显示器上点选位置" };
+        var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览已选位置", Margin = new Thickness(6, 0, 0, 0) };
+        pickRow.Children.Add(pickOverlayBtn); pickRow.Children.Add(previewBtn);
+        mouseMovePanel.Children.Add(pickRow);
+        var pickStatus = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
+        mouseMovePanel.Children.Add(pickStatus);
+        var ch9329Note = new TextBlock
+        {
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed,
+            Text = "CH9329 采用相对闭环移动到位：全程真实硬件、可跨屏（含副屏），远距离会多用几帧逼近目标。",
+        };
+        mouseMovePanel.Children.Add(ch9329Note);
+        // 拟人化移动（动作级）：勾选后该移动走缓入缓出的弧线轨迹分多步逼近，而非瞬间跳到目标。
+        mouseMovePanel.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("Line"), Opacity = 0.7, Margin = new Thickness(0, 14, 0, 0) });
+        var humanizeMoveCheck = new CheckBox { Content = "拟人化移动（走缓入缓出的弧线轨迹，更像真人）", Margin = new Thickness(0, 12, 0, 0) };
+        mouseMovePanel.Children.Add(humanizeMoveCheck);
+        mouseMovePanel.Children.Add(new TextBlock
+        {
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+            Text = "沿带随机弧度、缓入缓出的路径分多步移动，比瞬移多花约 0.2–0.6 秒。CH9329 下每步仍是真实硬件相对闭环。",
+        });
+        void UpdateCh9329Note()
+        {
+            bool ch9329 = string.Equals(_doc.Backend, "Serial", StringComparison.OrdinalIgnoreCase);
+            ch9329Note.Visibility = ch9329 ? Visibility.Visible : Visibility.Collapsed;   // 闭环对主/副屏一致，作为通用说明常显
+        }
+        monitorCombo.SelectionChanged += (_, _) => UpdateCh9329Note();
+        FillMonitors();
+        UpdateCh9329Note();
+        pickOverlayBtn.Click += (_, _) =>
+        {
+            string dev = (monitorCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            var r = PickOnMonitor(ScreenInfo.ByDevice(dev), win);
+            if (r is { } picked)
+            {
+                SelectMonitor(picked.dev);
+                pctXText.Text = (picked.nx * 100).ToString("0.#");
+                pctYText.Text = (picked.ny * 100).ToString("0.#");
+                UpdateCh9329Note();
+                var mm = ScreenInfo.ByDevice(picked.dev);
+                pickStatus.Text = $"已选取：{mm.Label}（{picked.nx * 100:0.#}%, {picked.ny * 100:0.#}%）";
+            }
+        };
+        previewBtn.Click += (_, _) =>
+        {
+            string dev = (monitorCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            var mon = ScreenInfo.ByDevice(dev);
+            double nx = Math.Clamp(ParseDouble(pctXText.Text, 50) / 100.0, 0, 1);
+            double ny = Math.Clamp(ParseDouble(pctYText.Text, 50) / 100.0, 0, 1);
+            PreviewPositionOnMonitor(mon, nx, ny, win);
+        };
+
+        var mouseWheelPanel = new StackPanel { Visibility = Visibility.Collapsed }; mousePanel.Children.Add(mouseWheelPanel);
+        mouseWheelPanel.Children.Add(FieldLabel("滚轮格数（正 = 向上，负 = 向下）"));
+        var wheelText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 6), Height = 32 };
+        mouseWheelPanel.Children.Add(wheelText);
+        mouseWheelPanel.Children.Add(new TextBlock { Text = "以“格”为单位（一格＝常规滚一下）。两种输出方式一致；CH9329 单次上限 ±127 格。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
+
+        // 键盘面板
+        var keyboardPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(keyboardPanel);
+        keyboardPanel.Children.Add(FieldLabel("按键"));
+        var capturedText = new TextBlock { Text = "请直接按键，自动捕获（以最新一次为准）", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 2, 0, 10) };
+        keyboardPanel.Children.Add(capturedText);
+        keyboardPanel.Children.Add(new TextBlock { Text = "支持左/右 Ctrl、Shift、Alt、Win 等特殊键，按其他键可随时覆盖", Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(0, 0, 0, 14) });
+        keyboardPanel.Children.Add(FieldLabel("按住时间"));
+        var keyboardHoldRow = new TimeInputRow(this, _doc.DefaultHoldMs); keyboardPanel.Children.Add(keyboardHoldRow.Panel);
+
+        // 等待面板
+        var waitPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(waitPanel);
+        waitPanel.Children.Add(FieldLabel("等待时间"));
+        var waitRow = new TimeInputRow(this, _doc.DefaultWaitMs); waitPanel.Children.Add(waitRow.Panel);
+
+        // 激活窗口面板：从当前窗口列表选目标，选中即锁定该进程（含 PID）。
+        var windowPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(windowPanel);
+        var winHeader = new DockPanel { LastChildFill = false };
+        winHeader.Children.Add(new TextBlock { Text = "选择目标窗口", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+        var idBtnWin = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "标识屏幕（在各屏显示编号，帮你分清桌面对应哪块屏）" };
+        DockPanel.SetDock(idBtnWin, Dock.Right); winHeader.Children.Add(idBtnWin);
+        idBtnWin.Click += (_, _) => ShowIdScreens(win);
+        windowPanel.Children.Add(winHeader);
+        int selPid = 0; string selProc = ""; string selTitle = "";
+        const string Desk = Services.WindowActivator.DesktopSentinel;
+        static string TitleOr(string t) => string.IsNullOrEmpty(t) ? "(无标题)" : t;
+
+        // 当前选择显示框（点击弹出搜索列表）——自绘，避开可编辑 ComboBox 的焦点/过滤/清空坑。
+        var selText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)FindResource("Ink"), FontFamily = new FontFamily("Consolas, Cascadia Mono, Microsoft YaHei UI") };
+        var arrow = new System.Windows.Shapes.Path { Data = Geometry.Parse("M0,0 L8,0 L4,5 Z"), Fill = (Brush)FindResource("Muted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 2, 0) };
+        var fieldDock = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(arrow, Dock.Right); fieldDock.Children.Add(arrow); fieldDock.Children.Add(selText);
+        var fieldBorder = new Border { Background = (Brush)FindResource("Field"), BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Height = 34, Padding = new Thickness(10, 0, 8, 0), Cursor = Cursors.Hand, Child = fieldDock };
+        var winGrid = new Grid { Margin = new Thickness(0, 6, 0, 8) };
+        winGrid.ColumnDefinitions.Add(new ColumnDefinition());
+        winGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(fieldBorder, 0); winGrid.Children.Add(fieldBorder);
+        var refreshBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "刷新窗口列表", Margin = new Thickness(8, 0, 0, 0) };
+        Grid.SetColumn(refreshBtn, 1); winGrid.Children.Add(refreshBtn);
+        windowPanel.Children.Add(winGrid);
+        windowPanel.Children.Add(new TextBlock { Text = "点上方选择目标窗口，可输入关键词搜索（标题 / 进程 / PID）。选中即锁定该进程（同名多开用 PID 区分）；下次运行优先按 PID 命中，PID 变了按进程名回退。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+
+        // 弹出层：搜索框 + 窗口列表（我方完全掌控开合，不依赖 ComboBox 焦点行为）。
+        var winItems = new ObservableCollection<WinPick>();
+        var winView = System.Windows.Data.CollectionViewSource.GetDefaultView(winItems);
+        var searchBox = new TextBox { Height = 34, Margin = new Thickness(0, 0, 0, 6), VerticalContentAlignment = VerticalAlignment.Center };
+        var listBox = new ListBox { MaxHeight = 320, ItemsSource = winItems, FontFamily = new FontFamily("Consolas, Cascadia Mono, Microsoft YaHei UI") };
+        var popContent = new StackPanel { Margin = new Thickness(8) };
+        popContent.Children.Add(searchBox); popContent.Children.Add(listBox);
+        var popBorder = new Border { Background = (Brush)FindResource("Panel"), BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Child = popContent };
+        // StaysOpen=true：开合完全我方掌控，避免"点开即被同一次点击当外部点击关掉"的闪烁。
+        var popup = new System.Windows.Controls.Primitives.Popup { PlacementTarget = fieldBorder, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom, StaysOpen = true, AllowsTransparency = true, Child = popBorder };
+        static bool InTree(object o, DependencyObject root)
+        {
+            var d = o as DependencyObject;
+            while (d != null)
+            {
+                if (d == root) return true;
+                d = d is System.Windows.Media.Visual || d is System.Windows.Media.Media3D.Visual3D
+                    ? System.Windows.Media.VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+            }
+            return false;
+        }
+
+        void UpdateSelLabel()
+        {
+            if (selProc == Desk) { selText.Text = string.IsNullOrEmpty(selTitle) ? "桌面（所有应用失活）" : $"桌面 · {ScreenInfo.ByDevice(selTitle).Label}"; return; }
+            selText.Text = (selPid > 0 || selProc.Length > 0 || selTitle.Length > 0)
+                ? $"[{selPid,-6}] {TitleOr(selTitle)}  —  {selProc}.exe" : "点此选择窗口…";
+        }
+        bool loadingList = false;
+        void RefreshWindows()
+        {
+            loadingList = true;
+            winItems.Clear();
+            winItems.Add(new WinPick { Info = new Services.WindowActivator.WinInfo(IntPtr.Zero, "", Desk, -1), Display = "🖥  桌面（所有应用失活）" });
+            foreach (var m in ScreenInfo.All())
+                winItems.Add(new WinPick { Info = new Services.WindowActivator.WinInfo(IntPtr.Zero, m.Device, Desk, -1), Display = "🖥  桌面 · " + m.Label });
+            foreach (var w in Services.WindowActivator.ListTopWindows())
+                winItems.Add(new WinPick { Info = w, Display = $"[{w.Pid,-6}] {TitleOr(w.Title)}  —  {w.Process}.exe" });
+            winView.Filter = null;
+            listBox.SelectedItem = null;
+            loadingList = false;
+        }
+        void FlashPick(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            Services.WindowActivator.ActivateHwnd(hwnd);
+            var back = new System.Windows.Interop.WindowInteropHelper(win).Handle;
+            var t = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
+            t.Tick += (_, _) => { t.Stop(); Services.WindowActivator.ActivateHwnd(back); };
+            t.Start();
+        }
+        void Pick(WinPick wp)
+        {
+            selPid = wp.Info.Pid; selProc = wp.Info.Process; selTitle = wp.Info.Title;
+            UpdateSelLabel();
+            popup.IsOpen = false;
+            FlashPick(wp.Info.Hwnd);
+        }
+        void OpenPicker()
+        {
+            RefreshWindows();
+            searchBox.Text = "";
+            popup.MinWidth = fieldBorder.ActualWidth;
+            popup.IsOpen = true;
+            searchBox.Focus();
+        }
+        fieldBorder.MouseLeftButtonDown += (_, _) => { if (popup.IsOpen) popup.IsOpen = false; else OpenPicker(); };
+        // 弹层内的点击在独立 hwnd，不会触发本窗口的 PreviewMouseDown；点字段之外的地方（且非字段本身）才关闭。
+        win.PreviewMouseDown += (_, e) => { if (popup.IsOpen && !InTree(e.OriginalSource, fieldBorder)) popup.IsOpen = false; };
+        searchBox.TextChanged += (_, _) =>
+        {
+            string q = searchBox.Text ?? "";
+            winView.Filter = q.Length == 0 ? null : o => ((WinPick)o).Display.Contains(q, StringComparison.OrdinalIgnoreCase);
+        };
+        listBox.SelectionChanged += (_, _) => { if (!loadingList && listBox.SelectedItem is WinPick wp) Pick(wp); };
+        refreshBtn.Click += (_, _) => OpenPicker();
+        UpdateSelLabel();
+
+        // 标记区：循环 / 跳转 / 监听 / 备注
+        var loopCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
+        jumpTargetCombo.Items.Add("不跳转");
+        int count = _plan?.Steps.Count ?? 0;
+        for (int n = 1; n <= count; n++) jumpTargetCombo.Items.Add($"第 {n} 个动作");
+        jumpTargetCombo.SelectedIndex = 0;
+        var jumpTimesPanel = new StackPanel { Visibility = Visibility.Collapsed };
+        jumpTimesPanel.Children.Add(FieldLabel("跳转次数（0 为无限）"));
+        var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        jumpTimesPanel.Children.Add(jumpTimesText);
+        jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
+        var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        var conditionEnabled = new CheckBox();
+        var conditionInvert = new CheckBox();
+        var conditionStartHour = new ComboBox();
+        var conditionStartMinute = new ComboBox();
+        var conditionEndHour = new ComboBox();
+        var conditionEndMinute = new ComboBox();
+        var conditionType = new ComboBox();          // 时间段 / 图片出现（仅动作级）
+        var conditionImg = new ImageCond();
+
+        MacroStep? hookSuccess = source?.SuccessAction, hookComplete = source?.CompleteAction, hookFail = source?.FailAction;
+        sp.Children.Add(GroupCard("基础设置", baseContent));
+        {
+            var condPanel = BuildRunConditionPanel(conditionEnabled, conditionInvert, conditionStartHour, conditionStartMinute, conditionEndHour, conditionEndMinute, conditionType, conditionImg);
+            condPanel.Margin = new Thickness(0, 0, 0, 14);
+            sp.Children.Add(GroupCard("控制逻辑",
+                FieldLabel("循环次数（0 为无限）"), loopCountText,
+                FieldLabel("运行条件"), condPanel,
+                FieldLabel("执行后跳转到"), jumpTargetCombo, jumpTimesPanel));
+
+            var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+            sp.Children.Add(GroupCard("事件监听",
+                hookNote,
+                BuildHookRow("成功后", () => hookSuccess, v => hookSuccess = v),
+                BuildHookRow("结束后", () => hookComplete, v => hookComplete = v),
+                BuildHookRow("失败后", () => hookFail, v => hookFail = v)));
+
+            sp.Children.Add(GroupCard("备注（可选）", noteText));
+        }
+
+        // 主/次动作分明：确定=强调色实心（主动作），取消=描边空心（次动作）。底部固定不随内容滚动，上方加分割线。
+        var okBtn = new Button { Content = source == null ? "添加" : "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
+        var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        bar.Children.Add(okBtn); bar.Children.Add(cancelBtn);
+        var footer = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 12, 14, 0), Child = bar };
+        Grid.SetRow(footer, 1); grid.Children.Add(footer);
+
+        // 屏幕序号标记同步：进入"目标显示器/选择窗口"视图显示、离开收起。放后台优先级异步做，别拖慢窗口打开。
+        void SyncIdScreens()
+        {
+            string t2 = typeCombo.SelectedItem?.ToString() ?? "鼠标";
+            string a2 = mouseActionCombo.SelectedItem?.ToString() ?? "点击";
+            if (t2 == "激活窗口" || (t2 == "鼠标" && a2 == "移动")) ShowIdScreens(win); else HideIdScreens(win);
+        }
+        void UpdatePanels()
+        {
+            string t = typeCombo.SelectedItem?.ToString() ?? "鼠标";
+            mousePanel.Visibility = t == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            keyboardPanel.Visibility = t == "键盘" ? Visibility.Visible : Visibility.Collapsed;
+            waitPanel.Visibility = t == "等待" ? Visibility.Visible : Visibility.Collapsed;
+            windowPanel.Visibility = t == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
+            string a = mouseActionCombo.SelectedItem?.ToString() ?? "点击";
+            mouseButtonPanel.Visibility = a == "点击" ? Visibility.Visible : Visibility.Collapsed;
+            mouseMovePanel.Visibility = a == "移动" ? Visibility.Visible : Visibility.Collapsed;
+            mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
+            capturingKey = t == "键盘";
+            if (capturingKey) win.Focus();
+            // 窗口列表改按需枚举（点选择器时才 RefreshWindows，见 OpenPicker），不在打开时同步枚举；
+            // 屏幕序号标记（每屏一个置顶窗口）也延后到后台优先级异步显示 —— 消除激活窗口/鼠标移动动作双击打开时的卡顿厚重感。
+            win.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(SyncIdScreens));
+        }
+        typeCombo.SelectionChanged += (_, _) => UpdatePanels();
+        mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
+
+        win.PreviewKeyDown += (_, e) =>
+        {
+            if (!capturingKey || Keyboard.FocusedElement is TextBox) return;
+            e.Handled = true;
+            try
+            {
+                var c = ConvertWpfKey(e);
+                capturedKey = c.Key; capturedModifier = c.Modifier; capturedText.Text = c.Display;
+            }
+            catch (Exception ex)
+            {
+                capturedKey = ""; capturedModifier = 0; capturedText.Text = "该按键不支持，请按其他键";
+                ThemedDialog.Show(ex.Message, "按键暂不支持", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+            }
+        };
+
+        MacroStep? result = null;
+        bool settingsChanged = false;
+        okBtn.Click += (_, _) =>
+        {
+            try
+            {
+                string t = typeCombo.SelectedItem?.ToString() ?? "鼠标";
+                if (t == "鼠标")
+                {
+                    string a = mouseActionCombo.SelectedItem?.ToString() ?? "点击";
+                    result = a switch
+                    {
+                        "点击" => new MacroStep { Type = "MouseClick", Button = ButtonToInternal(buttonCombo.SelectedItem?.ToString() ?? "左键"), HoldMs = holdRow.GetMs() },
+                        "移动" => new MacroStep
+                        {
+                            Type = "MouseMove",
+                            MoveMonitor = (monitorCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
+                            MoveNormX = Math.Clamp(ParseDouble(pctXText.Text, 50) / 100.0, 0, 1),
+                            MoveNormY = Math.Clamp(ParseDouble(pctYText.Text, 50) / 100.0, 0, 1),
+                            Humanize = humanizeMoveCheck.IsChecked == true,
+                        },
+                        "滚轮" => new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) },
+                        _ => throw new InvalidOperationException("请选择鼠标动作。"),
+                    };
+                    if (a == "点击")
+                    {
+                        result.HoldUnit = holdRow.UnitIndex;
+                        if (holdRow.SetAsDefault)
+                        {
+                            var ms = holdRow.GetMs();
+                            if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
+                        }
+                    }
+                }
+                else if (t == "键盘")
+                {
+                    if (string.IsNullOrWhiteSpace(capturedKey) && capturedModifier == 0)
+                        throw new InvalidOperationException("请先按下需要模拟的键。");
+                    result = new MacroStep { Type = "KeyTap", Key = capturedKey, Modifier = capturedModifier, HoldMs = keyboardHoldRow.GetMs(), HoldUnit = keyboardHoldRow.UnitIndex };
+                    if (keyboardHoldRow.SetAsDefault)
+                    {
+                        var ms = keyboardHoldRow.GetMs();
+                        if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
+                    }
+                }
+                else if (t == "等待")
+                {
+                    result = new MacroStep { Type = "Wait", DurationMs = waitRow.GetMs(), DurationUnit = waitRow.UnitIndex };
+                    if (waitRow.SetAsDefault)
+                    {
+                        var ms = waitRow.GetMs();
+                        if (_doc.DefaultWaitMs != ms) { _doc.DefaultWaitMs = ms; settingsChanged = true; }
+                    }
+                }
+                else // 激活窗口
+                {
+                    if (selPid <= 0 && selProc.Length == 0 && selTitle.Length == 0)
+                        throw new InvalidOperationException("请从列表选择目标窗口。");
+                    result = new MacroStep { Type = "ActivateWindow", TargetProcess = selProc, TargetTitle = selTitle, TargetPid = selPid };
+                }
+                {
+                    result.LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1));
+                    if (conditionEnabled.IsChecked == true)
+                    {
+                        if (conditionType.SelectedIndex == 1) // 图片出现
+                        {
+                            if (!conditionImg.Has)
+                                throw new InvalidOperationException("请先截取目标图片。");
+                            result.RunConditionType = "ImageMatch";
+                            result.RunConditionInvert = conditionInvert.IsChecked == true;
+                            result.RunConditionImage = ImageStore.Ref(conditionImg.Png!);   // 立即外置成 file:hash 引用（内存里不再挂 base64 大串）
+                            result.RunConditionMonitor = conditionImg.Monitor;
+                            result.RunConditionRectX = conditionImg.RelX; result.RunConditionRectY = conditionImg.RelY;
+                            result.RunConditionRectW = conditionImg.W; result.RunConditionRectH = conditionImg.H;
+                            result.RunConditionThreshold = conditionImg.Threshold;
+                        }
+                        else
+                        {
+                            var start = SelectedMinute(conditionStartHour, conditionStartMinute);
+                            var end = SelectedMinute(conditionEndHour, conditionEndMinute);
+                            if (!start.HasValue && !end.HasValue)
+                                throw new InvalidOperationException("运行条件启用后，请至少选择开始时间或结束时间。");
+                            result.RunConditionType = "TimeRange";
+                            result.RunConditionInvert = conditionInvert.IsChecked == true;
+                            result.RunConditionStartMinute = start;
+                            result.RunConditionEndMinute = end;
+                        }
+                    }
+                    result.JumpTarget = jumpTargetCombo.SelectedIndex;
+                    result.JumpTimes = result.JumpTarget >= 1 ? Math.Max(0, ParseInt(jumpTimesText.Text, 0)) : 0;
+                    result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
+                    result.Note = noteText.Text.Trim();
+                }
+                if (settingsChanged) PersistSettings(); // 持久化默认时长等设置，不提交未保存的方案修改
+                win.DialogResult = true;
+            }
+            catch (Exception ex)
+            {
+                ThemedDialog.Show(ex.Message, "添加失败", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+            }
+        };
+
+        // 回填已有动作
+        if (source != null)
+        {
+            switch (source.Type)
+            {
+                case "MouseClick": typeCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; buttonCombo.SelectedItem = TranslateButtonToDisplay(source.Button); holdRow.SetMs(source.HoldMs, source.HoldUnit); break;
+                case "MouseMove":
+                    typeCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动";
+                    if (!string.IsNullOrEmpty(source.MoveMonitor))
+                    {
+                        SelectMonitor(source.MoveMonitor);
+                        pctXText.Text = (source.MoveNormX * 100).ToString("0.#");
+                        pctYText.Text = (source.MoveNormY * 100).ToString("0.#");
+                    }
+                    else // 旧数据：主屏像素 → 主屏归一化
+                    {
+                        var pm = ScreenInfo.Primary();
+                        SelectMonitor(pm.Device);
+                        pctXText.Text = (source.X / (double)pm.Width * 100).ToString("0.#");
+                        pctYText.Text = (source.Y / (double)pm.Height * 100).ToString("0.#");
+                    }
+                    humanizeMoveCheck.IsChecked = source.Humanize;
+                    UpdateCh9329Note();
+                    break;
+                case "MouseWheel": typeCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
+                case "KeyTap": typeCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
+                case "Wait": typeCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
+                case "ActivateWindow": typeCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
+            }
+            loopCountText.Text = source.LoopCount.ToString();
+            conditionEnabled.IsChecked = source.HasRunCondition;
+            conditionInvert.IsChecked = source.RunConditionInvert;
+            SetTimeSelection(conditionStartHour, conditionStartMinute, source.RunConditionStartMinute);
+            SetTimeSelection(conditionEndHour, conditionEndMinute, source.RunConditionEndMinute);
+            if (source.RunConditionType == "ImageMatch")
+            {
+                conditionImg.Png = ImageStore.Bytes(source.RunConditionImage);   // 引用/旧内联 base64 都能解析
+                conditionImg.Monitor = source.RunConditionMonitor;
+                conditionImg.RelX = source.RunConditionRectX; conditionImg.RelY = source.RunConditionRectY;
+                conditionImg.W = source.RunConditionRectW; conditionImg.H = source.RunConditionRectH;
+                conditionImg.Threshold = source.RunConditionThreshold > 0 ? source.RunConditionThreshold : 0.9;
+                conditionType.SelectedIndex = 1;   // 放最后：触发切到图片视图并回显缩略图
+            }
+            else conditionType.SelectedIndex = 0;
+            if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
+            noteText.Text = source.Note;
+        }
+
+        win.Content = grid;
+        UpdatePanels();
+        return win.ShowDialog() == true ? result : null;
+    }
+
+    // ---------- 组合编辑对话框 ----------
+    private MacroStep? ShowEditGroupDialog(MacroStep source)
+    {
+        var win = MakeDialog("编辑组合");
+        var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) }; // 右侧小边距，让滚动条贴近窗口右缘
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var sp = new StackPanel { Margin = new Thickness(0) };
+        var scroller = MakeScrollHost(sp); Grid.SetRow(scroller, 0); grid.Children.Add(scroller);
+
+        var working = new ObservableCollection<MacroStep>(source.Children.Select(c => c.Clone()));
+        var listContent = new StackPanel();
+        var header = FieldLabel("");
+        listContent.Children.Add(header);
+        var childList = new StackPanel { Margin = new Thickness(0, 6, 0, 8) };
+        listContent.Children.Add(new Border
+        {
+            BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 6, 0, 8),
+            Child = new ScrollViewer { MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = childList },
+        });
+        var addBtn = new Button { Content = "＋ 添加动作", Height = 32, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(0, 0, 0, 6) };
+        listContent.Children.Add(addBtn);
+        sp.Children.Add(GroupCard("组合内容", listContent));
+
+        void Rebuild()
+        {
+            header.Text = $"组合包含 {working.Count} 个动作";
+            childList.Children.Clear();
+            if (working.Count == 0)
+            {
+                childList.Children.Add(new TextBlock { Text = "（暂无动作，点击下方“＋ 添加动作”）", Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(0, 2, 0, 2) });
+                return;
+            }
+            for (int i = 0; i < working.Count; i++)
+            {
+                int idx = i; var item = working[idx];
+                var g = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var tb = new TextBlock { Text = $"{idx + 1}. {item}", Foreground = (Brush)FindResource("Muted"), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                Grid.SetColumn(tb, 0); g.Children.Add(tb);
+                var ops = new StackPanel { Orientation = Orientation.Horizontal }; Grid.SetColumn(ops, 1);
+                var edit = new Button { Content = "编辑", Width = 48, Height = 26, Margin = new Thickness(4, 0, 0, 0), FontSize = 12 };
+                edit.Click += (_, _) =>
+                {
+                    var s = item.IsGroup ? ShowEditGroupDialog(item) : ShowAddActionDialog(item);   // 子项可为嵌套组合
+                    if (s != null && SerializeStep(s) != SerializeStep(item)) { working[idx] = s; Rebuild(); }
+                };
+                var up = new Button { Content = "↑", Width = 30, Height = 26, Margin = new Thickness(4, 0, 0, 0), FontSize = 12, IsEnabled = idx > 0 };
+                up.Click += (_, _) => { if (idx > 0) { working.Move(idx, idx - 1); Rebuild(); } };
+                var down = new Button { Content = "↓", Width = 30, Height = 26, Margin = new Thickness(4, 0, 0, 0), FontSize = 12, IsEnabled = idx < working.Count - 1 };
+                down.Click += (_, _) => { if (idx < working.Count - 1) { working.Move(idx, idx + 1); Rebuild(); } };
+                var del = new Button { Content = "删除", Width = 48, Height = 26, Margin = new Thickness(4, 0, 0, 0), FontSize = 12 };
+                del.Click += (_, _) => { working.RemoveAt(idx); Rebuild(); };
+                ops.Children.Add(edit); ops.Children.Add(up); ops.Children.Add(down); ops.Children.Add(del);
+                g.Children.Add(ops);
+                childList.Children.Add(g);
+            }
+        }
+        addBtn.Click += (_, _) => { var s = ShowAddActionDialog(); if (s != null) { working.Add(s); Rebuild(); } };
+        Rebuild();
+
+        var loopCountText = new TextBox { Text = source.LoopCount.ToString(), Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        var conditionEnabled = new CheckBox();
+        var conditionInvert = new CheckBox();
+        var conditionType = new ComboBox();
+        var conditionImg = new ImageCond();
+        var conditionStartHour = new ComboBox();
+        var conditionStartMinute = new ComboBox();
+        var conditionEndHour = new ComboBox();
+        var conditionEndMinute = new ComboBox();
+        // 组合级运行条件与动作级一致：支持"时间段"和"图片出现"（指定图标）两类。
+        var condPanel = BuildRunConditionPanel(conditionEnabled, conditionInvert, conditionStartHour, conditionStartMinute, conditionEndHour, conditionEndMinute, conditionType, conditionImg);
+        condPanel.Margin = new Thickness(0, 0, 0, 14);
+        var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
+        jumpTargetCombo.Items.Add("不跳转");
+        int count = _plan?.Steps.Count ?? 0;
+        for (int n = 1; n <= count; n++) jumpTargetCombo.Items.Add($"第 {n} 个动作");
+        jumpTargetCombo.SelectedIndex = 0;
+        var jumpTimesPanel = new StackPanel { Visibility = Visibility.Collapsed };
+        jumpTimesPanel.Children.Add(FieldLabel("跳转次数（0 为无限）"));
+        var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        jumpTimesPanel.Children.Add(jumpTimesText);
+        jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
+        sp.Children.Add(GroupCard("控制逻辑",
+            FieldLabel("循环次数（0 为无限）"), loopCountText,
+            FieldLabel("运行条件"), condPanel,
+            FieldLabel("执行后跳转到"), jumpTargetCombo, jumpTimesPanel));
+
+        MacroStep? hookSuccess = source.SuccessAction, hookComplete = source.CompleteAction, hookFail = source.FailAction;
+        var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+        sp.Children.Add(GroupCard("事件监听",
+            hookNote,
+            BuildHookRow("成功后", () => hookSuccess, v => hookSuccess = v),
+            BuildHookRow("结束后", () => hookComplete, v => hookComplete = v),
+            BuildHookRow("失败后", () => hookFail, v => hookFail = v)));
+
+        var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        sp.Children.Add(GroupCard("备注（可选）", noteText));
+        conditionEnabled.IsChecked = source.HasRunCondition;
+        conditionInvert.IsChecked = source.RunConditionInvert;
+        SetTimeSelection(conditionStartHour, conditionStartMinute, source.RunConditionStartMinute);
+        SetTimeSelection(conditionEndHour, conditionEndMinute, source.RunConditionEndMinute);
+        if (source.RunConditionType == "ImageMatch")
+        {
+            conditionImg.Png = ImageStore.Bytes(source.RunConditionImage);   // 引用/旧内联 base64 都能解析
+            conditionImg.Monitor = source.RunConditionMonitor;
+            conditionImg.RelX = source.RunConditionRectX; conditionImg.RelY = source.RunConditionRectY;
+            conditionImg.W = source.RunConditionRectW; conditionImg.H = source.RunConditionRectH;
+            conditionImg.Threshold = source.RunConditionThreshold > 0 ? source.RunConditionThreshold : 0.9;
+            conditionType.SelectedIndex = 1;   // 放最后：触发切到图片视图并回显缩略图
+        }
+        else conditionType.SelectedIndex = 0;
+        if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
+
+        var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
+        var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        bar.Children.Add(okBtn); bar.Children.Add(cancelBtn);
+        var footer = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 12, 14, 0), Child = bar };
+        Grid.SetRow(footer, 1); grid.Children.Add(footer);
+
+        MacroStep? result = null;
+        okBtn.Click += (_, _) =>
+        {
+            int jt = jumpTargetCombo.SelectedIndex;
+            result = new MacroStep
+            {
+                Type = "Group", Children = new ObservableCollection<MacroStep>(working),
+                LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1)),
+                JumpTarget = jt, JumpTimes = jt >= 1 ? Math.Max(0, ParseInt(jumpTimesText.Text, 0)) : 0,
+                SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
+                Note = noteText.Text.Trim(),
+            };
+            if (conditionEnabled.IsChecked == true)
+            {
+                if (conditionType.SelectedIndex == 1) // 图片出现（指定图标）
+                {
+                    if (!conditionImg.Has) { ThemedDialog.Show("请先截取目标图片。", "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
+                    result.RunConditionType = "ImageMatch";
+                    result.RunConditionInvert = conditionInvert.IsChecked == true;
+                    result.RunConditionImage = ImageStore.Ref(conditionImg.Png!);   // 立即外置成 file:hash 引用（内存里不再挂 base64 大串）
+                    result.RunConditionMonitor = conditionImg.Monitor;
+                    result.RunConditionRectX = conditionImg.RelX; result.RunConditionRectY = conditionImg.RelY;
+                    result.RunConditionRectW = conditionImg.W; result.RunConditionRectH = conditionImg.H;
+                    result.RunConditionThreshold = conditionImg.Threshold;
+                }
+                else
+                {
+                    var start = SelectedMinute(conditionStartHour, conditionStartMinute);
+                    var end = SelectedMinute(conditionEndHour, conditionEndMinute);
+                    if (!start.HasValue && !end.HasValue) { ThemedDialog.Show("运行条件启用后，请至少选择开始时间或结束时间。", "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
+                    result.RunConditionType = "TimeRange";
+                    result.RunConditionInvert = conditionInvert.IsChecked == true;
+                    result.RunConditionStartMinute = start;
+                    result.RunConditionEndMinute = end;
+                }
+            }
+            win.DialogResult = true;
+        };
+
+        win.Content = grid;
+        return win.ShowDialog() == true ? result : null;
+    }
+
+    // ---------- 方案级运行条件对话框（对整个方案 / 所有动作生效） ----------
+    private bool ShowPlanConditionDialog(MacroPlan plan)
+    {
+        var win = MakeDialog("方案运行条件");
+        var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var sp = new StackPanel();
+        var scroller = MakeScrollHost(sp); Grid.SetRow(scroller, 0); grid.Children.Add(scroller);
+
+        sp.Children.Add(new TextBlock { Text = "运行条件对整个方案生效：不满足时方案空转等待时间窗开启，满足后才执行全部动作（不消耗循环次数）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 6) });
+        var conditionEnabled = new CheckBox();
+        var conditionInvert = new CheckBox();
+        var conditionStartHour = new ComboBox();
+        var conditionStartMinute = new ComboBox();
+        var conditionEndHour = new ComboBox();
+        var conditionEndMinute = new ComboBox();
+        sp.Children.Add(BuildRunConditionPanel(conditionEnabled, conditionInvert, conditionStartHour, conditionStartMinute, conditionEndHour, conditionEndMinute));
+        conditionEnabled.IsChecked = plan.HasRunCondition;
+        conditionInvert.IsChecked = plan.RunConditionInvert;
+        SetTimeSelection(conditionStartHour, conditionStartMinute, plan.RunConditionStartMinute);
+        SetTimeSelection(conditionEndHour, conditionEndMinute, plan.RunConditionEndMinute);
+
+        var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
+        var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        bar.Children.Add(okBtn); bar.Children.Add(cancelBtn);
+        var footer = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 12, 14, 0), Child = bar };
+        Grid.SetRow(footer, 1); grid.Children.Add(footer);
+
+        bool changed = false;
+        okBtn.Click += (_, _) =>
+        {
+            var start = conditionEnabled.IsChecked == true ? SelectedMinute(conditionStartHour, conditionStartMinute) : null;
+            var end = conditionEnabled.IsChecked == true ? SelectedMinute(conditionEndHour, conditionEndMinute) : null;
+            if (conditionEnabled.IsChecked == true && !start.HasValue && !end.HasValue)
+            {
+                ThemedDialog.Show("运行条件启用后，请至少选择开始时间或结束时间。", "设置失败", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+                return;
+            }
+            string type = conditionEnabled.IsChecked == true ? "TimeRange" : "";
+            bool invert = conditionInvert.IsChecked == true;
+            if (type != plan.RunConditionType || invert != plan.RunConditionInvert || start != plan.RunConditionStartMinute || end != plan.RunConditionEndMinute)
+            {
+                plan.RunConditionType = type;
+                plan.RunConditionInvert = invert;
+                plan.RunConditionStartMinute = start;
+                plan.RunConditionEndMinute = end;
+                changed = true;
+            }
+            win.DialogResult = true;
+        };
+
+        win.Content = grid;
+        return win.ShowDialog() == true && changed;
+    }
+
+    // ---------- 按键 / 按钮 / 时间 辅助 ----------
+    private readonly record struct CapturedKey(string Key, byte Modifier, string Display);
+
+    private static CapturedKey ConvertWpfKey(KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.ImeProcessed) key = e.ImeProcessedKey;
+        byte mod = GetModifierFromKey(key);
+        if (mod != 0) return new CapturedKey("", mod, FormatCapturedKey("", mod));
+        mod = GetCurrentModifierState();
+        string k = KeyToHidName(key);
+        // 收敛到 KeyMap：两张键码表都没有的键，捕获阶段就拒绝，避免录进去、运行时才静默失效。
+        if (k.Length > 0 && !KeyMap.Hid.ContainsKey(k) && !KeyMap.Vk.ContainsKey(k))
+            throw new InvalidOperationException($"暂不支持该按键：{key}");
+        return new CapturedKey(k, mod, FormatCapturedKey(k, mod));
+    }
+
+    private static byte GetModifierFromKey(Key key) => key switch
+    {
+        Key.LeftCtrl => 1, Key.LeftShift => 2, Key.LeftAlt => 4, Key.LWin => 8,
+        Key.RightCtrl => 16, Key.RightShift => 32, Key.RightAlt => 64, Key.RWin => 128, _ => 0,
+    };
+
+    private static byte GetCurrentModifierState()
+    {
+        byte b = 0;
+        if (Keyboard.IsKeyDown(Key.LeftCtrl)) b |= 1;
+        if (Keyboard.IsKeyDown(Key.LeftShift)) b |= 2;
+        if (Keyboard.IsKeyDown(Key.LeftAlt)) b |= 4;
+        if (Keyboard.IsKeyDown(Key.LWin)) b |= 8;
+        if (Keyboard.IsKeyDown(Key.RightCtrl)) b |= 0x10;
+        if (Keyboard.IsKeyDown(Key.RightShift)) b |= 0x20;
+        if (Keyboard.IsKeyDown(Key.RightAlt)) b |= 0x40;
+        if (Keyboard.IsKeyDown(Key.RWin)) b |= 0x80;
+        return b;
+    }
+
+    private static string KeyToHidName(Key key)
+    {
+        if (key >= Key.A && key <= Key.Z) return key.ToString().ToUpperInvariant();
+        if (key >= Key.D0 && key <= Key.D9) return ((int)(key - Key.D0)).ToString();
+        if (key >= Key.NumPad0 && key <= Key.NumPad9) return $"NUM{(int)(key - Key.NumPad0)}";
+        if (key >= Key.F1 && key <= Key.F12) return key.ToString().ToUpperInvariant();
+        return key switch
+        {
+            Key.Return => "ENTER", Key.Escape => "ESC", Key.Space => "SPACE", Key.Tab => "TAB",
+            Key.Back => "BACKSPACE", Key.Delete => "DELETE", Key.Insert => "INSERT", Key.Home => "HOME", Key.End => "END",
+            Key.Prior => "PAGEUP", Key.Next => "PAGEDOWN", Key.Left => "LEFT", Key.Right => "RIGHT", Key.Up => "UP", Key.Down => "DOWN",
+            Key.Snapshot => "PRINTSCREEN", Key.Scroll => "SCROLLLOCK", Key.Pause => "PAUSE", Key.Capital => "CAPSLOCK", Key.NumLock => "NUMLOCK",
+            Key.Add => "NUM+", Key.Subtract => "NUM-", Key.Multiply => "NUM*", Key.Divide => "NUM/", Key.Decimal => "NUM.",
+            Key.OemMinus => "-", Key.OemPlus => "=", Key.Oem4 => "[", Key.Oem6 => "]", Key.Oem5 => "\\",
+            Key.Oem1 => ";", Key.Oem7 => "'", Key.Oem3 => "`", Key.OemComma => ",", Key.OemPeriod => ".", Key.Oem2 => "/",
+            _ => throw new InvalidOperationException($"暂不支持该按键：{key}"),
+        };
+    }
+
+    private static string FormatCapturedKey(string key, byte modifier)
+    {
+        var parts = new List<string>();
+        if ((modifier & 0x01) != 0) parts.Add("左Ctrl");
+        if ((modifier & 0x02) != 0) parts.Add("左Shift");
+        if ((modifier & 0x04) != 0) parts.Add("左Alt");
+        if ((modifier & 0x08) != 0) parts.Add("左Win");
+        if ((modifier & 0x10) != 0) parts.Add("右Ctrl");
+        if ((modifier & 0x20) != 0) parts.Add("右Shift");
+        if ((modifier & 0x40) != 0) parts.Add("右Alt");
+        if ((modifier & 0x80) != 0) parts.Add("右Win");
+        if (!string.IsNullOrEmpty(key)) parts.Add(key);
+        return parts.Count == 0 ? "（未捕获）" : string.Join(" + ", parts);
+    }
+
+    private static string ButtonToInternal(string text) => text switch { "左键" => "Left", "右键" => "Right", "中键" => "Middle", _ => text };
+    private static string TranslateButtonToDisplay(string button) => button switch { "Left" => "左键", "Right" => "右键", "Middle" => "中键", _ => "左键" };
+
+    // 时间输入行：数值 + 单位(毫秒/秒/分钟/小时) + "设为默认"。
+    private sealed class TimeInputRow
+    {
+        private static readonly (string Name, double Factor)[] Units = { ("毫秒", 1), ("秒", 1000), ("分钟", 60000), ("小时", 3600000) };
+        private readonly TextBox _value;
+        private readonly ComboBox _unit;
+        private readonly CheckBox _setDefault;
+        public Panel Panel { get; }
+        public bool SetAsDefault => _setDefault.IsChecked == true;
+        public int UnitIndex => Math.Max(0, _unit.SelectedIndex); // 用户当前所选单位下标
+
+        public TimeInputRow(Window _, int initialMs)
+        {
+            _value = new TextBox { Width = 96, Height = 32, VerticalAlignment = VerticalAlignment.Center };
+            _unit = new ComboBox { Width = 84, Height = 32, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            foreach (var u in Units) _unit.Items.Add(u.Name);
+            // “设为默认”改为右缘图钉图标按钮，不再夹在单位旁抢占核心参数的阅读。
+            _setDefault = new CheckBox
+            {
+                Style = (Style)System.Windows.Application.Current.FindResource("PinToggle"),
+                ToolTip = "设为该类动作的默认时长（新建同类动作时自动带出）",
+            };
+            var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            left.Children.Add(_value); left.Children.Add(_unit);
+            var dock = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 6, 0, 14) };
+            DockPanel.SetDock(_setDefault, Dock.Right); dock.Children.Add(_setDefault);
+            dock.Children.Add(left);
+            Panel = dock;
+            SetMs(initialMs);
+        }
+
+        public int GetMs()
+        {
+            double factor = Units[Math.Max(0, _unit.SelectedIndex)].Factor;
+            double v = double.TryParse(_value.Text, out var r) ? r : 0;
+            return (int)Math.Round(Math.Max(0, v) * factor);
+        }
+
+        // 自动进位选单位（用于新建/未记录单位时）
+        public void SetMs(int ms)
+        {
+            int idx = 0;
+            if (ms != 0)
+            {
+                if (ms % 3600000 == 0) idx = 3;
+                else if (ms % 60000 == 0) idx = 2;
+                else if (ms % 1000 == 0) idx = 1;
+            }
+            SetMs(ms, idx);
+        }
+
+        // 按指定单位还原（编辑时用用户当初选的单位）；unitIndex 越界则回退自动进位。
+        public void SetMs(int ms, int unitIndex)
+        {
+            if (unitIndex < 0 || unitIndex >= Units.Length) { SetMs(ms); return; }
+            _unit.SelectedIndex = unitIndex;
+            double val = ms / Units[unitIndex].Factor;
+            _value.Text = val % 1.0 == 0 ? ((long)val).ToString() : val.ToString("0.###");
+        }
+    }
+
+    // 把对话框定位到鼠标光标附近（限制在主窗口范围内）。
+    private static void PositionWindowAtCursor(Window window, Window? owner)
+    {
+        if (owner == null || !GetCursorPos(out var pt)) return;
+        var dpi = VisualTreeHelper.GetDpi(owner);
+        double cx = pt.X / dpi.DpiScaleX, cy = pt.Y / dpi.DpiScaleY;
+        double w = window.ActualWidth, h = window.ActualHeight;
+        double left = cx - w / 2, top = cy - 24;
+        double minL = owner.Left + 8, maxL = owner.Left + owner.ActualWidth - w - 8;
+        double minT = owner.Top + 8, maxT = owner.Top + owner.ActualHeight - h - 8;
+        if (maxL > minL) left = Math.Max(minL, Math.Min(left, maxL));
+        if (maxT > minT) top = Math.Max(minT, Math.Min(top, maxT));
+        window.Left = left; window.Top = top;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X; public int Y; }
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT lpPoint);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr(IntPtr h, int idx);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern IntPtr SetWindowLongPtr(IntPtr h, int idx, IntPtr val);
+}

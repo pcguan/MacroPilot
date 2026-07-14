@@ -1,0 +1,693 @@
+<ui:FluentWindow x:Class="MacroPilot.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    Title="键鼠宏助手" Icon="/app.ico" Width="1180" Height="760" MinWidth="1080" MinHeight="680"
+    Foreground="{DynamicResource Ink}" Background="{DynamicResource Bg}"
+    ExtendsContentIntoTitleBar="True" WindowCornerPreference="Round" WindowBackdropType="None"
+    TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType"
+    UseLayoutRounding="True" WindowStartupLocation="CenterScreen" KeyDown="Window_KeyDown">
+  <Grid Background="{DynamicResource Bg}">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="Auto" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+
+    <ui:TitleBar Grid.Row="0" Grid.ColumnSpan="2" Title="键鼠宏助手" ButtonsForeground="{DynamicResource Ink}">
+      <ui:TitleBar.Header>
+        <Button Name="ThemeToggleButton" HorizontalAlignment="Right" Margin="0,0,8,0" Width="40" Height="32"
+                Style="{StaticResource CaptionButton}" Content="&#xE706;" ToolTip="切换浅色 / 深色主题" Click="ThemeToggle_Click" />
+      </ui:TitleBar.Header>
+    </ui:TitleBar>
+
+    <!-- 左侧导航 -->
+    <StackPanel Grid.Row="1" Grid.Column="0" Width="208" Margin="12,18,4,18">
+      <Button Name="NavOverview" Style="{StaticResource NavItem}" Click="Nav_Click">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Style="{StaticResource NavGlyph}" Text="&#xE946;" />
+          <TextBlock Text="概况" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+      <Button Name="NavConfig" Style="{StaticResource NavItem}" Click="Nav_Click">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Style="{StaticResource NavGlyph}" Text="&#xE713;" />
+          <TextBlock Text="配置" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+      <Button Name="NavPlans" Style="{StaticResource NavItem}" Click="Nav_Click">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Style="{StaticResource NavGlyph}" Text="&#xE8FD;" />
+          <TextBlock Text="方案" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+      <Button Name="NavRun" Style="{StaticResource NavItem}" Click="Nav_Click">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock Style="{StaticResource NavGlyph}" Text="&#xE768;" />
+          <TextBlock Text="运行" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+    </StackPanel>
+
+    <Grid Grid.Row="1" Grid.Column="1" Margin="6,18,18,18">
+
+      <!-- ===== 概况 ===== -->
+      <Border Name="PageOverview" Style="{StaticResource Card}" Padding="28" Visibility="Collapsed">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel MaxWidth="720" HorizontalAlignment="Left">
+            <TextBlock Text="键鼠宏助手" FontSize="26" FontWeight="Bold" />
+            <TextBlock Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"
+                       Text="一个用于编排并自动执行键盘 / 鼠标动作的工具。可将一系列点击、移动、滚轮、按键、等待等动作组成“方案”，按设定的循环次数与间隔重复执行。" />
+            <TextBlock Text="设备状态" FontSize="16" FontWeight="Bold" Margin="0,22,0,8" />
+            <TextBlock Name="OvSerialStatus" TextWrapping="Wrap" Margin="0,2" />
+            <TextBlock Name="OvNativeStatus" TextWrapping="Wrap" Margin="0,2" />
+            <TextBlock Text="主要功能" FontSize="16" FontWeight="Bold" Margin="0,22,0,8" />
+            <TextBlock TextWrapping="Wrap" Margin="0,2" Text="• 双输出方式：CH9329 设备（外接 USB 键鼠硬件，兼容性强、适合游戏），或本机键鼠（Win32 模拟，可选扫描码 / 虚拟键）。" />
+            <TextBlock TextWrapping="Wrap" Margin="0,2" Text="• 多方案管理：新建 / 复制 / 粘贴 / 重命名 / 删除，方案与单个动作均可设置循环次数（0 为无限）。" />
+            <TextBlock TextWrapping="Wrap" Margin="0,2" Text="• 动作编辑：右键菜单与快捷键支持编辑、复制粘贴、上移下移、拖拽排序、备注、序号显示。" />
+            <TextBlock TextWrapping="Wrap" Margin="0,2" Text="• 运行控制：可暂停 / 继续 / 停止，并支持热键 F9 暂停、F10 继续、F11 停止（仅方案运行期间生效，平时不占用按键）；运行时高亮当前动作并输出执行日志。" />
+            <TextBlock TextWrapping="Wrap" Margin="0,2" Text="• 主题：浅色 / 深色 / 跟随系统；方案可导入导出，手动保存并在退出前提醒未保存的修改。" />
+            <TextBlock Text="快速开始" FontSize="16" FontWeight="Bold" Margin="0,22,0,8" />
+            <TextBlock Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,2" Text="1. 在“配置”中选择输出方式与主题。" />
+            <TextBlock Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,2" Text="2. 在“方案”中新建方案并添加动作。" />
+            <TextBlock Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,2" Text="3. 点击“运行当前方案”，自动跳转到“运行”页查看执行进度与日志。" />
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+
+      <!-- ===== 配置（SettingsCard 风格：每项一张卡片，左标题+说明、右控件） ===== -->
+      <Grid Name="PageConfig" Visibility="Collapsed">
+        <ScrollViewer Style="{StaticResource ThinScrollViewer}" Padding="0,0,2,0">
+          <StackPanel MaxWidth="680" HorizontalAlignment="Left">
+            <TextBlock Text="配置" FontSize="20" FontWeight="Bold" Margin="2,0,0,14" />
+
+            <!-- 输出方式 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="输出方式" />
+                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ComboBox Name="BackendCombo" Width="170" SelectionChanged="BackendCombo_SelectionChanged">
+                      <ComboBoxItem Name="SerialBackendItem" Content="CH9329 设备" IsSelected="True" />
+                      <ComboBoxItem Name="NativeBackendItem" Content="本机键鼠" />
+                    </ComboBox>
+                    <Button Name="RedetectButton" Style="{StaticResource IconButton}" Margin="6,0,0,0" Content="&#xE72C;" ToolTip="重新检测输出设备（CH9329 与本机键鼠）" Click="RefreshPorts_Click" />
+                  </StackPanel>
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="键鼠信号从哪里发出：外接 CH9329 硬件，或本机 Win32 模拟" />
+                <TextBlock Name="NoDeviceHint" Foreground="{DynamicResource Danger}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed" />
+                <Border Style="{StaticResource SubSetting}">
+                <Grid HorizontalAlignment="Left">
+                  <StackPanel Name="SerialPanel" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="串口" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" />
+                    <ComboBox Name="PortCombo" Width="120" Margin="0,0,16,0" SelectionChanged="PortCombo_SelectionChanged" />
+                    <TextBlock Text="波特率" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" />
+                    <TextBox Name="BaudText" Width="90" Text="9600" Margin="0,0,8,0" LostFocus="Baud_Changed" />
+                    <TextBlock Name="BridgeLabel" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" />
+                  </StackPanel>
+                  <StackPanel Name="NativePanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Hidden">
+                    <TextBlock Text="模拟类型" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" />
+                    <ComboBox Name="SimTypeCombo" Width="120" SelectionChanged="SimTypeCombo_SelectionChanged">
+                      <ComboBoxItem Content="扫描码" IsSelected="True"
+                                    ToolTipService.InitialShowDelay="120" ToolTipService.ShowDuration="2147483647" ToolTipService.BetweenShowDelay="0">
+                        <ComboBoxItem.ToolTip>
+                          <TextBlock MaxWidth="300" TextWrapping="Wrap"
+                                     Text="模拟物理按键的硬件扫描码，更接近真实键盘，对部分全屏 / DirectInput 游戏更易被识别；个别非标准键位或特殊软件可能不识别。" />
+                        </ComboBoxItem.ToolTip>
+                      </ComboBoxItem>
+                      <ComboBoxItem Content="虚拟键"
+                                    ToolTipService.InitialShowDelay="120" ToolTipService.ShowDuration="2147483647" ToolTipService.BetweenShowDelay="0">
+                        <ComboBoxItem.ToolTip>
+                          <TextBlock MaxWidth="300" TextWrapping="Wrap"
+                                     Text="发送系统虚拟键码，对普通软件兼容性最好，但部分游戏会忽略这类合成输入。" />
+                        </ComboBoxItem.ToolTip>
+                      </ComboBoxItem>
+                    </ComboBox>
+                  </StackPanel>
+                </Grid>
+                </Border>
+              </StackPanel>
+            </Border>
+
+            <!-- 主题 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="主题" />
+                  <ComboBox DockPanel.Dock="Right" Name="ThemeCombo" Width="150" VerticalAlignment="Center" SelectionChanged="ThemeCombo_SelectionChanged">
+                    <ComboBoxItem Content="跟随系统" IsSelected="True" />
+                    <ComboBoxItem Content="浅色" />
+                    <ComboBoxItem Content="深色" />
+                  </ComboBox>
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="浅色 / 深色 / 跟随系统" />
+              </StackPanel>
+            </Border>
+
+            <!-- 执行延迟 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="执行延迟" />
+                  <Border DockPanel.Dock="Right" VerticalAlignment="Center" Style="{StaticResource InputShell}" Width="150">
+                  <DockPanel LastChildFill="True">
+                    <Grid DockPanel.Dock="Right" Width="22" Margin="0,1,1,1">
+                      <Grid.RowDefinitions><RowDefinition /><RowDefinition /></Grid.RowDefinitions>
+                      <RepeatButton Grid.Row="0" Style="{StaticResource StepperButton}" Content="&#x25B2;" Tag="up" Click="ExecDelayStep_Click" ToolTip="+1 秒" />
+                      <RepeatButton Grid.Row="1" Style="{StaticResource StepperButton}" Content="&#x25BC;" Tag="down" Click="ExecDelayStep_Click" ToolTip="-1 秒" />
+                    </Grid>
+                    <TextBlock DockPanel.Dock="Right" Text="秒" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" />
+                    <TextBox Name="ExecDelayText" Style="{StaticResource BareTextBox}" Text="1" LostFocus="ExecDelay_Changed" />
+                  </DockPanel>
+                  </Border>
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="点运行后、真正开始前的缓冲（0–9999 秒，可填小数），用来切到目标程序；期间本窗口下沉不抢焦点。" />
+              </StackPanel>
+            </Border>
+
+            <!-- 拟人化时间抖动 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="拟人化时间抖动" />
+                  <CheckBox Name="JitterCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                            Checked="JitterEnabled_Changed" Unchecked="JitterEnabled_Changed" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="给每个定时值加一个 ± 范围内的随机偏移，让节奏更像手动操作（仅对大于 0 的定时值生效）。" />
+                <Border Name="JitterPanel" Style="{StaticResource SubSetting}">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="抖动区间 ±" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" />
+                    <Border Style="{StaticResource InputShell}" Width="150">
+                      <DockPanel LastChildFill="True">
+                        <Grid DockPanel.Dock="Right" Width="22" Margin="0,1,1,1">
+                          <Grid.RowDefinitions><RowDefinition /><RowDefinition /></Grid.RowDefinitions>
+                          <RepeatButton Grid.Row="0" Style="{StaticResource StepperButton}" Content="&#x25B2;" Tag="up" Click="JitterStep_Click" ToolTip="+1 毫秒" />
+                          <RepeatButton Grid.Row="1" Style="{StaticResource StepperButton}" Content="&#x25BC;" Tag="down" Click="JitterStep_Click" ToolTip="-1 毫秒" />
+                        </Grid>
+                        <TextBlock DockPanel.Dock="Right" Text="毫秒" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" />
+                        <TextBox Name="JitterText" Style="{StaticResource BareTextBox}" Text="5" LostFocus="Jitter_Changed" />
+                      </DockPanel>
+                    </Border>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </Border>
+
+            <!-- 鼠标轨迹录制（拟人化调优） -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="鼠标轨迹录制" />
+                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Name="TraceRecordButton" Content="开始录制" MinWidth="96" Padding="14,6"
+                            Style="{StaticResource PrimaryButton}" Click="TraceRecord_Click" />
+                    <Button Width="34" Height="34" Margin="8,0,0,0" Style="{StaticResource IconButton}"
+                            Content="&#xE838;" ToolTip="打开轨迹文件夹" Click="TraceOpenFolder_Click" />
+                  </StackPanel>
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}"
+                           Text="录制你【真实手动】的鼠标移动轨迹与时间到 CSV（traces 文件夹），用于分析真人手感、调优拟人化算法。程序自己合成的移动不会被记录。录制期间正常用鼠标操作即可，完成后点“停止录制”。" />
+                <TextBlock Name="TraceStatusText" Style="{StaticResource SettingDesc}"
+                           Foreground="{DynamicResource Accent}" Visibility="Collapsed" />
+              </StackPanel>
+            </Border>
+
+            <!-- 权限 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="以管理员身份运行" />
+                  <CheckBox Name="AdminModeCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                            Checked="AdminMode_Changed" Unchecked="AdminMode_Changed" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="向以管理员身份运行的游戏 / 程序发送按键时需要。更改后需重启程序才生效。" />
+              </StackPanel>
+            </Border>
+
+            <!-- 数据文件夹 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="数据文件夹" />
+                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Width="34" Height="34" Style="{StaticResource IconButton}" Content="&#xE8B7;" ToolTip="打开数据文件夹" Click="OpenDataFolder_Click" />
+                    <Button Width="34" Height="34" Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="更改数据保存位置…" Click="ChangeDataDir_Click" />
+                    <Button Name="ResetDataDirButton" Width="34" Height="34" Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="恢复默认位置" Click="ResetDataDir_Click" />
+                  </StackPanel>
+                </DockPanel>
+                <TextBlock Name="DataDirText" Style="{StaticResource SettingDesc}" Foreground="{DynamicResource Muted}" />
+                <TextBlock Style="{StaticResource SettingDesc}"
+                           Text="方案与日志保存在此文件夹（plans.json / logs）。更改位置时可选择把现有数据一并迁移过去。" />
+              </StackPanel>
+            </Border>
+
+            <Border Margin="0,10,0,0" CornerRadius="8" Background="{DynamicResource AccentBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="13,10">
+              <DockPanel LastChildFill="True">
+                <TextBlock DockPanel.Dock="Left" Text="&#xE946;" FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons" FontSize="14"
+                           Foreground="{DynamicResource Accent}" VerticalAlignment="Top" Margin="0,1,10,0" />
+                <TextBlock Foreground="{DynamicResource Subtext}" FontSize="12" TextWrapping="Wrap"
+                           Text="以上设置会自动保存；方案的修改需在“方案”页手动保存。" />
+              </DockPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
+
+      <!-- ===== 方案 ===== -->
+      <Grid Name="PagePlans" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="*" />
+          <RowDefinition Height="12" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="250" />
+            <ColumnDefinition Width="8" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <Border Grid.Column="0" Style="{StaticResource Card}" Padding="14">
+            <DockPanel>
+              <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8" LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="方案" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                  <Button Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="新建方案" Click="NewPlanIcon_Click" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案" Click="RenamePlanIcon_Click" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="删除当前方案" Click="DeletePlanIcon_Click" />
+                </StackPanel>
+              </DockPanel>
+              <ListBox Name="PlansList" SelectionChanged="PlansList_SelectionChanged" KeyDown="PlansList_KeyDown" AllowDrop="True"
+                       PreviewMouseRightButtonDown="PlansList_PreviewMouseRightButtonDown"
+                       PreviewMouseLeftButtonDown="PlansList_PreviewMouseLeftButtonDown" PreviewMouseMove="PlansList_PreviewMouseMove"
+                       DragOver="PlansList_DragOver" Drop="PlansList_Drop">
+                <ListBox.ContextMenu>
+                  <ContextMenu Opened="PlansContextMenu_Opened" />
+                </ListBox.ContextMenu>
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <DockPanel LastChildFill="True">
+                      <!-- 未保存标记：编辑器惯例的小圆点(VS Code 脏文件标记)，比"未保存"胶囊更安静。 -->
+                      <Ellipse Name="DirtyTag" DockPanel.Dock="Right" Width="8" Height="8" Fill="{DynamicResource Accent}" Margin="8,0,2,0" VerticalAlignment="Center" Visibility="Collapsed"
+                               ToolTip="有未保存的修改" />
+                      <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Name}" />
+                    </DockPanel>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Dirty}" Value="True">
+                        <Setter TargetName="DirtyTag" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                    </DataTemplate.Triggers>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </DockPanel>
+          </Border>
+          <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="#00FFFFFF" />
+          <Border Name="StepsPanel" Grid.Column="2" Style="{StaticResource Card}" Padding="14">
+            <DockPanel>
+              <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="动作流程" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock Text="循环次数" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,6,0" />
+                  <TextBox Name="LoopCountText" Text="1" Width="52" Margin="0,0,4,0" GotFocus="PlanField_GotFocus" TextChanged="PlanSetting_Live" />
+                  <TextBlock Text="(0为无限)" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,14,0" />
+                  <TextBlock Text="间隔" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,6,0" />
+                  <TextBox Name="LoopDelayText" Text="0" Width="58" Margin="0,0,4,0" GotFocus="PlanField_GotFocus" TextChanged="PlanSetting_Live" />
+                  <ComboBox Name="LoopDelayUnitCombo" Width="76" Height="30" VerticalAlignment="Center" SelectionChanged="LoopDelayUnit_Changed" />
+                  <Button Name="PlanConditionButton" Style="{StaticResource IconButton}" Margin="12,0,0,0" FontSize="16" Content="&#xE121;" Click="PlanCondition_Click" ToolTip="方案运行条件（对所有动作生效）" />
+                </StackPanel>
+              </Grid>
+              <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10" LastChildFill="False">
+                <Button Name="OpenAddActionButton" DockPanel.Dock="Left" Width="34" Height="34" FontSize="16" Foreground="{DynamicResource Accent}" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="添加动作" Click="OpenAddAction_Click" />
+                <Button Name="BatchButton" DockPanel.Dock="Left" Width="34" Height="34" FontSize="16" Style="{StaticResource IconButton}" Content="&#xE762;" ToolTip="批量操作（多选删除 / 组合）" Click="BatchToggle_Click" />
+                <Button Name="ExpandAllButton" DockPanel.Dock="Left" Width="34" Height="34" FontSize="14" Style="{StaticResource IconButton}" Content="&#xE70D;" ToolTip="全部展开" Click="ExpandAllToggle_Click" />
+                <Button Name="ClearStepsButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE894;" ToolTip="清空全部动作" Click="ClearSteps_Click" />
+                <Button Name="UndoButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE7A7;" ToolTip="撤销上一步 (Ctrl+Z)" IsEnabled="False" Click="Undo_Click" />
+              </DockPanel>
+              <Border Name="BatchBar" DockPanel.Dock="Top" Visibility="Collapsed" Margin="0,0,0,10" Background="{DynamicResource Highlight}" CornerRadius="6" Padding="10,6">
+                <DockPanel LastChildFill="False">
+                  <TextBlock Name="BatchCountText" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Ink}" Text="已选 0 项" />
+                  <Button Name="BatchExitButton" DockPanel.Dock="Right" Style="{StaticResource TextButton}" Margin="8,0,0,0" Content="退出批量" Click="BatchToggle_Click" />
+                  <Button Name="BatchDeleteButton" DockPanel.Dock="Right" Style="{StaticResource TextButton}" Margin="8,0,0,0" Content="删除所选" Click="BatchDelete_Click" />
+                  <Button Name="BatchCombineButton" DockPanel.Dock="Right" Style="{StaticResource TextButton}" Content="组合所选" Click="BatchCombine_Click" />
+                </DockPanel>
+              </Border>
+              <Border DockPanel.Dock="Top" Height="1" Background="{DynamicResource Line}" Margin="0,0,0,8" />
+              <ListBox Name="StepsList" FontSize="14" ScrollViewer.HorizontalScrollBarVisibility="Disabled" AllowDrop="True"
+                       MouseDoubleClick="StepsList_MouseDoubleClick" SelectionChanged="StepsList_SelectionChanged" KeyDown="StepsList_KeyDown"
+                       PreviewMouseRightButtonDown="StepsList_PreviewMouseRightButtonDown"
+                       PreviewMouseLeftButtonDown="StepsList_PreviewMouseLeftButtonDown" PreviewMouseMove="StepsList_PreviewMouseMove"
+                       DragOver="StepsList_DragOver" Drop="StepsList_Drop">
+                <ListBox.Resources>
+                  <!-- 组合子动作模板（递归）：子组合也带展开箭头 + 嵌套子表，支持任意层展开/折叠 -->
+                  <DataTemplate x:Key="childRow">
+                    <StackPanel>
+                      <Border Name="ChildBorder" CornerRadius="4" Padding="6,4" Margin="0,1" Background="#00FFFFFF" MouseLeftButtonDown="Child_MouseDown">
+                        <Border.ContextMenu>
+                          <ContextMenu>
+                            <MenuItem Header="编辑" Click="ChildEdit_Click" />
+                            <MenuItem Header="禁用 / 启用" Click="ChildToggleDisable_Click" />
+                            <Separator />
+                            <MenuItem Header="复制" InputGestureText="Ctrl+C" Click="ChildCopy_Click" />
+                            <MenuItem Header="粘贴" InputGestureText="Ctrl+V" Click="ChildPaste_Click" />
+                            <Separator />
+                            <MenuItem Header="在前面新增动作" Click="ChildAddBefore_Click" />
+                            <MenuItem Header="在后面新增动作" Click="ChildAddAfter_Click" />
+                            <Separator />
+                            <MenuItem Header="移出组合" Click="ChildRemove_Click" />
+                            <MenuItem Header="删除该动作" InputGestureText="Delete" Click="ChildDelete_Click" />
+                          </ContextMenu>
+                        </Border.ContextMenu>
+                        <DockPanel LastChildFill="True">
+                          <TextBlock DockPanel.Dock="Left" Text="•" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                          <TextBlock Name="ChildNote" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding Note}" />
+                          <Border Name="ChildDisabledBadge" DockPanel.Dock="Right" Visibility="Collapsed" VerticalAlignment="Center" Margin="8,0,0,0" Background="#26F04747" BorderBrush="#F04747" BorderThickness="1" CornerRadius="9" Padding="8,1">
+                            <TextBlock Text="已禁用" FontSize="11" FontWeight="SemiBold" Foreground="#F04747" />
+                          </Border>
+                          <StackPanel Orientation="Horizontal">
+                            <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Display}" />
+                            <TextBlock Name="ChildChevron" Visibility="Collapsed" VerticalAlignment="Center" Margin="6,0,0,0" FontSize="11" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Cursor="Hand" Foreground="{DynamicResource Accent}" Text="&#xE76C;" MouseLeftButtonDown="GroupChevron_MouseDown" />
+                          </StackPanel>
+                        </DockPanel>
+                      </Border>
+                      <ItemsControl Name="SubChildHost" Visibility="Collapsed" Margin="24,2,0,2" ItemsSource="{Binding Children}" ItemTemplate="{DynamicResource childRow}" />
+                    </StackPanel>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Disabled}" Value="True">
+                        <Setter TargetName="ChildBorder" Property="Opacity" Value="0.5" />
+                        <Setter TargetName="ChildDisabledBadge" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding Note}" Value="">
+                        <Setter TargetName="ChildNote" Property="Visibility" Value="Collapsed" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsFocused}" Value="True">
+                        <Setter TargetName="ChildBorder" Property="Background" Value="{DynamicResource Selected}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsExecuting}" Value="True">
+                        <Setter TargetName="ChildBorder" Property="Background" Value="{DynamicResource Highlight}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                        <Setter TargetName="ChildChevron" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                        <Setter TargetName="SubChildHost" Property="Visibility" Value="Visible" />
+                        <Setter TargetName="ChildChevron" Property="Text" Value="&#xE70D;" />
+                      </DataTrigger>
+                    </DataTemplate.Triggers>
+                  </DataTemplate>
+                </ListBox.Resources>
+                <ListBox.Template>
+                  <ControlTemplate TargetType="{x:Type ListBox}">
+                    <ScrollViewer Style="{StaticResource ThinScrollViewer}" Focusable="False" Padding="1">
+                      <ItemsPresenter />
+                    </ScrollViewer>
+                  </ControlTemplate>
+                </ListBox.Template>
+                <ListBox.ItemContainerStyle>
+                  <Style BasedOn="{StaticResource {x:Type ListBoxItem}}" TargetType="{x:Type ListBoxItem}">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="Margin" Value="0" />
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="Template">
+                      <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type ListBoxItem}"><ContentPresenter HorizontalAlignment="Stretch" /></ControlTemplate>
+                      </Setter.Value>
+                    </Setter>
+                  </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Border Name="RowBorder" CornerRadius="6" Padding="4" Background="#00FFFFFF">
+                      <StackPanel>
+                        <Border Name="HeaderBorder" CornerRadius="4" Padding="6,4" Background="#00FFFFFF" MouseLeftButtonDown="StepHeader_MouseDown">
+                          <DockPanel LastChildFill="True">
+                            <CheckBox Name="RowCheck" DockPanel.Dock="Left" Visibility="Collapsed" VerticalAlignment="Center" Margin="0,0,10,0" IsChecked="{Binding IsChecked, Mode=TwoWay}" Checked="BatchCheck_Changed" Unchecked="BatchCheck_Changed" />
+                            <TextBlock DockPanel.Dock="Left" MinWidth="32" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource Muted}" Text="{Binding DisplayIndex, StringFormat={}{0}.}" />
+                            <TextBlock Name="NoteText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding Note}" />
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Display}" />
+                              <TextBlock Name="GroupChevron" Visibility="Collapsed" VerticalAlignment="Center" Margin="6,0,0,0" FontSize="11" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Cursor="Hand" Foreground="{DynamicResource Accent}" Text="&#xE76C;" MouseLeftButtonDown="GroupChevron_MouseDown" />
+                              <Border Name="DisabledBadge" Visibility="Collapsed" VerticalAlignment="Center" Margin="10,0,0,0" Background="#26F04747" BorderBrush="#F04747" BorderThickness="1" CornerRadius="9" Padding="8,1">
+                                <TextBlock Text="已禁用" FontSize="11" FontWeight="SemiBold" Foreground="#F04747" />
+                              </Border>
+                            </StackPanel>
+                          </DockPanel>
+                        </Border>
+                        <ItemsControl Name="ChildHost" Visibility="Collapsed" Margin="40,4,0,2" ItemsSource="{Binding Children}" ItemTemplate="{DynamicResource childRow}" />
+                      </StackPanel>
+                    </Border>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Disabled}" Value="True">
+                        <Setter TargetName="RowBorder" Property="Opacity" Value="0.5" />
+                        <Setter TargetName="DisabledBadge" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsBatchMode, RelativeSource={RelativeSource AncestorType={x:Type Window}}}" Value="True">
+                        <Setter TargetName="RowCheck" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                        <Setter TargetName="GroupChevron" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                      <!-- 叶子动作被选中 → 该行 HeaderBorder 深色高亮 -->
+                      <MultiDataTrigger>
+                        <MultiDataTrigger.Conditions>
+                          <Condition Binding="{Binding IsGroup}" Value="False" />
+                          <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" Value="True" />
+                        </MultiDataTrigger.Conditions>
+                        <Setter TargetName="HeaderBorder" Property="Background" Value="{DynamicResource Selected}" />
+                      </MultiDataTrigger>
+                      <!-- 组合被选中 → 整个组合(父+子) RowBorder 淡色高亮 -->
+                      <MultiDataTrigger>
+                        <MultiDataTrigger.Conditions>
+                          <Condition Binding="{Binding IsGroup}" Value="True" />
+                          <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" Value="True" />
+                        </MultiDataTrigger.Conditions>
+                        <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource Hover}" />
+                      </MultiDataTrigger>
+                      <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                        <Setter TargetName="ChildHost" Property="Visibility" Value="Visible" />
+                        <Setter TargetName="GroupChevron" Property="Text" Value="&#xE70D;" />
+                      </DataTrigger>
+                      <!-- 聚焦行(父节点) → HeaderBorder 深色高亮(子节点聚焦时由子模板高亮) -->
+                      <DataTrigger Binding="{Binding IsFocused}" Value="True">
+                        <Setter TargetName="HeaderBorder" Property="Background" Value="{DynamicResource Selected}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding Note}" Value="">
+                        <Setter TargetName="NoteText" Property="Visibility" Value="Collapsed" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsExecuting}" Value="True">
+                        <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource Highlight}" />
+                      </DataTrigger>
+                    </DataTemplate.Triggers>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.ContextMenu>
+                  <ContextMenu Opened="StepsContextMenu_Opened" />
+                </ListBox.ContextMenu>
+              </ListBox>
+            </DockPanel>
+          </Border>
+          <Border Name="NoPlanPanel" Grid.Column="2" Style="{StaticResource Card}" Padding="28" Visibility="Collapsed">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+              <TextBlock Text="还没有方案" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" />
+              <TextBlock Text="请在左侧方案列表右键选择“新建方案”，创建后再添加动作。" Foreground="{DynamicResource Muted}" Margin="0,10,0,0" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" />
+            </StackPanel>
+          </Border>
+        </Grid>
+        <Border Grid.Row="2" Style="{StaticResource Card}" Padding="12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal">
+              <Button Name="RunButton" Width="44" Height="40" FontSize="18" Foreground="{DynamicResource Accent}" Style="{StaticResource IconButton}" Content="&#xE768;" ToolTip="运行当前方案" Click="Run_Click" />
+              <Button Name="SaveButton" Width="44" Height="40" FontSize="16" Style="{StaticResource IconButton}" IsEnabled="False" Content="&#xE74E;" ToolTip="保存当前方案 (Ctrl+S)" Click="Save_Click" />
+              <Button Width="40" Height="40" Style="{StaticResource IconButton}" Content="&#xE898;" ToolTip="导出方案（当前 / 全部）" Click="Export_Click" />
+              <Button Width="40" Height="40" Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="从文件导入方案（可多选、支持批量）" Click="Import_Click" />
+            </StackPanel>
+            <TextBlock Grid.Column="1" Text="保存仅作用于当前方案 · 运行后自动跳转到“运行”页" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+          </Grid>
+        </Border>
+      </Grid>
+
+      <!-- ===== 运行 ===== -->
+      <Grid Name="PageRun" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="12" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="10" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <TextBlock Text="运行" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="1" Text="热键（仅运行期间生效）：F9 暂停 / F10 继续 / F11 停止" Foreground="{DynamicResource Muted}" FontSize="12" Opacity="0.8" VerticalAlignment="Center" HorizontalAlignment="Right" />
+        </Grid>
+        <Grid Grid.Row="2">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2*" />
+            <ColumnDefinition Width="12" />
+            <ColumnDefinition Width="3*" />
+          </Grid.ColumnDefinitions>
+          <Border Grid.Column="0" Style="{StaticResource Card}" Padding="14">
+            <DockPanel>
+              <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                <TextBlock Text="当前动作" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
+                <TextBlock Name="RunPlanNameText" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="10,0,0,0" TextTrimming="CharacterEllipsis" />
+              </DockPanel>
+              <Border DockPanel.Dock="Top" Height="1" Background="{DynamicResource Line}" Margin="0,0,0,8" />
+              <TextBlock DockPanel.Dock="Bottom" Text="已停止时双击动作可跳回方案页编辑" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,8,0,0" />
+              <ListBox Name="RunStepsList" FontSize="14" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                       MouseDoubleClick="RunStepsList_MouseDoubleClick">
+                <ListBox.ItemContainerStyle>
+                  <Style BasedOn="{StaticResource {x:Type ListBoxItem}}" TargetType="{x:Type ListBoxItem}"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /></Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Border Name="RunRowBorder" CornerRadius="6" Padding="8,6" Background="#00FFFFFF">
+                      <DockPanel LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Left" MinWidth="32" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource Muted}" Text="{Binding DisplayIndex, StringFormat={}{0}.}" />
+                        <TextBlock Name="RunNoteText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding Note}" />
+                        <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Display}" />
+                      </DockPanel>
+                    </Border>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Note}" Value="">
+                        <Setter TargetName="RunNoteText" Property="Visibility" Value="Collapsed" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsExecuting}" Value="True">
+                        <Setter TargetName="RunRowBorder" Property="Background" Value="{DynamicResource Highlight}" />
+                      </DataTrigger>
+                    </DataTemplate.Triggers>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </DockPanel>
+          </Border>
+          <GridSplitter Grid.Column="1" Width="12" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="#00FFFFFF" />
+          <Border Grid.Column="2" Style="{StaticResource Card}" Padding="14">
+            <DockPanel>
+              <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10" LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="运行日志" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
+                <Button DockPanel.Dock="Right" Width="34" Height="34" Style="{StaticResource IconButton}" Content="&#xE894;" ToolTip="清空日志（清屏并释放内存；磁盘日志文件保留完整记录）" Click="LogClear_Click" />
+              </DockPanel>
+              <ListBox Name="LogList" FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="13" Background="#00FFFFFF" BorderThickness="0" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" KeyDown="LogList_KeyDown">
+                <ListBox.ContextMenu>
+                  <ContextMenu>
+                    <MenuItem Header="复制  (Ctrl+C)" Click="LogCopy_Click" />
+                    <MenuItem Header="全选  (Ctrl+A)" Click="LogSelectAll_Click" />
+                    <Separator />
+                    <MenuItem Header="打开日志文件夹" Click="LogOpenFolder_Click" />
+                    <MenuItem Header="清空日志" Click="LogClear_Click" />
+                  </ContextMenu>
+                </ListBox.ContextMenu>
+                <ListBox.ItemContainerStyle>
+                  <Style BasedOn="{StaticResource {x:Type ListBoxItem}}" TargetType="{x:Type ListBoxItem}">
+                    <Setter Property="Padding" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                  </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Grid Margin="0,1">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Grid.Column="0" Foreground="{DynamicResource Muted}" Text="{Binding Time}" />
+                      <TextBlock Name="LogBody" Grid.Column="1" TextWrapping="Wrap" Foreground="{DynamicResource Ink}" Text="{Binding Body}" />
+                      <TextBlock Name="LogStatus" Grid.Column="2" Margin="12,0,0,0" FontWeight="SemiBold" Text="{Binding Status}" />
+                    </Grid>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Level}" Value="Success"><Setter TargetName="LogBody" Property="Foreground" Value="{DynamicResource Success}" /></DataTrigger>
+                      <DataTrigger Binding="{Binding Level}" Value="Warning"><Setter TargetName="LogBody" Property="Foreground" Value="{DynamicResource Warning}" /></DataTrigger>
+                      <DataTrigger Binding="{Binding Level}" Value="Error"><Setter TargetName="LogBody" Property="Foreground" Value="{DynamicResource Danger}" /></DataTrigger>
+                      <DataTrigger Binding="{Binding StatusKind}" Value="Success"><Setter TargetName="LogStatus" Property="Foreground" Value="{DynamicResource Success}" /></DataTrigger>
+                      <DataTrigger Binding="{Binding StatusKind}" Value="Fail"><Setter TargetName="LogStatus" Property="Foreground" Value="{DynamicResource Danger}" /></DataTrigger>
+                      <DataTrigger Binding="{Binding StatusKind}" Value="Stopped"><Setter TargetName="LogStatus" Property="Foreground" Value="{DynamicResource Warning}" /></DataTrigger>
+                      <DataTrigger Binding="{Binding StatusKind}" Value="Running"><Setter TargetName="LogStatus" Property="Foreground" Value="{DynamicResource Accent}" /></DataTrigger>
+                    </DataTemplate.Triggers>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </DockPanel>
+          </Border>
+        </Grid>
+        <Border Grid.Row="4" Style="{StaticResource Card}" Padding="12,8">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid Grid.Row="0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <Ellipse Name="RunStatusDot" Grid.Column="0" Width="10" Height="10" Fill="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,10,0">
+                <Ellipse.Effect>
+                  <DropShadowEffect x:Name="RunStatusGlow" BlurRadius="0" ShadowDepth="0" Opacity="0.9" Color="Transparent" />
+                </Ellipse.Effect>
+              </Ellipse>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Name="RunStatusText" Text="未在运行" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBlock Name="RunPlanLoopText" VerticalAlignment="Center" Margin="12,0,0,0" FontWeight="SemiBold" Foreground="{DynamicResource Accent}" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Name="BackToPlansButton" Width="40" Height="34" Margin="0,0,10,0" Style="{StaticResource GhostButton}" ToolTip="返回方案（编辑当前方案）" Click="BackToPlans_Click">
+                  <TextBlock Style="{StaticResource BtnText}" FontSize="15" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE72B;" />
+                </Button>
+                <Button Name="PauseButton" Width="40" Height="34" Style="{StaticResource GhostButton}" IsEnabled="False" ToolTip="暂停 (F9)" Click="Pause_Click">
+                  <TextBlock Style="{StaticResource BtnText}" FontSize="15" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE769;" />
+                </Button>
+                <Button Name="ResumeButton" Width="40" Height="34" Style="{StaticResource GhostButton}" IsEnabled="False" ToolTip="继续 (F10)" Click="Resume_Click">
+                  <TextBlock Style="{StaticResource BtnText}" FontSize="15" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE768;" />
+                </Button>
+                <Button Name="StopButton" Width="40" Height="34" Style="{StaticResource DangerButton}" IsEnabled="False" ToolTip="停止 (F11)" Click="Stop_Click">
+                  <TextBlock Style="{StaticResource BtnText}" FontSize="15" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE71A;" />
+                </Button>
+              </StackPanel>
+            </Grid>
+            <Grid Name="ProgressStrip" Grid.Row="1" Visibility="Collapsed" Margin="20,8,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Name="ProgressActionText" Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource Muted}" />
+              <ProgressBar Name="ProgressBar" Grid.Column="1" Width="160" Height="6" Minimum="0" Maximum="100" Margin="10,0,8,0" VerticalAlignment="Center" Foreground="{DynamicResource Accent}" Background="{DynamicResource Line}" BorderThickness="0" />
+              <TextBlock Name="ProgressPercentText" Grid.Column="2" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource Accent}" />
+            </Grid>
+          </Grid>
+        </Border>
+      </Grid>
+
+    </Grid>
+
+    <!-- 瞬时反馈 Toast（底部居中，1.9s 自动淡出）：承载"已保存 / 已复制"等操作反馈，不再混进运行日志。 -->
+    <Border Name="Toast" Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Grid.ColumnSpan="2"
+            VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,30"
+            Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
+            CornerRadius="10" Padding="16,10" Opacity="0" Visibility="Collapsed" IsHitTestVisible="False">
+      <Border.Effect>
+        <DropShadowEffect BlurRadius="22" ShadowDepth="3" Direction="270" Opacity="0.22" Color="#000000" />
+      </Border.Effect>
+      <StackPanel Orientation="Horizontal">
+        <TextBlock Name="ToastIcon" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" Text="&#xE73E;"
+                   Foreground="{DynamicResource Success}" VerticalAlignment="Center" Margin="0,0,10,0" />
+        <TextBlock Name="ToastText" Foreground="{DynamicResource Ink}" VerticalAlignment="Center" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</ui:FluentWindow>
