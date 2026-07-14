@@ -1685,7 +1685,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 UpdateStatusText.Text = p < 0 ? "正在下载更新…" : $"正在下载更新… {p * 100:0}%");
             var file = await Services.UpdateService.DownloadAsync(info, prog);
             UpdateStatusText.Text = "下载完成，正在静默更新并自动重启…";
-            Services.UpdateService.LaunchInstallerAndExit(file);   // 静默备份→覆盖安装→回滚→重启，无需操作
+            Services.UpdateService.ApplyAndExit(file);   // zip→就地解压覆盖(备份/回滚/保留unins)；exe→静默安装器兜底
         }
         catch (Exception ex)
         {
