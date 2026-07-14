@@ -1034,6 +1034,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private readonly record struct LogMsg(LogOp Op, string Time, string A, string B, string C); // Row:A=level,B=msg；Begin:B=body；End:A=status,B=kind
     private readonly System.Collections.Concurrent.ConcurrentQueue<LogMsg> _logQueue = new();
     private readonly System.Collections.Concurrent.ConcurrentQueue<(MacroStep step, bool on)> _stepQueue = new();
+    private readonly bool _scrollDiag = true;   // 临时：运行页自动滚动诊断日志，定位后置 false/删除
     private volatile bool _progActive;
     private volatile int _progPct;
     private volatile string _progText = "";
@@ -1113,12 +1114,30 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             while (_logs.Count > 2000) _logs.RemoveAt(0);
             if (atBottom && LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
         }
-        // 当前动作高亮 + 自动滚动。RunStepsList 已在 XAML 关掉虚拟化(容器都实体化)→ 这里【同步】ScrollIntoView 即稳定滚动。
-        // 别再派发到 Background 优先级：flush 定时器本身就是 Background，运行期渲染会把同优先级的派发饿死、导致根本不滚。
-        // 只滚顶层行（组合子动作不在这个扁平列表里；组合本身开始时会以 (group,true) 滚到组合行）。
+        // 当前动作高亮 + 自动滚动（含临时诊断日志：定位为何不滚 / 组合失高亮）。
         MacroStep? scrollTo = null;
-        while (_stepQueue.TryDequeue(out var s)) { s.step.IsExecuting = s.on; if (s.on) scrollTo = s.step; }
-        if (scrollTo != null && RunStepsList.Items.Contains(scrollTo)) RunStepsList.ScrollIntoView(scrollTo);
+        while (_stepQueue.TryDequeue(out var s))
+        {
+            s.step.IsExecuting = s.on;
+            if (s.on) scrollTo = s.step;
+            if (_scrollDiag && s.step.IsGroup)
+                AddLog("Info", $"[诊断·组合] {(s.on ? "高亮开" : "高亮关")} 第{s.step.DisplayIndex}项 inList={RunStepsList.Items.Contains(s.step)}");
+        }
+        if (scrollTo != null)
+        {
+            bool inList = RunStepsList.Items.Contains(scrollTo);
+            if (inList)
+            {
+                RunStepsList.ScrollIntoView(scrollTo);
+                (RunStepsList.ItemContainerGenerator.ContainerFromItem(scrollTo) as FrameworkElement)?.BringIntoView();
+            }
+            if (_scrollDiag)
+            {
+                var sv = FindDescendantScrollViewer(RunStepsList);
+                AddLog("Info", $"[诊断·滚动] 目标第{scrollTo.DisplayIndex}项 inList={inList} " +
+                    (sv != null ? $"偏移={sv.VerticalOffset:0} 视口={sv.ViewportHeight:0} 内容={sv.ExtentHeight:0} 可滚={sv.ExtentHeight > sv.ViewportHeight + 1}" : "未找到ScrollViewer"));
+            }
+        }
         // 进度 / 状态栏
         if (RunPlanLoopText.Text != _planLoopText) RunPlanLoopText.Text = _planLoopText;   // 方案级循环（方案名后，与动作级进度分开）
         if (_progActive)
