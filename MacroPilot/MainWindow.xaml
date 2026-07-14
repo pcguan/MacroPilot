@@ -555,6 +555,7 @@
               <Border DockPanel.Dock="Top" Height="1" Background="{DynamicResource Line}" Margin="0,0,0,8" />
               <TextBlock DockPanel.Dock="Bottom" Text="已停止时双击动作可跳回方案页编辑" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,8,0,0" />
               <ListBox Name="RunStepsList" FontSize="14" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                       VirtualizingPanel.IsVirtualizing="False"
                        MouseDoubleClick="RunStepsList_MouseDoubleClick">
                 <ListBox.ItemContainerStyle>
                   <Style BasedOn="{StaticResource {x:Type ListBoxItem}}" TargetType="{x:Type ListBoxItem}"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /></Style>

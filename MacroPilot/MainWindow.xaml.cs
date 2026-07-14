@@ -1113,17 +1113,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             while (_logs.Count > 2000) _logs.RemoveAt(0);
             if (atBottom && LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
         }
-        // 当前动作高亮 + 自动滚动（滚动派发到 Background 优先级，等布局就绪再滚——虚拟化列表在 flush 里同步 ScrollIntoView 常滚不动；只滚顶层行）
+        // 当前动作高亮 + 自动滚动。RunStepsList 已在 XAML 关掉虚拟化(容器都实体化)→ 这里【同步】ScrollIntoView 即稳定滚动。
+        // 别再派发到 Background 优先级：flush 定时器本身就是 Background，运行期渲染会把同优先级的派发饿死、导致根本不滚。
+        // 只滚顶层行（组合子动作不在这个扁平列表里；组合本身开始时会以 (group,true) 滚到组合行）。
         MacroStep? scrollTo = null;
         while (_stepQueue.TryDequeue(out var s)) { s.step.IsExecuting = s.on; if (s.on) scrollTo = s.step; }
-        if (scrollTo != null)
-        {
-            var target = scrollTo;
-            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
-            {
-                if (RunStepsList.Items.Contains(target)) RunStepsList.ScrollIntoView(target);
-            }));
-        }
+        if (scrollTo != null && RunStepsList.Items.Contains(scrollTo)) RunStepsList.ScrollIntoView(scrollTo);
         // 进度 / 状态栏
         if (RunPlanLoopText.Text != _planLoopText) RunPlanLoopText.Text = _planLoopText;   // 方案级循环（方案名后，与动作级进度分开）
         if (_progActive)
