@@ -1113,8 +1113,17 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             while (_logs.Count > 2000) _logs.RemoveAt(0);
             if (atBottom && LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
         }
-        // 当前动作高亮 + 自动滚动
-        while (_stepQueue.TryDequeue(out var s)) { s.step.IsExecuting = s.on; if (s.on) RunStepsList.ScrollIntoView(s.step); }
+        // 当前动作高亮 + 自动滚动（滚动派发到 Background 优先级，等布局就绪再滚——虚拟化列表在 flush 里同步 ScrollIntoView 常滚不动；只滚顶层行）
+        MacroStep? scrollTo = null;
+        while (_stepQueue.TryDequeue(out var s)) { s.step.IsExecuting = s.on; if (s.on) scrollTo = s.step; }
+        if (scrollTo != null)
+        {
+            var target = scrollTo;
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
+            {
+                if (RunStepsList.Items.Contains(target)) RunStepsList.ScrollIntoView(target);
+            }));
+        }
         // 进度 / 状态栏
         if (RunPlanLoopText.Text != _planLoopText) RunPlanLoopText.Text = _planLoopText;   // 方案级循环（方案名后，与动作级进度分开）
         if (_progActive)

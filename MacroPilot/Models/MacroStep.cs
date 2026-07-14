@@ -117,6 +117,7 @@ public sealed class MacroStep : INotifyPropertyChanged
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, Disabled = Disabled,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
+            DisplayIndex = DisplayIndex,   // 运行页跑的是克隆副本，带上序号否则运行列表全显 0.（编辑页会 RefreshIndices 重算，不受影响）
             RunConditionType = RunConditionType,
             RunConditionInvert = RunConditionInvert,
             RunConditionStartMinute = RunConditionStartMinute,

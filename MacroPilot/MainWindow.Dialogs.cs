@@ -941,7 +941,7 @@ public partial class MainWindow
         {
             if (selProc == Desk) { selText.Text = string.IsNullOrEmpty(selTitle) ? "桌面（所有应用失活）" : $"桌面 · {ScreenInfo.ByDevice(selTitle).Label}"; return; }
             selText.Text = (selPid > 0 || selProc.Length > 0 || selTitle.Length > 0)
-                ? $"[{selPid,-6}] {TitleOr(selTitle)}  —  {selProc}.exe" : "点此选择窗口…";
+                ? $"[{selPid,-6}] {selProc}.exe  —  {TitleOr(selTitle)}" : "点此选择窗口…";
         }
         bool loadingList = false;
         void RefreshWindows()
@@ -952,7 +952,7 @@ public partial class MainWindow
             foreach (var m in ScreenInfo.All())
                 winItems.Add(new WinPick { Info = new Services.WindowActivator.WinInfo(IntPtr.Zero, m.Device, Desk, -1), Display = "🖥  桌面 · " + m.Label });
             foreach (var w in Services.WindowActivator.ListTopWindows())
-                winItems.Add(new WinPick { Info = w, Display = $"[{w.Pid,-6}] {TitleOr(w.Title)}  —  {w.Process}.exe" });
+                winItems.Add(new WinPick { Info = w, Display = $"[{w.Pid,-6}] {w.Process}.exe  —  {TitleOr(w.Title)}" });
             winView.Filter = null;
             listBox.SelectedItem = null;
             loadingList = false;
