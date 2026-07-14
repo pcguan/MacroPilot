@@ -975,6 +975,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _backend = backend;
 
         RunStepsList.ItemsSource = plan.Steps;
+        _runTopAncestor.Clear();
+        foreach (var top in plan.Steps) MapRunTree(top, top);   // 建"任意运行克隆→顶层行"映射，供自动滚动
         RunPlanNameText.Text = displayName;
         _planLoopText = ""; RunPlanLoopText.Text = "";   // 清上一轮的方案循环显示
         SetNav(NavRun, PageRun);
@@ -1034,7 +1036,17 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private readonly record struct LogMsg(LogOp Op, string Time, string A, string B, string C); // Row:A=level,B=msg；Begin:B=body；End:A=status,B=kind
     private readonly System.Collections.Concurrent.ConcurrentQueue<LogMsg> _logQueue = new();
     private readonly System.Collections.Concurrent.ConcurrentQueue<(MacroStep step, bool on)> _stepQueue = new();
-    private readonly bool _scrollDiag = true;   // 临时：运行页自动滚动诊断日志，定位后置 false/删除
+    // 运行页扁平列表只有顶层行；把每个运行克隆（含嵌套子动作、监听动作）映射到它的【顶层祖先行】，供自动滚动定位。
+    // （组合子动作不在列表里、且 DisplayIndex=0 → 执行子动作时滚到所属组合行，否则整段组合期间列表不滚、当前行漂出视口。）
+    private readonly Dictionary<MacroStep, MacroStep> _runTopAncestor = new();
+    private void MapRunTree(MacroStep node, MacroStep top)
+    {
+        _runTopAncestor[node] = top;
+        foreach (var ch in node.Children) MapRunTree(ch, top);
+        if (node.SuccessAction != null) MapRunTree(node.SuccessAction, top);
+        if (node.CompleteAction != null) MapRunTree(node.CompleteAction, top);
+        if (node.FailAction != null) MapRunTree(node.FailAction, top);
+    }
     private volatile bool _progActive;
     private volatile int _progPct;
     private volatile string _progText = "";
@@ -1114,28 +1126,17 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             while (_logs.Count > 2000) _logs.RemoveAt(0);
             if (atBottom && LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
         }
-        // 当前动作高亮 + 自动滚动（含临时诊断日志：定位为何不滚 / 组合失高亮）。
+        // 当前动作高亮 + 自动滚动：滚动目标映射到顶层祖先行（组合子动作/监听动作不在扁平列表里），
+        // 这样执行组合内部时也会滚到并保持该组合行可见（诊断日志证实：不映射时子动作 inList=False → 整段不滚）。
         MacroStep? scrollTo = null;
-        while (_stepQueue.TryDequeue(out var s))
-        {
-            s.step.IsExecuting = s.on;
-            if (s.on) scrollTo = s.step;
-            if (_scrollDiag && s.step.IsGroup)
-                AddLog("Info", $"[诊断·组合] {(s.on ? "高亮开" : "高亮关")} 第{s.step.DisplayIndex}项 inList={RunStepsList.Items.Contains(s.step)}");
-        }
+        while (_stepQueue.TryDequeue(out var s)) { s.step.IsExecuting = s.on; if (s.on) scrollTo = s.step; }
         if (scrollTo != null)
         {
-            bool inList = RunStepsList.Items.Contains(scrollTo);
-            if (inList)
+            var top = _runTopAncestor.TryGetValue(scrollTo, out var t) ? t : scrollTo;
+            if (RunStepsList.Items.Contains(top))
             {
-                RunStepsList.ScrollIntoView(scrollTo);
-                (RunStepsList.ItemContainerGenerator.ContainerFromItem(scrollTo) as FrameworkElement)?.BringIntoView();
-            }
-            if (_scrollDiag)
-            {
-                var sv = FindDescendantScrollViewer(RunStepsList);
-                AddLog("Info", $"[诊断·滚动] 目标第{scrollTo.DisplayIndex}项 inList={inList} " +
-                    (sv != null ? $"偏移={sv.VerticalOffset:0} 视口={sv.ViewportHeight:0} 内容={sv.ExtentHeight:0} 可滚={sv.ExtentHeight > sv.ViewportHeight + 1}" : "未找到ScrollViewer"));
+                RunStepsList.ScrollIntoView(top);
+                (RunStepsList.ItemContainerGenerator.ContainerFromItem(top) as FrameworkElement)?.BringIntoView();
             }
         }
         // 进度 / 状态栏
