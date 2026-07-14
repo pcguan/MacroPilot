@@ -246,6 +246,85 @@ class InstallerService {
   }
 }
 
+/// 静默在线更新编排。
+///
+/// 本体在"检查更新 → 下载安装器 exe"后，设环境变量 [AppMeta.envUpdate]=1 +
+/// [AppMeta.envUpdateTarget]=安装目录，启动本 SFX 并自行退出。SFX 解压后内层安装器在
+/// 【显示任何窗口之前】(见 main.dart) 走这里——无 UI、无用户操作地完成：
+///   等本体退出 → 备份旧目录(同卷改名) → 全新安装(复用 [InstallerService.install]) →
+///   失败则回滚备份 → 重启本体。SFX 会在内层 exe 退出后自动清掉自己的 %TEMP% 解压目录。
+class UpdaterService {
+  static Future<void> performSilentUpdate(String installDir,
+      {bool relaunch = true}) async {
+    InstallLog.write('update: 开始 dir=$installDir');
+
+    // 1) 等本体退出（触发更新后本体会自行 Shutdown）。最多 ~15s；仍占用则尝试结束。
+    for (var i = 0;
+        i < 30 && await InstallerService.isAppRunning(installDir);
+        i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    if (await InstallerService.isAppRunning(installDir)) {
+      await InstallerService.killAppProcesses(installDir);
+    }
+    if (await InstallerService.isAppRunning(installDir)) {
+      InstallLog.write('update: 本体仍占用，放弃更新（保留旧版）');
+      if (relaunch) await InstallerService.launchApp(installDir);
+      return;
+    }
+
+    // 2) 备份旧目录（同卷改名，快且可回滚）。
+    final backupDir = '$installDir.bak_${DateTime.now().millisecondsSinceEpoch}';
+    var backedUp = false;
+    if (Directory(installDir).existsSync()) {
+      try {
+        Directory(installDir).renameSync(backupDir);
+        backedUp = true;
+        InstallLog.write('update: 已备份旧目录 → $backupDir');
+      } catch (e) {
+        InstallLog.write('update: 备份失败 $e，放弃更新（保留旧版）');
+        if (relaunch) await InstallerService.launchApp(installDir);
+        return;
+      }
+    }
+
+    // 3) 全新安装到原位置（复用 install：解压 + 卸载器 + 快捷方式 + 注册表）。失败即回滚。
+    try {
+      await InstallerService().install(
+        installDir: installDir,
+        desktopShortcut: File(AppMeta.desktopLnk).existsSync(), // 沿用是否有桌面快捷方式
+        fullReplace: false, // 目录已改走、原位为空，无需再清
+        onProgress: (_, __) {},
+      );
+      InstallLog.write('update: 安装完成');
+      if (backedUp) {
+        try {
+          Directory(backupDir).deleteSync(recursive: true); // 成功→清备份
+        } catch (_) {}
+      }
+    } catch (e, s) {
+      InstallLog.write('update: 安装失败 $e\n$s → 回滚');
+      try {
+        UninstallerService.deleteProgramFiles(installDir); // 删半成品
+      } catch (_) {}
+      if (backedUp && Directory(backupDir).existsSync()) {
+        try {
+          Directory(backupDir).renameSync(installDir); // 恢复旧版
+          InstallLog.write('update: 已回滚到旧版');
+        } catch (e2) {
+          InstallLog.write('update: 回滚失败 $e2（备份仍在 $backupDir）');
+        }
+      }
+    }
+
+    // 4) 重启本体（新版；若回滚则是旧版）。
+    if (relaunch && File(p.join(installDir, AppMeta.appExe)).existsSync()) {
+      await InstallerService.launchApp(installDir);
+    }
+    InstallLog.write('update: 结束');
+  }
+}
+
 /// 卸载编排。
 ///
 /// 正常路径：卸载器是 unins\ 里那份原始 SFX。注册表 UninstallString 经 cmd 设好

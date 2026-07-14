@@ -5,7 +5,7 @@ import 'package:path/path.dart' as p;
 class AppMeta {
   static const String appName = 'MacroPilot'; // 内部标识 / 安装文件夹名
   static const String appNameCn = '键鼠宏助手'; // 显示名
-  static const String appVersion = '0.0.5';
+  static const String appVersion = '0.0.6';
   static const String publisher = 'MacroPilot';
   static const String appExe = 'MacroPilot.exe'; // 主程序
   static const String uninstallerExe =
@@ -16,6 +16,10 @@ class AppMeta {
   static const String envUninstallTarget = 'MACROPILOT_UNINSTALL_TARGET';
   static const String envQuietUninstall = 'MACROPILOT_UNINSTALL_QUIET';
   static const String envDeleteUserData = 'MACROPILOT_DELETE_USER_DATA';
+
+  // 静默在线更新触发用（本体设好后启动 SFX，经 SFX 传给内层安装器）。
+  static const String envUpdate = 'MACROPILOT_UPDATE';
+  static const String envUpdateTarget = 'MACROPILOT_UPDATE_TARGET';
 
   // 注册表卸载项（per-user，无需管理员）
   static const String uninstallKey =

@@ -109,10 +109,17 @@ public static class UpdateService
         return file;
     }
 
-    /// <summary>运行下载好的安装器并退出本程序：安装器会结束在运行的实例、覆盖安装（per-user，无 UAC）。</summary>
+    /// <summary>
+    /// 触发【静默在线更新】并退出本程序：给安装器设环境变量进入 update 模式（无 UI、无用户操作，内部做
+    /// 备份→覆盖安装→失败回滚→重启本体），随即 Shutdown 让程序文件解锁供安装器覆盖。
+    /// </summary>
     public static void LaunchInstallerAndExit(string installerPath)
     {
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(installerPath) { UseShellExecute = true });
+        var installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');   // 本体所在目录＝安装目录
+        var psi = new System.Diagnostics.ProcessStartInfo(installerPath) { UseShellExecute = false };
+        psi.EnvironmentVariables["MACROPILOT_UPDATE"] = "1";
+        psi.EnvironmentVariables["MACROPILOT_UPDATE_TARGET"] = installDir;
+        System.Diagnostics.Process.Start(psi);
         System.Windows.Application.Current?.Shutdown();
     }
 

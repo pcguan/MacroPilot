@@ -62,6 +62,15 @@ Future<void> _run(List<String> args) async {
     exit(0);
   }
 
+  // 静默在线更新模式：本体经环境变量触发。无 UI（在创建窗口前就地完成并退出）。
+  if (args.contains('--update') || env[AppMeta.envUpdate] == '1') {
+    final updateTarget = _argValue(args, '--target') ??
+        env[AppMeta.envUpdateTarget] ??
+        AppMeta.defaultInstallDir;
+    await UpdaterService.performSilentUpdate(updateTarget);
+    exit(0);
+  }
+
   await acrylic.Window.initialize();
   await windowManager.ensureInitialized();
 
