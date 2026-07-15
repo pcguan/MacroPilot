@@ -11,6 +11,7 @@
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />   <!-- 全局状态栏：新版本提醒（无更新时折叠、不占位） -->
     </Grid.RowDefinitions>
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="Auto" />
@@ -682,6 +683,22 @@
       </Grid>
 
     </Grid>
+
+    <!-- 全局状态栏：发现新版本时才出现的提醒条（非模态，不打断操作）。右侧两个图标：立即更新 / 关闭提醒。 -->
+    <Border Name="UpdateBar" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Visibility="Collapsed"
+            Background="{DynamicResource AccentBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0"
+            Padding="16,7">
+      <DockPanel LastChildFill="True">
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+          <Button Width="32" Height="30" Style="{StaticResource IconButton}" Content="&#xE896;"
+                  ToolTip="立即更新" Click="UpdateBarGo_Click" />
+          <Button Width="32" Height="30" Style="{StaticResource IconButton}" Content="&#xE711;"
+                  ToolTip="关闭提醒（本次不再提示该版本）" Click="UpdateBarDismiss_Click" />
+        </StackPanel>
+        <TextBlock Name="UpdateBarText" VerticalAlignment="Center" FontWeight="SemiBold"
+                   Foreground="{DynamicResource Accent}" TextTrimming="CharacterEllipsis" />
+      </DockPanel>
+    </Border>
 
     <!-- 瞬时反馈 Toast（底部居中，1.9s 自动淡出）：承载"已保存 / 已复制"等操作反馈，不再混进运行日志。 -->
     <Border Name="Toast" Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Grid.ColumnSpan="2"

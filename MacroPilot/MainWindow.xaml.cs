@@ -1642,11 +1642,25 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         catch { }
     }
 
-    // ================= 在线更新（查 GitHub 公开 release → 提示 → 下载安装器自更新） =================
+    // ================= 在线更新（启动后每 30s 自动查 → 状态栏提醒 → 可关闭 / 直接更新） =================
     private bool _updateBusy;
+    private Services.UpdateInfo? _pendingUpdate;   // 当前查到的新版本
+    private string? _dismissedTag;                 // 用户关掉提醒的版本：轮询不再提示它（更新的版本或手动检查仍提示）
+    private System.Windows.Threading.DispatcherTimer? _updateTimer;
+
     private async System.Threading.Tasks.Task StartupUpdateCheck()
     {
-        try { await System.Threading.Tasks.Task.Delay(1500); await CheckForUpdate(silent: true); } catch { }
+        try
+        {
+            await System.Threading.Tasks.Task.Delay(1500);
+            await CheckForUpdate(silent: true);
+            // 启动后每 30s 自动查一次。靠 ETag 条件请求拿 304（GitHub 不计入未鉴权的 60 次/小时配额），
+            // 否则 30s 一次 =120/小时必被限流。
+            _updateTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            _updateTimer.Tick += async (_, _) => await CheckForUpdate(silent: true);
+            _updateTimer.Start();
+        }
+        catch { }
     }
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdate(silent: false);
 
@@ -1657,22 +1671,38 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             if (!silent) { CheckUpdateButton.IsEnabled = false; UpdateStatusText.Text = "正在检查…"; }
             var info = await Services.UpdateService.CheckLatestAsync();
-            if (info == null) { UpdateStatusText.Text = silent ? "" : "无法获取更新信息（请检查网络）"; return; }
+            if (info == null) { if (!silent) UpdateStatusText.Text = "无法获取更新信息（请检查网络）"; return; }
             if (!Services.UpdateService.IsNewer(info))
             {
+                _pendingUpdate = null;
+                UpdateBar.Visibility = Visibility.Collapsed;
                 UpdateStatusText.Text = silent ? "" : $"已是最新版本（{Services.UpdateService.CurrentVersionText}）";
                 return;
             }
+            _pendingUpdate = info;
             UpdateStatusText.Text = $"发现新版本 {info.Tag}";
-            var notes = string.IsNullOrWhiteSpace(info.Notes) ? ""
-                : "\n\n更新内容：\n" + (info.Notes!.Length > 500 ? info.Notes![..500] + "…" : info.Notes);
-            var r = Services.ThemedDialog.Show(
-                $"发现新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}）。{notes}\n\n是否现在下载并更新？",
-                "发现新版本", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Information);
-            if (r == System.Windows.MessageBoxResult.Yes) await DownloadAndRun(info);
+            if (silent && _dismissedTag == info.Tag) return;   // 这个版本用户关过提醒 → 轮询不再打扰
+            UpdateBarText.Text = $"发现新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}）";
+            UpdateBarText.ToolTip = string.IsNullOrWhiteSpace(info.Notes) ? null
+                : (info.Notes!.Length > 500 ? info.Notes![..500] + "…" : info.Notes);
+            UpdateBar.Visibility = Visibility.Visible;
         }
-        catch (Exception ex) { UpdateStatusText.Text = "检查更新失败：" + ex.Message; }
+        catch (Exception ex) { if (!silent) UpdateStatusText.Text = "检查更新失败：" + ex.Message; }
         finally { if (!silent && !_updateBusy) CheckUpdateButton.IsEnabled = true; }
+    }
+
+    // 状态栏提醒条：立即更新 / 关闭提醒
+    private async void UpdateBarGo_Click(object sender, RoutedEventArgs e)
+    {
+        var info = _pendingUpdate;
+        if (info == null) return;
+        UpdateBar.Visibility = Visibility.Collapsed;
+        await DownloadAndRun(info);
+    }
+    private void UpdateBarDismiss_Click(object sender, RoutedEventArgs e)
+    {
+        _dismissedTag = _pendingUpdate?.Tag;   // 记住该版本，轮询不再提示；出更新版本时会重新提醒
+        UpdateBar.Visibility = Visibility.Collapsed;
     }
 
     private async System.Threading.Tasks.Task DownloadAndRun(Services.UpdateInfo info)
@@ -1718,6 +1748,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             _runner?.Stop();
             _uiFlush?.Stop();
+            _updateTimer?.Stop();   // 停掉 30s 更新轮询
             _traceRec.Stop();   // 兜底：录制中直接关窗也卸鼠标钩子、把剩余样本落盘
             DisableHotkeys();   // 兜底：运行中直接关窗也不泄漏热键/键盘钩子
             // 串口 Close() 偶发阻塞，放后台线程释放（后台线程不会阻止进程退出），

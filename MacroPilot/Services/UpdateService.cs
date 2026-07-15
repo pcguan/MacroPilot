@@ -47,13 +47,24 @@ public static class UpdateService
         return c;
     }
 
-    /// <summary>查询最新 release。无网络 / 无 release / 无可用资产 / 解析失败都返回 null。</summary>
+    // 条件请求缓存：ETag + 上次结果。30s 轮询靠 If-None-Match 拿 304——GitHub 的 304 不计入
+    // 未鉴权的 60 次/小时配额，否则 30s 一次(=120/小时)必被限流。限流/故障/断网时沿用上次结果，不打扰。
+    private static string? _etag;
+    private static UpdateInfo? _cached;
+
+    /// <summary>查询最新 release。无网络 / 无 release / 无可用资产 / 解析失败都返回上次结果（首次则 null）。</summary>
     public static async Task<UpdateInfo?> CheckLatestAsync(CancellationToken ct = default)
     {
         try
         {
             using var c = NewClient(TimeSpan.FromSeconds(20));
-            var json = await c.GetStringAsync(LatestApi, ct);
+            using var req = new HttpRequestMessage(HttpMethod.Get, LatestApi);
+            if (!string.IsNullOrEmpty(_etag)) req.Headers.TryAddWithoutValidation("If-None-Match", _etag);
+            using var resp = await c.SendAsync(req, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotModified) return _cached;  // 没变（不计配额）
+            if (!resp.IsSuccessStatusCode) return _cached;                                  // 限流/故障 → 沿用上次
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            _etag = resp.Headers.ETag?.ToString();
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             var ver = ParseVersion(root.TryGetProperty("tag_name", out var t) ? t.GetString() : null);
@@ -73,9 +84,10 @@ public static class UpdateService
                 }
             string? notes = root.TryGetProperty("body", out var b) ? b.GetString() : null;
             var info = new UpdateInfo { Version = ver, Tag = tag, ZipUrl = zipUrl, ZipSize = zipSize, ExeUrl = exeUrl, ExeSize = exeSize, Notes = notes };
-            return info.HasAsset ? info : null;
+            _cached = info.HasAsset ? info : null;
+            return _cached;
         }
-        catch { return null; }
+        catch { return _cached; }
     }
 
     public static bool IsNewer(UpdateInfo info) => info.Version > CurrentVersion;
