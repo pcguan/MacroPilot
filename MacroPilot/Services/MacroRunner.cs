@@ -358,9 +358,11 @@ public sealed class MacroRunner
             // 屏内相对坐标 → 按该屏当前位置还原绝对区域（挪动显示器后区域跟着屏走）。
             var mon = ScreenInfo.ByDevice(step.RunConditionMonitor);
             int ax = mon.Left + step.RunConditionRectX, ay = mon.Top + step.RunConditionRectY;
-            bool found = ScreenMatch.Matches(TemplateFor(step), ax, ay, step.RunConditionThreshold);
-            // conditionText 只在【跳过】时打日志，应报【实际观测到的状态】(而非"什么情况才执行"的条件标签)，否则读起来正好相反。
-            conditionText = found ? "目标图片已出现" : "目标图片未出现";
+            double score = ScreenMatch.MatchScore(TemplateFor(step), ax, ay);
+            bool found = score >= step.RunConditionThreshold;
+            // conditionText 只在【跳过】时打日志，报【实际观测状态 + 匹配度】——便于判断是"没匹配上"还是"阈值太严"。
+            string pct = score < 0 ? "无模板" : $"匹配度 {score:0.00}/阈值 {step.RunConditionThreshold:0.00}";
+            conditionText = (found ? "目标图片已出现" : "目标图片未出现") + $"（{pct}）";
             return step.RunConditionInvert ? !found : found;
         }
         if (step.RunConditionType != "TimeRange") return true;

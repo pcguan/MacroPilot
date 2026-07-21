@@ -48,14 +48,18 @@ public static class ScreenMatch
 
     /// <summary>模板已解码好时的重载：循环里挂图片条件不必每圈都 base64+PNG 解码（调用方缓存 Bitmap）。</summary>
     public static bool Matches(Bitmap? target, int vx, int vy, double threshold)
+        => MatchScore(target, vx, vy) >= threshold;
+
+    /// <summary>返回同位置区域与模板的匹配度 0..1（无模板/异常返回 -1）。供日志显示实际匹配度、便于调阈值。</summary>
+    public static double MatchScore(Bitmap? target, int vx, int vy)
     {
-        if (target == null || target.Width <= 0 || target.Height <= 0) return false;
+        if (target == null || target.Width <= 0 || target.Height <= 0) return -1;
         try
         {
             using var shot = CaptureRegion(vx, vy, target.Width, target.Height);
-            return MatchRatio(target, shot) >= threshold;
+            return MatchRatio(target, shot);
         }
-        catch { return false; }
+        catch { return -1; }
     }
 
     private static double MatchRatio(Bitmap a, Bitmap b)
