@@ -359,7 +359,8 @@ public sealed class MacroRunner
             var mon = ScreenInfo.ByDevice(step.RunConditionMonitor);
             int ax = mon.Left + step.RunConditionRectX, ay = mon.Top + step.RunConditionRectY;
             bool found = ScreenMatch.Matches(TemplateFor(step), ax, ay, step.RunConditionThreshold);
-            conditionText = step.RunConditionInvert ? "目标图片未出现" : "目标图片已出现";
+            // conditionText 只在【跳过】时打日志，应报【实际观测到的状态】(而非"什么情况才执行"的条件标签)，否则读起来正好相反。
+            conditionText = found ? "目标图片已出现" : "目标图片未出现";
             return step.RunConditionInvert ? !found : found;
         }
         if (step.RunConditionType != "TimeRange") return true;
@@ -367,7 +368,7 @@ public sealed class MacroRunner
         int now = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
         bool match = IsInTimeRange(now, step.RunConditionStartMinute, step.RunConditionEndMinute);
         bool result = step.RunConditionInvert ? !match : match;
-        conditionText = FormatCondition(step);
+        conditionText = FormatCondition(step, match);   // 同理：报当前"在/不在"时段的实际结果
         return result;
     }
 
@@ -384,7 +385,7 @@ public sealed class MacroRunner
         return true;
     }
 
-    private static string FormatCondition(MacroStep step)
+    private static string FormatCondition(MacroStep step, bool inRange)
     {
         string range = (step.RunConditionStartMinute, step.RunConditionEndMinute) switch
         {
@@ -393,7 +394,7 @@ public sealed class MacroRunner
             (null, int e) => $"{FormatMinute(e)}之前",
             _ => "未设置"
         };
-        return step.RunConditionInvert ? $"不在 {range}" : $"在 {range}";
+        return inRange ? $"当前在 {range}" : $"当前不在 {range}";
     }
 
     private static int NormalizeMinute(int minute) => ((minute % 1440) + 1440) % 1440;
