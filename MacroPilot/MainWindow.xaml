@@ -62,32 +62,32 @@
             <TextBlock Text="键鼠宏助手" FontSize="26" FontWeight="Bold" />
             <TextBlock Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"
                        Text="一个用于编排并自动执行键盘 / 鼠标动作的工具。可将一系列点击、移动、滚轮、按键、等待等动作组成“方案”，按设定的循环次数与间隔重复执行。" />
-            <StackPanel Orientation="Horizontal" Margin="0,16,0,0" VerticalAlignment="Center">
-              <TextBlock Name="OvVersionText" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Text="版本 —" />
-              <Button Name="CheckUpdateButton" Margin="10,0,0,0" Width="34" Height="34" Style="{StaticResource IconButton}"
-                      Content="&#xE721;" ToolTip="检查更新" Click="CheckUpdate_Click" />
-              <TextBlock Name="UpdateStatusText" VerticalAlignment="Center" Margin="12,0,0,0"
-                         Foreground="{DynamicResource Accent}" TextWrapping="Wrap" />
-            </StackPanel>
-            <!-- 本次更新：当前版本的更新点（数据来自内置 changelog.json，版本不在表里时整块折叠） -->
-            <StackPanel Name="OvChangelogPanel" Visibility="Collapsed" Margin="0,14,0,0">
-              <DockPanel LastChildFill="False">
-                <TextBlock DockPanel.Dock="Left" Text="本次更新" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
-                <TextBlock Name="OvChangelogDate" DockPanel.Dock="Left" Margin="10,0,0,0" VerticalAlignment="Center"
-                           FontSize="12" Foreground="{DynamicResource Muted}" />
-              </DockPanel>
-              <ItemsControl Name="OvChangelogList" Margin="0,8,0,0">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <DockPanel Margin="0,2">
-                      <TextBlock DockPanel.Dock="Left" Text="•" Margin="0,0,8,0" VerticalAlignment="Top"
-                                 Foreground="{DynamicResource Accent}" />
-                      <TextBlock Text="{Binding}" TextWrapping="Wrap" />
-                    </DockPanel>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </StackPanel>
+            <!-- 版本卡片（同配置页 SettingCard 风格）：版本号 + 检查更新，下方直接列本版更新点 -->
+            <Border Style="{StaticResource SettingCard}" Margin="0,18,0,0">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Name="OvVersionText" Style="{StaticResource SettingTitle}" Text="版本 —" />
+                  <TextBlock DockPanel.Dock="Left" Name="OvChangelogDate" Margin="10,0,0,0" VerticalAlignment="Center"
+                             FontSize="12" Foreground="{DynamicResource Subtext}" />
+                  <TextBlock DockPanel.Dock="Left" Name="UpdateStatusText" VerticalAlignment="Center" Margin="12,0,0,0"
+                             FontSize="12" Foreground="{DynamicResource Accent}" TextWrapping="Wrap" />
+                  <Button DockPanel.Dock="Right" Name="CheckUpdateButton" Width="34" Height="34" Style="{StaticResource IconButton}"
+                          Content="&#xE721;" ToolTip="检查更新" Click="CheckUpdate_Click" />
+                </DockPanel>
+                <!-- 本版更新点（数据来自内置 changelog.json，版本不在表里时折叠） -->
+                <ItemsControl Name="OvChangelogList" Margin="0,8,0,0" Visibility="Collapsed">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <DockPanel Margin="0,2">
+                        <TextBlock DockPanel.Dock="Left" Text="•" Margin="0,0,8,0" VerticalAlignment="Top"
+                                   Foreground="{DynamicResource Accent}" />
+                        <TextBlock Text="{Binding}" Style="{StaticResource SettingDesc}" Margin="0" />
+                      </DockPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
             <TextBlock Text="设备状态" FontSize="16" FontWeight="Bold" Margin="0,22,0,8" />
             <TextBlock Name="OvSerialStatus" TextWrapping="Wrap" Margin="0,2" />
             <TextBlock Name="OvNativeStatus" TextWrapping="Wrap" Margin="0,2" />

@@ -128,14 +128,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // 运行结束/停止即注销（OnRunFinished）。平时把这三个键还给系统，也不让低级键盘钩子常挂输入链。
     }
 
-    // 概况页「本次更新」：列出当前版本的更新点。本地调试版号不在 changelog.json 里时整块隐藏。
+    // 概况页版本卡片：版本号下方直接列出本版更新点。本地调试版号不在 changelog.json 里时隐藏列表。
     private void ShowCurrentChangelog()
     {
         var entry = Services.Changelog.Current;
-        if (entry == null || entry.Notes.Count == 0) { OvChangelogPanel.Visibility = Visibility.Collapsed; return; }
+        if (entry == null || entry.Notes.Count == 0) { OvChangelogList.Visibility = Visibility.Collapsed; return; }
         OvChangelogDate.Text = entry.Date;
         OvChangelogList.ItemsSource = entry.Notes;
-        OvChangelogPanel.Visibility = Visibility.Visible;
+        OvChangelogList.Visibility = Visibility.Visible;
     }
 
     // ================= 导航 =================
@@ -1429,7 +1429,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
             Filter = "方案文件 (*.json)|*.json",
-            FileName = (single ? list[0].Name : $"MacroPilot 方案（{list.Count} 个）") + ".json",
+            // 列表导出与实际存储文件同名 plans.json；单方案导出为 plans_<方案名>.json
+            FileName = (single ? "plans_" + PlanFileStem(list[0].Name) : "plans") + ".json",
         };
         if (dlg.ShowDialog() != true) return;
         try
@@ -1441,6 +1442,21 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             ShowToast($"已导出 {(single ? 1 : list.Count)} 个方案");
         }
         catch (Exception ex) { ThemedDialog.Show("导出失败：" + ex.Message, "MacroPilot"); }
+    }
+
+    // 方案名 → 可直接做文件名的词干：先剔除非法字符，再按分隔符切词后拼接（不留空格）。
+    // 纯 ASCII（英文方案名）转成首字母大写的驼峰；含中文等非 ASCII 时保留原文，只去掉分隔符。
+    private static string PlanFileStem(string? name)
+    {
+        var s = (name ?? "").Trim();
+        foreach (var c in System.IO.Path.GetInvalidFileNameChars()) s = s.Replace(c, ' ');
+        var parts = s.Split(new[] { ' ', '\t', '_', '-', '.', '　' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "plan";
+        bool ascii = s.All(ch => ch < 128);
+        var stem = ascii
+            ? string.Concat(parts.Select(w => char.ToUpperInvariant(w[0]) + w[1..]))
+            : string.Concat(parts);
+        return stem.Length == 0 ? "plan" : stem;
     }
 
     // 自包含克隆：JSON 往返（保留全部字段、MaxDepth 放大）+ 图片引用解析回内联 base64，不动内存里的方案。
