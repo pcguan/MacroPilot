@@ -120,7 +120,7 @@ build.bat
 3. 产物同步回本地，清理 corp-win 上的中间产物
 4. 提交 commit 并走代理 push 到 GitHub
 5. 维护两个源的发布文件（`version.json` + 本体包 + 安装器，三个都要传）
-6. 走公网验证两个源的版本与 SHA-256 是否一致
+6. 走公网读两个源的 `version.json` 核对版本号（不下载文件）
 
 > 核心原则：**构建成功了才提交、才发布**。版本号取自程序集 `<Version>`，更新器只比较 `Major.Minor.Build` 且**严格大于**才算新版（不会降级），也不认 draft / prerelease。
 
