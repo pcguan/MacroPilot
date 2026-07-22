@@ -58,7 +58,8 @@
       <!-- ===== 概况 ===== -->
       <Border Name="PageOverview" Style="{StaticResource Card}" Padding="28" Visibility="Collapsed">
         <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel MaxWidth="720" HorizontalAlignment="Left">
+          <!-- 不设 MaxWidth：内容跟着窗口宽度走，拉宽窗口时说明文字会自然并成一行 -->
+          <StackPanel Margin="0,0,8,0">
             <TextBlock Text="键鼠宏助手" FontSize="26" FontWeight="Bold" />
             <TextBlock Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"
                        Text="一个用于编排并自动执行键盘 / 鼠标动作的工具。可将一系列点击、移动、滚轮、按键、等待等动作组成“方案”，按设定的循环次数与间隔重复执行。" />
@@ -223,8 +224,9 @@
               </StackPanel>
             </Border>
 
-            <!-- 鼠标轨迹录制（拟人化调优） -->
-            <Border Style="{StaticResource SettingCard}">
+            <!-- 鼠标轨迹录制（拟人化调优）。默认隐藏：这是调参用的开发者工具，平时不该占位。
+                 需要重新采集真人轨迹调优时，把 Visibility 改回 Visible 即可（功能代码完整保留）。 -->
+            <Border Name="TraceCard" Visibility="Collapsed" Style="{StaticResource SettingCard}">
               <StackPanel>
                 <DockPanel LastChildFill="False">
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="鼠标轨迹录制" />

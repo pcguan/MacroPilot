@@ -91,6 +91,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plans = new ObservableCollection<MacroPlan>(doc.Plans);
         _loading = true; // 防止 InitializeComponent 期间各 ComboBox 默认选中触发 SelectionChanged 改写设置/主题
         InitializeComponent();
+        RestoreWindowGeometry();   // 必须在 Show 之前，否则会看到窗口先按默认位置弹出再跳
         // Ctrl+X 未选中文本时剪切整个输入框内容（原生仅剪切选区，无选区则无动作 → 无法一键清空）。
         if (!_cutAllRegistered)
         {
@@ -1338,6 +1339,46 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 写盘时 Plans 用上次保存的快照，避免设置变更顺带把未保存的方案偷偷存了。
     // 只写 settings.json（不含方案），改一个下拉框/开关不再把含截图的整份方案重写一遍。
     private void PersistSettings() => Storage.SaveSettings(_doc);
+
+    // ================= 窗口几何记忆（位置 / 大小 / 最大化，存 settings.json） =================
+    // 单位是 WPF 的 DIP，与 SystemParameters.VirtualScreen* 同一坐标系，不用自己处理 DPI 缩放。
+
+    private void RestoreWindowGeometry()
+    {
+        double w = _doc.WindowWidth, h = _doc.WindowHeight;
+        if (w < MinWidth || h < MinHeight) return;   // 没记录过 / 记录不合法 → 保持 XAML 默认值与居中
+        var saved = new Rect(_doc.WindowLeft, _doc.WindowTop, w, h);
+        // 屏幕拓扑可能变了（拔掉副屏、换分辨率），别把窗口还原到看不见的地方——那样等于窗口丢失。
+        if (!IsUsablyOnScreen(saved))
+        {
+            if (_doc.WindowMaximized) WindowState = WindowState.Maximized;   // 大小不可用，至少尊重最大化
+            return;
+        }
+        WindowStartupLocation = WindowStartupLocation.Manual;   // 覆盖 XAML 的 CenterScreen
+        Left = saved.Left; Top = saved.Top; Width = saved.Width; Height = saved.Height;
+        if (_doc.WindowMaximized) WindowState = WindowState.Maximized;
+    }
+
+    // 与虚拟桌面的交集要够大：只露出一条边（比如副屏被拔掉后残留的坐标）不算可用。
+    private static bool IsUsablyOnScreen(Rect r)
+    {
+        var vs = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+                          SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+        var hit = Rect.Intersect(r, vs);
+        return !hit.IsEmpty && hit.Width >= 240 && hit.Height >= 120;
+    }
+
+    private void SaveWindowGeometry()
+    {
+        // 最大化/最小化时 Left/Width 等是当前显示状态的值，取 RestoreBounds 才是"还原后"的大小，
+        // 否则下次取消最大化会得到一个全屏尺寸的普通窗口。
+        var r = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
+        if (r.IsEmpty || r.Width <= 0 || r.Height <= 0 || double.IsNaN(r.Width) || double.IsNaN(r.Height)) return;
+        _doc.WindowLeft = r.Left; _doc.WindowTop = r.Top;
+        _doc.WindowWidth = r.Width; _doc.WindowHeight = r.Height;
+        _doc.WindowMaximized = WindowState == WindowState.Maximized;
+        PersistSettings();
+    }
     // 确保"当前方案"无未保存修改：有则弹框保存/放弃/取消。返回 false 表示用户取消（调用方应中止操作）。
     // 任何离开当前方案编辑上下文的操作（切页、切方案、运行、关闭、新建/导入/排序/删除等）都应先调用它。
     private bool EnsureCurrentPlanClean()
@@ -1772,6 +1813,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!EnsureCurrentPlanClean()) { e.Cancel = true; return; }
+        SaveWindowGeometry();   // 确定要关了才记，用户取消关闭时不写
         base.OnClosing(e);
     }
 

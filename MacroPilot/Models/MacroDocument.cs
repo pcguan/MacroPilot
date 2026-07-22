@@ -20,5 +20,12 @@ public sealed class MacroDocument
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();
 
+    // 窗口几何（关闭时记住，下次按原样打开）。0/负值表示"没记录过"，走 XAML 默认值。
+    public double WindowLeft { get; set; }
+    public double WindowTop { get; set; }
+    public double WindowWidth { get; set; }
+    public double WindowHeight { get; set; }
+    public bool WindowMaximized { get; set; }
+
     public List<MacroPlan> Plans { get; set; } = new();
 }
