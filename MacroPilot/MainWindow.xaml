@@ -347,14 +347,12 @@
                   <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="动作流程" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
+                <!-- 循环次数 / 间隔 / 运行条件收进「方案设置」一个窗口，标题栏不再挂一长条输入框 -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBlock Text="循环次数" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,6,0" />
-                  <TextBox Name="LoopCountText" Text="1" Width="52" Margin="0,0,4,0" GotFocus="PlanField_GotFocus" TextChanged="PlanSetting_Live" />
-                  <TextBlock Text="(0为无限)" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,14,0" />
-                  <TextBlock Text="间隔" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,6,0" />
-                  <TextBox Name="LoopDelayText" Text="0" Width="58" Margin="0,0,4,0" GotFocus="PlanField_GotFocus" TextChanged="PlanSetting_Live" />
-                  <ComboBox Name="LoopDelayUnitCombo" Width="76" Height="30" VerticalAlignment="Center" SelectionChanged="LoopDelayUnit_Changed" />
-                  <Button Name="PlanConditionButton" Style="{StaticResource IconButton}" Margin="12,0,0,0" FontSize="16" Content="&#xE121;" Click="PlanCondition_Click" ToolTip="方案运行条件（对所有动作生效）" />
+                  <TextBlock Name="PlanSummaryText" VerticalAlignment="Center" Foreground="{DynamicResource Muted}"
+                             FontSize="12" Margin="0,0,8,0" />
+                  <Button Name="PlanSettingsButton" Style="{StaticResource IconButton}" FontSize="16"
+                          Content="&#xE713;" Click="PlanSettings_Click" ToolTip="方案设置（循环次数 / 间隔 / 运行条件）" />
                 </StackPanel>
               </Grid>
               <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10" LastChildFill="False">

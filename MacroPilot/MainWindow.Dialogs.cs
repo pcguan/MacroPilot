@@ -69,15 +69,22 @@ public partial class MainWindow
         };
         win.SetResourceReference(ForegroundProperty, "Ink");
         win.SourceInitialized += (_, _) => ThemeManager.ApplyWindowTitleBar(win, ThemeManager.EffectiveDark);
+        win.MinWidth = 460;
+        win.MinHeight = 320;
+        // 记住每个对话框各自调整后的位置与大小（key = 标题），与主窗口同一套机制。
+        WindowMemory.Attach(win, "Dlg:" + title);
+        bool restored = WindowMemory.WasRestored(win);
+        // 记住的高度可能超过初始 MaxHeight(640)，要立刻解除上限，否则窗口会被夹到 640。
+        if (restored) { win.MaxWidth = double.PositiveInfinity; win.MaxHeight = double.PositiveInfinity; }
         win.Loaded += (_, _) =>
         {
+            // 用户上次调整过：尊重记住的尺寸/位置，别再按内容重算高度、也别挪到鼠标处。
+            if (restored) return;
             PositionWindowAtCursor(win, this);
             // 先按内容自适应出初始高度，加载后冻结为手动尺寸；宽高都可拖动调整
             // （嵌套监听等内容多时能拉大看全，不再锁死宽度导致文本被截断）。
             win.Height = win.ActualHeight;
             win.SizeToContent = SizeToContent.Manual;
-            win.MinWidth = 460;
-            win.MinHeight = 320;
             win.MaxWidth = double.PositiveInfinity;
             win.MaxHeight = double.PositiveInfinity;
         };
@@ -1006,19 +1013,12 @@ public partial class MainWindow
         jumpTimesPanel.Children.Add(jumpTimesText);
         jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        var conditionEnabled = new CheckBox();
-        var conditionInvert = new CheckBox();
-        var conditionStartHour = new ComboBox();
-        var conditionStartMinute = new ComboBox();
-        var conditionEndHour = new ComboBox();
-        var conditionEndMinute = new ComboBox();
-        var conditionType = new ComboBox();          // 时间段 / 图片出现（仅动作级）
-        var conditionImg = new ImageCond();
+        var cond = BuildRunConditionEditor(null);    // 与方案级共用同一套控件与逻辑
 
         MacroStep? hookSuccess = source?.SuccessAction, hookComplete = source?.CompleteAction, hookFail = source?.FailAction;
         sp.Children.Add(GroupCard("基础设置", baseContent));
         {
-            var condPanel = BuildRunConditionPanel(conditionEnabled, conditionInvert, conditionStartHour, conditionStartMinute, conditionEndHour, conditionEndMinute, conditionType, conditionImg);
+            var condPanel = cond.Panel;
             condPanel.Margin = new Thickness(0, 0, 0, 14);
             sp.Children.Add(GroupCard("控制逻辑",
                 FieldLabel("循环次数（0 为无限）"), loopCountText,
@@ -1148,32 +1148,7 @@ public partial class MainWindow
                 }
                 {
                     result.LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1));
-                    if (conditionEnabled.IsChecked == true)
-                    {
-                        if (conditionType.SelectedIndex == 1) // 图片出现
-                        {
-                            if (!conditionImg.Has)
-                                throw new InvalidOperationException("请先截取目标图片。");
-                            result.RunConditionType = "ImageMatch";
-                            result.RunConditionInvert = conditionInvert.IsChecked == true;
-                            result.RunConditionImage = ImageStore.Ref(conditionImg.Png!);   // 立即外置成 file:hash 引用（内存里不再挂 base64 大串）
-                            result.RunConditionMonitor = conditionImg.Monitor;
-                            result.RunConditionRectX = conditionImg.RelX; result.RunConditionRectY = conditionImg.RelY;
-                            result.RunConditionRectW = conditionImg.W; result.RunConditionRectH = conditionImg.H;
-                            result.RunConditionThreshold = conditionImg.Threshold;
-                        }
-                        else
-                        {
-                            var start = SelectedMinute(conditionStartHour, conditionStartMinute);
-                            var end = SelectedMinute(conditionEndHour, conditionEndMinute);
-                            if (!start.HasValue && !end.HasValue)
-                                throw new InvalidOperationException("运行条件启用后，请至少选择开始时间或结束时间。");
-                            result.RunConditionType = "TimeRange";
-                            result.RunConditionInvert = conditionInvert.IsChecked == true;
-                            result.RunConditionStartMinute = start;
-                            result.RunConditionEndMinute = end;
-                        }
-                    }
+                    ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
                     result.JumpTarget = jumpTargetCombo.SelectedIndex;
                     result.JumpTimes = result.JumpTarget >= 1 ? Math.Max(0, ParseInt(jumpTimesText.Text, 0)) : 0;
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
@@ -1218,20 +1193,7 @@ public partial class MainWindow
                 case "ActivateWindow": typeCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
             }
             loopCountText.Text = source.LoopCount.ToString();
-            conditionEnabled.IsChecked = source.HasRunCondition;
-            conditionInvert.IsChecked = source.RunConditionInvert;
-            SetTimeSelection(conditionStartHour, conditionStartMinute, source.RunConditionStartMinute);
-            SetTimeSelection(conditionEndHour, conditionEndMinute, source.RunConditionEndMinute);
-            if (source.RunConditionType == "ImageMatch")
-            {
-                conditionImg.Png = ImageStore.Bytes(source.RunConditionImage);   // 引用/旧内联 base64 都能解析
-                conditionImg.Monitor = source.RunConditionMonitor;
-                conditionImg.RelX = source.RunConditionRectX; conditionImg.RelY = source.RunConditionRectY;
-                conditionImg.W = source.RunConditionRectW; conditionImg.H = source.RunConditionRectH;
-                conditionImg.Threshold = source.RunConditionThreshold > 0 ? source.RunConditionThreshold : 0.9;
-                conditionType.SelectedIndex = 1;   // 放最后：触发切到图片视图并回显缩略图
-            }
-            else conditionType.SelectedIndex = 0;
+            LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
             if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
             noteText.Text = source.Note;
         }
@@ -1305,16 +1267,9 @@ public partial class MainWindow
         Rebuild();
 
         var loopCountText = new TextBox { Text = source.LoopCount.ToString(), Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        var conditionEnabled = new CheckBox();
-        var conditionInvert = new CheckBox();
-        var conditionType = new ComboBox();
-        var conditionImg = new ImageCond();
-        var conditionStartHour = new ComboBox();
-        var conditionStartMinute = new ComboBox();
-        var conditionEndHour = new ComboBox();
-        var conditionEndMinute = new ComboBox();
-        // 组合级运行条件与动作级一致：支持"时间段"和"图片出现"（指定图标）两类。
-        var condPanel = BuildRunConditionPanel(conditionEnabled, conditionInvert, conditionStartHour, conditionStartMinute, conditionEndHour, conditionEndMinute, conditionType, conditionImg);
+        // 组合级运行条件与方案级/动作级完全一致：同一套控件、同一份回填与写回逻辑。
+        var cond = BuildRunConditionEditor(source);
+        var condPanel = cond.Panel;
         condPanel.Margin = new Thickness(0, 0, 0, 14);
         var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
         jumpTargetCombo.Items.Add("不跳转");
@@ -1341,20 +1296,6 @@ public partial class MainWindow
 
         var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         sp.Children.Add(GroupCard("备注（可选）", noteText));
-        conditionEnabled.IsChecked = source.HasRunCondition;
-        conditionInvert.IsChecked = source.RunConditionInvert;
-        SetTimeSelection(conditionStartHour, conditionStartMinute, source.RunConditionStartMinute);
-        SetTimeSelection(conditionEndHour, conditionEndMinute, source.RunConditionEndMinute);
-        if (source.RunConditionType == "ImageMatch")
-        {
-            conditionImg.Png = ImageStore.Bytes(source.RunConditionImage);   // 引用/旧内联 base64 都能解析
-            conditionImg.Monitor = source.RunConditionMonitor;
-            conditionImg.RelX = source.RunConditionRectX; conditionImg.RelY = source.RunConditionRectY;
-            conditionImg.W = source.RunConditionRectW; conditionImg.H = source.RunConditionRectH;
-            conditionImg.Threshold = source.RunConditionThreshold > 0 ? source.RunConditionThreshold : 0.9;
-            conditionType.SelectedIndex = 1;   // 放最后：触发切到图片视图并回显缩略图
-        }
-        else conditionType.SelectedIndex = 0;
         if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
 
         var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
@@ -1376,92 +1317,13 @@ public partial class MainWindow
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
             };
-            if (conditionEnabled.IsChecked == true)
-            {
-                if (conditionType.SelectedIndex == 1) // 图片出现（指定图标）
-                {
-                    if (!conditionImg.Has) { ThemedDialog.Show("请先截取目标图片。", "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
-                    result.RunConditionType = "ImageMatch";
-                    result.RunConditionInvert = conditionInvert.IsChecked == true;
-                    result.RunConditionImage = ImageStore.Ref(conditionImg.Png!);   // 立即外置成 file:hash 引用（内存里不再挂 base64 大串）
-                    result.RunConditionMonitor = conditionImg.Monitor;
-                    result.RunConditionRectX = conditionImg.RelX; result.RunConditionRectY = conditionImg.RelY;
-                    result.RunConditionRectW = conditionImg.W; result.RunConditionRectH = conditionImg.H;
-                    result.RunConditionThreshold = conditionImg.Threshold;
-                }
-                else
-                {
-                    var start = SelectedMinute(conditionStartHour, conditionStartMinute);
-                    var end = SelectedMinute(conditionEndHour, conditionEndMinute);
-                    if (!start.HasValue && !end.HasValue) { ThemedDialog.Show("运行条件启用后，请至少选择开始时间或结束时间。", "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
-                    result.RunConditionType = "TimeRange";
-                    result.RunConditionInvert = conditionInvert.IsChecked == true;
-                    result.RunConditionStartMinute = start;
-                    result.RunConditionEndMinute = end;
-                }
-            }
+            try { ApplyRunCondition(cond, result); }   // 与方案级/动作级同一份写回逻辑
+            catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
             win.DialogResult = true;
         };
 
         win.Content = grid;
         return win.ShowDialog() == true ? result : null;
-    }
-
-    // ---------- 方案级运行条件对话框（对整个方案 / 所有动作生效） ----------
-    private bool ShowPlanConditionDialog(MacroPlan plan)
-    {
-        var win = MakeDialog("方案运行条件");
-        var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) };
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var sp = new StackPanel();
-        var scroller = MakeScrollHost(sp); Grid.SetRow(scroller, 0); grid.Children.Add(scroller);
-
-        sp.Children.Add(new TextBlock { Text = "运行条件对整个方案生效：不满足时方案空转等待时间窗开启，满足后才执行全部动作（不消耗循环次数）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 6) });
-        var conditionEnabled = new CheckBox();
-        var conditionInvert = new CheckBox();
-        var conditionStartHour = new ComboBox();
-        var conditionStartMinute = new ComboBox();
-        var conditionEndHour = new ComboBox();
-        var conditionEndMinute = new ComboBox();
-        sp.Children.Add(BuildRunConditionPanel(conditionEnabled, conditionInvert, conditionStartHour, conditionStartMinute, conditionEndHour, conditionEndMinute));
-        conditionEnabled.IsChecked = plan.HasRunCondition;
-        conditionInvert.IsChecked = plan.RunConditionInvert;
-        SetTimeSelection(conditionStartHour, conditionStartMinute, plan.RunConditionStartMinute);
-        SetTimeSelection(conditionEndHour, conditionEndMinute, plan.RunConditionEndMinute);
-
-        var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
-        var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
-        var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        bar.Children.Add(okBtn); bar.Children.Add(cancelBtn);
-        var footer = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 12, 14, 0), Child = bar };
-        Grid.SetRow(footer, 1); grid.Children.Add(footer);
-
-        bool changed = false;
-        okBtn.Click += (_, _) =>
-        {
-            var start = conditionEnabled.IsChecked == true ? SelectedMinute(conditionStartHour, conditionStartMinute) : null;
-            var end = conditionEnabled.IsChecked == true ? SelectedMinute(conditionEndHour, conditionEndMinute) : null;
-            if (conditionEnabled.IsChecked == true && !start.HasValue && !end.HasValue)
-            {
-                ThemedDialog.Show("运行条件启用后，请至少选择开始时间或结束时间。", "设置失败", MessageBoxButton.OK, MessageBoxImage.Exclamation);
-                return;
-            }
-            string type = conditionEnabled.IsChecked == true ? "TimeRange" : "";
-            bool invert = conditionInvert.IsChecked == true;
-            if (type != plan.RunConditionType || invert != plan.RunConditionInvert || start != plan.RunConditionStartMinute || end != plan.RunConditionEndMinute)
-            {
-                plan.RunConditionType = type;
-                plan.RunConditionInvert = invert;
-                plan.RunConditionStartMinute = start;
-                plan.RunConditionEndMinute = end;
-                changed = true;
-            }
-            win.DialogResult = true;
-        };
-
-        win.Content = grid;
-        return win.ShowDialog() == true && changed;
     }
 
     // ---------- 按键 / 按钮 / 时间 辅助 ----------

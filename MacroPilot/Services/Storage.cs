@@ -86,6 +86,16 @@ public static class Storage
     private static MacroDocument Migrate(MacroDocument doc)
     {
         if (doc.DefaultHoldMs == 50) doc.DefaultHoldMs = 75;
+        // 0.0.18 只记了主窗口，字段是平铺的；0.0.20 起所有窗口统一放进 Windows 字典，把老记录搬过去。
+        if (doc.WindowWidth > 0 && doc.WindowHeight > 0 && !doc.Windows.ContainsKey("Main"))
+        {
+            doc.Windows["Main"] = new WindowGeometry
+            {
+                Left = doc.WindowLeft, Top = doc.WindowTop,
+                Width = doc.WindowWidth, Height = doc.WindowHeight, Maximized = doc.WindowMaximized,
+            };
+        }
+        doc.WindowLeft = doc.WindowTop = doc.WindowWidth = doc.WindowHeight = 0; doc.WindowMaximized = false;
         return doc;
     }
 

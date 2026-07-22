@@ -20,7 +20,11 @@ public sealed class MacroDocument
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();
 
-    // 窗口几何（关闭时记住，下次按原样打开）。0/负值表示"没记录过"，走 XAML 默认值。
+    // 窗口几何记忆：key -> 位置/大小/最大化。主窗口 key = "Main"，各对话框 key = 标题。
+    // 见 Services/WindowMemory.cs；主窗口与所有对话框共用这一套。
+    public Dictionary<string, WindowGeometry> Windows { get; set; } = new();
+
+    // 0.0.18 的旧字段（只有主窗口）。保留仅为把老数据迁进 Windows["Main"]，迁完清零，勿再直接使用。
     public double WindowLeft { get; set; }
     public double WindowTop { get; set; }
     public double WindowWidth { get; set; }
@@ -28,4 +32,17 @@ public sealed class MacroDocument
     public bool WindowMaximized { get; set; }
 
     public List<MacroPlan> Plans { get; set; } = new();
+}
+
+/// <summary>一个窗口记住的几何信息（WPF DIP 坐标）。</summary>
+public sealed class WindowGeometry
+{
+    public double Left { get; set; }
+    public double Top { get; set; }
+    public double Width { get; set; }
+    public double Height { get; set; }
+    public bool Maximized { get; set; }
+
+    public bool Equals(WindowGeometry o) =>
+        Left == o.Left && Top == o.Top && Width == o.Width && Height == o.Height && Maximized == o.Maximized;
 }

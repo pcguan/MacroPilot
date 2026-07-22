@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace MacroPilot.Models;
 
 /// <summary>一个方案：一组按顺序执行的动作，方案本身可整体循环。</summary>
-public sealed class MacroPlan : INotifyPropertyChanged
+public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
 {
     private string _name = "新方案";
     public string Name { get => _name; set { if (_name != value) { _name = value; Raise(nameof(Name)); } } }
@@ -14,12 +14,20 @@ public sealed class MacroPlan : INotifyPropertyChanged
     public int LoopDelayMs { get; set; }         // 每圈之间的延时（始终以毫秒存储）
     public int LoopDelayUnit { get; set; }       // 仅 UI 显示单位：0=毫秒 1=秒 2=分钟 3=小时
 
-    // 方案级运行条件（对整个方案生效）：目前仅 TimeRange；Invert=true 表示取反（不在时间段内才运行）。
+    // 方案级运行条件（对整个方案生效）。字段与动作级完全一致（见 IRunCondition），
+    // 因此时间段 / 图片出现两类条件两级通用，编辑界面与执行判定也是同一份代码。
     public string RunConditionType { get; set; } = "";
     public bool RunConditionInvert { get; set; }
     public int? RunConditionStartMinute { get; set; }
     public int? RunConditionEndMinute { get; set; }
-    [JsonIgnore] public bool HasRunCondition => RunConditionType == "TimeRange" && (RunConditionStartMinute.HasValue || RunConditionEndMinute.HasValue);
+    public string RunConditionImage { get; set; } = "";
+    public string RunConditionMonitor { get; set; } = "";
+    public int RunConditionRectX { get; set; }
+    public int RunConditionRectY { get; set; }
+    public int RunConditionRectW { get; set; }
+    public int RunConditionRectH { get; set; }
+    public double RunConditionThreshold { get; set; } = 0.9;
+    [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);
 
     public ObservableCollection<MacroStep> Steps { get; set; } = new();
 

@@ -45,7 +45,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private MacroPlan? _jumpOrderPlan;
     // 撤销快照：方案级（名称 + 动作列表 + 循环次数 + 间隔），所有方案属性修改都可撤销。
     // AddedPlan 非空 → 这是一条“新增方案”的结构撤销项（撤销即移除该方案）；否则是当前方案内的动作编辑快照。
-    private sealed record UndoSnap(string Name, List<MacroStep> Steps, int LoopCount, int LoopDelayMs, MacroPlan? AddedPlan = null);
+    // Condition 是方案级运行条件的快照（用一个空壳 MacroPlan 承载，仅取其 IRunCondition 部分）。
+    // 方案设置对话框会一次性改动"循环 + 条件"，两者必须一起进撤销栈，否则撤销只回退一半。
+    private sealed record UndoSnap(string Name, List<MacroStep> Steps, int LoopCount, int LoopDelayMs,
+                                   MacroPlan? AddedPlan = null, MacroPlan? Condition = null);
     // 定长撤销栈：满了丢最旧一条（O(1)），不再每次超限 Take(50)+清空+逐条回推。
     private sealed class CappedStack<T>
     {
@@ -91,16 +94,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plans = new ObservableCollection<MacroPlan>(doc.Plans);
         _loading = true; // 防止 InitializeComponent 期间各 ComboBox 默认选中触发 SelectionChanged 改写设置/主题
         InitializeComponent();
-        RestoreWindowGeometry();   // 必须在 Show 之前，否则会看到窗口先按默认位置弹出再跳
+        // 窗口几何记忆：主窗口与所有对话框共用 WindowMemory（对话框在 MakeDialog 里统一挂）。
+        // 必须在 Show 之前挂，否则会看到窗口先按默认位置弹出再跳。
+        WindowMemory.Init(_doc, PersistSettings);
+        WindowMemory.Attach(this, "Main");
         // Ctrl+X 未选中文本时剪切整个输入框内容（原生仅剪切选区，无选区则无动作 → 无法一键清空）。
         if (!_cutAllRegistered)
         {
             _cutAllRegistered = true;
             EventManager.RegisterClassHandler(typeof(TextBox), PreviewKeyDownEvent, new KeyEventHandler(OnTextBoxCutAll));
         }
-        foreach (var n in new[] { "毫秒", "秒", "分钟", "小时" }) LoopDelayUnitCombo.Items.Add(n);
-        LoopDelayUnitCombo.SelectedIndex = 0;
-
         PlansList.ItemsSource = _plans;
         LogList.ItemsSource = _logs;
         SnapshotAllPlans(); // 记录已加载方案的初始快照，作为"未保存"比较基准
@@ -538,14 +541,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         ExportCurrentButton.IsEnabled = true;
         StepsList.ItemsSource = _plan.Steps;
         _loading = true;
-        LoopCountText.Text = _plan.LoopCount.ToString();
-        int loopUnit = Math.Clamp(_plan.LoopDelayUnit, 0, 3);
-        LoopDelayUnitCombo.SelectedIndex = loopUnit;
-        LoopDelayText.Text = FormatDelayValue(_plan.LoopDelayMs, loopUnit);
         _loading = false;
         RefreshIndices();
         RefreshSaveState();
-        RefreshPlanConditionButton();
+        RefreshPlanSummary();
         _undo.Clear(); UndoButton.IsEnabled = false;
         AddLog("Info", "已切换到：" + _plan.Name);
     }
@@ -555,6 +554,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plan = null; StepsList.ItemsSource = null;
         StepsPanel.Visibility = Visibility.Collapsed; NoPlanPanel.Visibility = Visibility.Visible;
         ExportCurrentButton.IsEnabled = false;
+        RefreshPlanSummary();
     }
 
     private void NewPlanIcon_Click(object sender, RoutedEventArgs e)
@@ -600,19 +600,28 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (_plans.Count > 0) PlansList.SelectedIndex = 0; else ShowNoPlan();
         Save();   // 删除属结构改动，立即提交（此前已确保最多一个未保存方案）
     }
-    // 方案级运行条件：对整个方案（所有动作）生效。
-    private void PlanCondition_Click(object sender, RoutedEventArgs e)
+    // 方案设置：循环次数 / 间隔 / 运行条件三合一（运行条件与动作级共用同一套控件与逻辑）。
+    private void PlanSettings_Click(object sender, RoutedEventArgs e)
     {
         if (_plan == null) return;
-        if (ShowPlanConditionDialog(_plan)) { RefreshPlanConditionButton(); MarkDirty(); }
+        PushUndo();   // 循环/条件改动可撤销（对话框取消时下面会把这次快照弹掉）
+        if (ShowPlanSettingsDialog(_plan)) { RefreshPlanSummary(); MarkDirty(); }
+        else if (_undo.Count > 0) { _undo.Pop(); UndoButton.IsEnabled = _undo.Count > 0; }
     }
-    private void RefreshPlanConditionButton()
+
+    // 标题栏摘要：把收进对话框的设置用一行小字回显，免得点开才知道当前配置。
+    private void RefreshPlanSummary()
     {
-        if (PlanConditionButton == null) return;
-        bool active = _plan?.HasRunCondition == true;
-        // 图标按钮：启用时用强调色高亮，悬浮提示反映状态。
-        PlanConditionButton.Foreground = active ? (Brush)FindResource("Accent") : (Brush)FindResource("Ink");
-        PlanConditionButton.ToolTip = active ? "方案运行条件：已启用（点按修改）" : "方案运行条件（对所有动作生效）";
+        if (PlanSummaryText == null) return;
+        if (_plan == null) { PlanSummaryText.Text = ""; PlanSettingsButton.IsEnabled = false; return; }
+        PlanSettingsButton.IsEnabled = true;
+        int unit = Math.Clamp(_plan.LoopDelayUnit, 0, 3);
+        string loops = _plan.LoopCount == 0 ? "无限循环" : $"循环 {_plan.LoopCount} 次";
+        string delay = _plan.LoopDelayMs > 0 ? $" · 间隔 {FormatDelayValue(_plan.LoopDelayMs, unit)}{LoopUnitNames[unit]}" : "";
+        string cond = _plan.HasRunCondition ? "  · 已设运行条件" : "";
+        PlanSummaryText.Text = loops + delay + cond;
+        // 有运行条件时整行用强调色，一眼看出这个方案不是无条件执行的。
+        PlanSummaryText.Foreground = _plan.HasRunCondition ? (Brush)FindResource("Accent") : (Brush)FindResource("Muted");
     }
     private void PlansList_KeyDown(object sender, KeyEventArgs e)
     {
@@ -624,12 +633,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             PastePlan(idx);
         }
     }
-    // 进入循环/间隔输入框时"武装"：本次连续编辑的首次实际变化才入一次撤销栈。
-    private bool _loopUndoArmed;
-    private void PlanField_GotFocus(object sender, RoutedEventArgs e) => _loopUndoArmed = true;
-
     // 循环间隔单位：0=毫秒 1=秒 2=分钟 3=小时。LoopDelayMs 始终以毫秒存储。
     private static readonly double[] LoopUnitFactors = { 1, 1000, 60000, 3600000 };
+    private static readonly string[] LoopUnitNames = { "毫秒", "秒", "分钟", "小时" };
     private static double LoopUnitFactor(int idx) => LoopUnitFactors[Math.Clamp(idx, 0, LoopUnitFactors.Length - 1)];
     private static string FormatDelayValue(int ms, int unitIdx)
     {
@@ -637,36 +643,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         return v % 1.0 == 0 ? ((long)v).ToString() : v.ToString("0.###");
     }
 
-    // 即时响应（TextChanged）：一边输入就激活回撤按钮、标记未保存，无需失焦。
-    private void PlanSetting_Live(object sender, TextChangedEventArgs e)
-    {
-        if (_loading || _plan == null) return;
-        int newCount = ParseInt(LoopCountText.Text, _plan.LoopCount);
-        double factor = LoopUnitFactor(LoopDelayUnitCombo.SelectedIndex);
-        int newDelay = (int)Math.Round(Math.Max(0, ParseDouble(LoopDelayText.Text, _plan.LoopDelayMs / factor)) * factor);
-        if (newCount == _plan.LoopCount && newDelay == _plan.LoopDelayMs) return; // 无实际变化
-        if (_loopUndoArmed) { PushUndo(); _loopUndoArmed = false; } // 本次编辑首次变化入栈一次
-        _plan.LoopCount = newCount;
-        _plan.LoopDelayMs = newDelay;
-        MarkDirty();
-    }
-
-    // 切换间隔单位：保持真实时长不变，仅换算显示值；并记住单位（持久化，随方案保存）。
-    private void LoopDelayUnit_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading || _plan == null) return;
-        int unit = LoopDelayUnitCombo.SelectedIndex;
-        _loading = true;
-        LoopDelayText.Text = FormatDelayValue(_plan.LoopDelayMs, unit);
-        _loading = false;
-        if (unit != _plan.LoopDelayUnit) { _plan.LoopDelayUnit = unit; MarkDirty(); }
-    }
-
     // ================= 动作 =================
     private void PushUndo()
     {
         if (_plan == null) return;
-        _undo.Push(new UndoSnap(_plan.Name, _plan.Steps.Select(s => s.Clone()).ToList(), _plan.LoopCount, _plan.LoopDelayMs));
+        var cond = new MacroPlan(); RunCondition.Copy(_plan, cond);
+        _undo.Push(new UndoSnap(_plan.Name, _plan.Steps.Select(s => s.Clone()).ToList(), _plan.LoopCount, _plan.LoopDelayMs, null, cond));
         UndoButton.IsEnabled = _undo.Count > 0;
     }
     private void Undo_Click(object sender, RoutedEventArgs e)
@@ -693,12 +675,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         foreach (var s in snap.Steps) _plan.Steps.Add(s);
         _plan.LoopCount = snap.LoopCount;
         _plan.LoopDelayMs = snap.LoopDelayMs;
-        _loading = true;
-        LoopCountText.Text = _plan.LoopCount.ToString();
-        int loopUnit = Math.Clamp(_plan.LoopDelayUnit, 0, 3);
-        LoopDelayUnitCombo.SelectedIndex = loopUnit;
-        LoopDelayText.Text = FormatDelayValue(_plan.LoopDelayMs, loopUnit);
-        _loading = false;
+        if (snap.Condition != null) RunCondition.Copy(snap.Condition, _plan);
+        RefreshPlanSummary();
         _jumpOrderPlan = null;   // 恢复的是快照克隆（新对象），其 JumpTarget 已对应恢复后的顺序，走基线不重映射
         RefreshIndices(); UndoButton.IsEnabled = _undo.Count > 0; MarkDirty();
         AddLog("Info", "已撤销上一步修改。");
@@ -1340,45 +1318,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 只写 settings.json（不含方案），改一个下拉框/开关不再把含截图的整份方案重写一遍。
     private void PersistSettings() => Storage.SaveSettings(_doc);
 
-    // ================= 窗口几何记忆（位置 / 大小 / 最大化，存 settings.json） =================
-    // 单位是 WPF 的 DIP，与 SystemParameters.VirtualScreen* 同一坐标系，不用自己处理 DPI 缩放。
-
-    private void RestoreWindowGeometry()
-    {
-        double w = _doc.WindowWidth, h = _doc.WindowHeight;
-        if (w < MinWidth || h < MinHeight) return;   // 没记录过 / 记录不合法 → 保持 XAML 默认值与居中
-        var saved = new Rect(_doc.WindowLeft, _doc.WindowTop, w, h);
-        // 屏幕拓扑可能变了（拔掉副屏、换分辨率），别把窗口还原到看不见的地方——那样等于窗口丢失。
-        if (!IsUsablyOnScreen(saved))
-        {
-            if (_doc.WindowMaximized) WindowState = WindowState.Maximized;   // 大小不可用，至少尊重最大化
-            return;
-        }
-        WindowStartupLocation = WindowStartupLocation.Manual;   // 覆盖 XAML 的 CenterScreen
-        Left = saved.Left; Top = saved.Top; Width = saved.Width; Height = saved.Height;
-        if (_doc.WindowMaximized) WindowState = WindowState.Maximized;
-    }
-
-    // 与虚拟桌面的交集要够大：只露出一条边（比如副屏被拔掉后残留的坐标）不算可用。
-    private static bool IsUsablyOnScreen(Rect r)
-    {
-        var vs = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
-                          SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
-        var hit = Rect.Intersect(r, vs);
-        return !hit.IsEmpty && hit.Width >= 240 && hit.Height >= 120;
-    }
-
-    private void SaveWindowGeometry()
-    {
-        // 最大化/最小化时 Left/Width 等是当前显示状态的值，取 RestoreBounds 才是"还原后"的大小，
-        // 否则下次取消最大化会得到一个全屏尺寸的普通窗口。
-        var r = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
-        if (r.IsEmpty || r.Width <= 0 || r.Height <= 0 || double.IsNaN(r.Width) || double.IsNaN(r.Height)) return;
-        _doc.WindowLeft = r.Left; _doc.WindowTop = r.Top;
-        _doc.WindowWidth = r.Width; _doc.WindowHeight = r.Height;
-        _doc.WindowMaximized = WindowState == WindowState.Maximized;
-        PersistSettings();
-    }
     // 确保"当前方案"无未保存修改：有则弹框保存/放弃/取消。返回 false 表示用户取消（调用方应中止操作）。
     // 任何离开当前方案编辑上下文的操作（切页、切方案、运行、关闭、新建/导入/排序/删除等）都应先调用它。
     private bool EnsureCurrentPlanClean()
@@ -1813,8 +1752,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!EnsureCurrentPlanClean()) { e.Cancel = true; return; }
-        SaveWindowGeometry();   // 确定要关了才记，用户取消关闭时不写
-        base.OnClosing(e);
+        base.OnClosing(e);   // 窗口几何由 WindowMemory 在 Closing 时统一保存
     }
 
     protected override void OnClosed(EventArgs e)

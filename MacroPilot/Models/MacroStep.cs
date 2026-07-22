@@ -9,7 +9,7 @@ namespace MacroPilot.Models;
 /// 单个动作。字段名与参考版 plans.json 完全一致（PascalCase），可直接互读。
 /// Type: MouseClick / MouseMove / MouseWheel / KeyTap / Wait / Group
 /// </summary>
-public sealed class MacroStep : INotifyPropertyChanged
+public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
 {
     // ---- 持久化字段（与 plans.json 对齐）----
     private string _type = "MouseClick";
@@ -94,9 +94,7 @@ public sealed class MacroStep : INotifyPropertyChanged
     [JsonIgnore] public bool IsGroup => Type == "Group";
     [JsonIgnore] public bool HasJump => JumpTarget >= 1;
     [JsonIgnore] public bool HasListener => SuccessAction is not null || CompleteAction is not null || FailAction is not null;
-    [JsonIgnore] public bool HasRunCondition =>
-        (RunConditionType == "TimeRange" && (RunConditionStartMinute.HasValue || RunConditionEndMinute.HasValue))
-        || (RunConditionType == "ImageMatch" && !string.IsNullOrEmpty(RunConditionImage) && RunConditionRectW > 0 && RunConditionRectH > 0);
+    [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);   // 与方案级同一判定
 
     private bool _isChecked, _isExpanded, _isExecuting, _isFocused;
     private int _displayIndex;

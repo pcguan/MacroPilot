@@ -62,9 +62,10 @@ public sealed class MacroRunner
                 while (!ct.IsCancellationRequested)
                 {
                     // 方案级运行条件：不满足时整方案空转等待时间窗开启（每秒复检、可即时停止），不消耗循环次数。
-                    if (!PlanConditionMet(plan))
+                    if (!Evaluate(plan, out var planCond))
                     {
-                        if (!waitingWindow) { waitingWindow = true; Log?.Invoke("Warning", "⏸ 方案运行条件未满足（不在设定时间段内），等待时间窗开启…"); Progress?.Invoke(0, "等待运行条件…"); }
+                        // 条件类型现已不止时间段（还有图片出现），日志报【实际观测状态】而不是写死"不在时间段内"。
+                        if (!waitingWindow) { waitingWindow = true; Log?.Invoke("Warning", $"⏸ 方案运行条件未满足（{planCond}），等待条件满足…"); Progress?.Invoke(0, "等待运行条件…"); }
                         if (ct.WaitHandle.WaitOne(1000)) break;
                         continue;
                     }
@@ -318,18 +319,9 @@ public sealed class MacroRunner
         catch { }
     }
 
-    // 方案级运行条件（对所有动作生效）：满足才执行本轮。逻辑与动作级一致，复用 IsInTimeRange。
-    private static bool PlanConditionMet(MacroPlan plan)
-    {
-        if (!plan.HasRunCondition) return true;
-        int now = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
-        bool match = IsInTimeRange(now, plan.RunConditionStartMinute, plan.RunConditionEndMinute);
-        return plan.RunConditionInvert ? !match : match;
-    }
-
     // 图片条件模板缓存：base64+PNG 解码一次即缓存 Bitmap（键=图片内容，内容变了自动失效）；一次运行结束在 finally 里释放。
-    private readonly System.Collections.Generic.Dictionary<MacroStep, (string key, System.Drawing.Bitmap bmp)> _tplCache = new();
-    private System.Drawing.Bitmap? TemplateFor(MacroStep step)
+    private readonly System.Collections.Generic.Dictionary<IRunCondition, (string key, System.Drawing.Bitmap bmp)> _tplCache = new();
+    private System.Drawing.Bitmap? TemplateFor(IRunCondition step)
     {
         var img = step.RunConditionImage;
         if (string.IsNullOrEmpty(img)) return null;
@@ -349,10 +341,13 @@ public sealed class MacroRunner
         _tplCache.Clear();
     }
 
-    private bool ShouldRun(MacroStep step, out string conditionText)
+    private bool ShouldRun(MacroStep step, out string conditionText) => Evaluate(step, out conditionText);
+
+    /// <summary>判定一条运行条件是否放行。方案级与动作级共用，conditionText 仅在【跳过】时用于打日志。</summary>
+    private bool Evaluate(IRunCondition step, out string conditionText)
     {
         conditionText = "";
-        if (!step.HasRunCondition) return true;
+        if (!RunCondition.Has(step)) return true;
         if (step.RunConditionType == "ImageMatch")
         {
             // 屏内相对坐标 → 按该屏当前位置还原绝对区域（挪动显示器后区域跟着屏走）。
@@ -387,7 +382,7 @@ public sealed class MacroRunner
         return true;
     }
 
-    private static string FormatCondition(MacroStep step, bool inRange)
+    private static string FormatCondition(IRunCondition step, bool inRange)
     {
         string range = (step.RunConditionStartMinute, step.RunConditionEndMinute) switch
         {
