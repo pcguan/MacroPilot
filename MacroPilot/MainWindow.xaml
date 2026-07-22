@@ -285,6 +285,9 @@
                   <Button Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="新建方案" Click="NewPlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案" Click="RenamePlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="删除当前方案" Click="DeletePlanIcon_Click" />
+                  <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="导入方案（可多选文件，单方案 / 多方案自动识别）" Click="Import_Click" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE898;" ToolTip="导出全部方案到一个文件" Click="ExportAll_Click" />
                 </StackPanel>
               </DockPanel>
               <ListBox Name="PlansList" SelectionChanged="PlansList_SelectionChanged" KeyDown="PlansList_KeyDown" AllowDrop="True"
@@ -516,8 +519,7 @@
             <StackPanel Orientation="Horizontal">
               <Button Name="RunButton" Width="44" Height="40" FontSize="18" Foreground="{DynamicResource Accent}" Style="{StaticResource IconButton}" Content="&#xE768;" ToolTip="运行当前方案" Click="Run_Click" />
               <Button Name="SaveButton" Width="44" Height="40" FontSize="16" Style="{StaticResource IconButton}" IsEnabled="False" Content="&#xE74E;" ToolTip="保存当前方案 (Ctrl+S)" Click="Save_Click" />
-              <Button Width="40" Height="40" Style="{StaticResource IconButton}" Content="&#xE898;" ToolTip="导出方案（当前 / 全部）" Click="Export_Click" />
-              <Button Width="40" Height="40" Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="从文件导入方案（可多选、支持批量）" Click="Import_Click" />
+              <Button Name="ExportCurrentButton" Width="40" Height="40" Style="{StaticResource IconButton}" IsEnabled="False" Content="&#xE898;" ToolTip="仅导出当前方案" Click="ExportCurrent_Click" />
             </StackPanel>
             <TextBlock Grid.Column="1" Text="保存仅作用于当前方案 · 运行后自动跳转到“运行”页" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right" />
           </Grid>

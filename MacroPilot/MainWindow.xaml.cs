@@ -523,6 +523,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plan = newPlan;
         if (_plan == null) { ShowNoPlan(); return; }
         StepsPanel.Visibility = Visibility.Visible; NoPlanPanel.Visibility = Visibility.Collapsed;
+        ExportCurrentButton.IsEnabled = true;
         StepsList.ItemsSource = _plan.Steps;
         _loading = true;
         LoopCountText.Text = _plan.LoopCount.ToString();
@@ -541,6 +542,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         _plan = null; StepsList.ItemsSource = null;
         StepsPanel.Visibility = Visibility.Collapsed; NoPlanPanel.Visibility = Visibility.Visible;
+        ExportCurrentButton.IsEnabled = false;
     }
 
     private void NewPlanIcon_Click(object sender, RoutedEventArgs e)
@@ -1395,14 +1397,18 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _undo.Clear(); UndoButton.IsEnabled = false; // 保存后清空撤销历史，回撤按钮置灰
         ShowToast("已保存");
     }
-    private void Export_Click(object sender, RoutedEventArgs e)
+    // 方案列表标题栏的导出：整个方案列表（存成方案数组）。
+    private void ExportAll_Click(object sender, RoutedEventArgs e)
     {
         if (_plans.Count == 0) { ThemedDialog.Show("当前没有可导出的方案。", "导出方案"); return; }
-        // 分开：单方案导出 / 方案列表批量导出。
-        var cm = new ContextMenu { PlacementTarget = sender as UIElement, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
-        if (_plan != null) cm.Items.Add(MakeMenuItem($"导出当前方案「{_plan.Name}」", () => ExportPlans(new List<MacroPlan> { _plan }, single: true)));
-        cm.Items.Add(MakeMenuItem($"导出全部方案（{_plans.Count} 个）", () => ExportPlans(_plans.ToList(), single: false)));
-        cm.IsOpen = true;
+        ExportPlans(_plans.ToList(), single: false);
+    }
+
+    // 方案编辑区底栏的导出：只导当前这一个方案（存成单个方案对象）。
+    private void ExportCurrent_Click(object sender, RoutedEventArgs e)
+    {
+        if (_plan == null) { ThemedDialog.Show("请先选择一个方案。", "导出方案"); return; }
+        ExportPlans(new List<MacroPlan> { _plan }, single: true);
     }
 
     // single=true 存单个方案对象；否则存方案数组。均自包含（图片引用→内联 base64）。
