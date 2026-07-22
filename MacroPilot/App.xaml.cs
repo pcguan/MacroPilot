@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Principal;
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
 using MacroPilot.Models;
 using MacroPilot.Services;
 
@@ -35,6 +36,13 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 全局统一悬停提示的时序：WPF 默认各控件继承系统值，实测有的按钮要悬停很久才弹。
+        // 这里一次性覆盖 FrameworkElement 的默认元数据，所有控件（含代码里 new 出来的）都生效。
+        ToolTipService.InitialShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(350));
+        ToolTipService.BetweenShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(350));
+        ToolTipService.ShowDurationProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(20000));
+        ToolTipService.ShowOnDisabledProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(true));
 
         DispatcherUnhandledException += (_, ev) => { LogCrash(ev.Exception); ev.Handled = true; };
         AppDomain.CurrentDomain.UnhandledException += (_, ev) => LogCrash(ev.ExceptionObject as Exception);

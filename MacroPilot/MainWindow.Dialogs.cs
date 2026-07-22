@@ -31,6 +31,25 @@ public partial class MainWindow
         new() { Text = text, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) };
 
     // 分组卡片：把一组相关设置包进带描边的面板 + 强调色标题，和其它配置组清晰隔开。
+    // 对话框内的二级分组：把关联的字段包成一块、与相邻分组明确分开（细描边圆角，不抢外层卡片的层次）。
+    // title 传 null 表示这组自带标题控件（如带勾选框的坐标块），不再额外加标题行。
+    private Border SubGroup(string? title, params UIElement[] children)
+    {
+        var sp = new StackPanel();
+        if (!string.IsNullOrEmpty(title))
+            sp.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
+        foreach (var c in children) sp.Children.Add(c);
+        return new Border
+        {
+            BorderBrush = (Brush)FindResource("Line"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(12, 10, 12, 12),
+            Margin = new Thickness(0, 0, 0, 10),
+            Child = sp,
+        };
+    }
+
     private Border GroupCard(string title, params UIElement[] children)
     {
         var content = new StackPanel();
@@ -772,8 +791,8 @@ public partial class MainWindow
         typeCombo.Items.Add("输入"); typeCombo.Items.Add("等待"); typeCombo.Items.Add("激活窗口"); typeCombo.SelectedIndex = 0;
         var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
-        var mouseActionCombo = new ComboBox { Width = 118, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
-        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("点击坐标"); mouseActionCombo.Items.Add("滚轮");
+        var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
+        mouseActionCombo.Items.Add("点击/移动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
         typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo);
         baseContent.Children.Add(typeRow);
@@ -781,24 +800,25 @@ public partial class MainWindow
         // 鼠标面板
         var mousePanel = new StackPanel(); baseContent.Children.Add(mousePanel);
 
-        var mouseButtonPanel = new StackPanel();
-        mouseButtonPanel.Children.Add(FieldLabel("鼠标按钮"));
-        var buttonCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键"); buttonCombo.SelectedIndex = 0;
-        mouseButtonPanel.Children.Add(buttonCombo);
-        // 按住时间单独成块：界面顺序要求它排在「坐标」之后
-        var mouseHoldPanel = new StackPanel();
-        mouseHoldPanel.Children.Add(FieldLabel("按住时间"));
-        var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs); mouseHoldPanel.Children.Add(holdRow.Panel);
+        // 鼠标按钮：多一个「仅移动」——选它即只移动不点击（存为 MouseMove）。
+        var buttonCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 0), Height = 32 };
+        buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键"); buttonCombo.Items.Add("仅移动");
+        buttonCombo.SelectedIndex = 0;
+        var mouseButtonPanel = SubGroup("鼠标按钮", buttonCombo);
+        bool MoveOnly() => (buttonCombo.SelectedItem?.ToString() ?? "左键") == "仅移动";
+
+        var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs);
+        holdRow.Panel.Margin = new Thickness(0, 0, 0, 0);
+        var mouseHoldPanel = SubGroup("按住时间", holdRow.Panel);
 
         // 鼠标移动：目标显示器 + 屏内归一化百分比，支持 F8 热键拾取光标位置。
-        var mouseMovePanel = new StackPanel { Visibility = Visibility.Collapsed };
-        var monHeader = new DockPanel { LastChildFill = false };
-        monHeader.Children.Add(new TextBlock { Text = "坐标", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+        var coordDetail = new StackPanel();
+        var coordCheck = new CheckBox { Content = "设置坐标（先移动到该位置再执行）", VerticalAlignment = VerticalAlignment.Center };
+        var monHeader = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 0) };
+        DockPanel.SetDock(coordCheck, Dock.Left); monHeader.Children.Add(coordCheck);
         var idBtnMove = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "标识屏幕（在各屏显示编号）" };
         DockPanel.SetDock(idBtnMove, Dock.Right); monHeader.Children.Add(idBtnMove);
         idBtnMove.Click += (_, _) => ShowIdScreens(win);
-        mouseMovePanel.Children.Add(monHeader);
         var monitorCombo = new ComboBox { Margin = new Thickness(0, 6, 0, 12), Height = 32 };
         void FillMonitors()
         {
@@ -823,7 +843,7 @@ public partial class MainWindow
         DockPanel.SetDock(pickRow, Dock.Right); monRow.Children.Add(pickRow);
         monitorCombo.Margin = new Thickness(0);
         monRow.Children.Add(monitorCombo);
-        mouseMovePanel.Children.Add(monRow);
+        coordDetail.Children.Add(monRow);
 
         // X / Y 并排，同属「坐标」这一块
         var pctGrid = new Grid();
@@ -838,25 +858,41 @@ public partial class MainWindow
         pyPanel.Children.Add(FieldLabel("Y（%）"));
         var pctYText = new TextBox { Text = "50", Height = 32 };
         pyPanel.Children.Add(pctYText); Grid.SetColumn(pyPanel, 2); pctGrid.Children.Add(pyPanel);
-        mouseMovePanel.Children.Add(pctGrid);
+        coordDetail.Children.Add(pctGrid);
         var pickStatus = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
-        mouseMovePanel.Children.Add(pickStatus);
+        coordDetail.Children.Add(pickStatus);
         var ch9329Note = new TextBlock
         {
             Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed,
             Text = "CH9329 采用相对闭环移动到位：全程真实硬件、可跨屏（含副屏），远距离会多用几帧逼近目标。",
         };
-        mouseMovePanel.Children.Add(ch9329Note);
-        // 拟人化移动（动作级）：勾选后该移动走缓入缓出的弧线轨迹分多步逼近，而非瞬间跳到目标。
-        mouseMovePanel.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("Line"), Opacity = 0.7, Margin = new Thickness(0, 14, 0, 0) });
-        var humanizeMoveCheck = new CheckBox { Content = "拟人化移动（走缓入缓出的弧线轨迹，更像真人）", Margin = new Thickness(0, 12, 0, 0) };
-        mouseMovePanel.Children.Add(humanizeMoveCheck);
-        mouseMovePanel.Children.Add(new TextBlock
+        coordDetail.Children.Add(ch9329Note);
+
+        // 勾选后才展开明细（与运行条件同一套观感）
+        var coordWrap = new Border
+        {
+            BorderBrush = (Brush)FindResource("Accent"), BorderThickness = new Thickness(2, 0, 0, 0),
+            CornerRadius = new CornerRadius(0, 6, 6, 0), Padding = new Thickness(12, 10, 0, 2),
+            Margin = new Thickness(2, 10, 0, 0), Child = coordDetail, Visibility = Visibility.Collapsed,
+        };
+        var coordInner = new StackPanel();
+        coordInner.Children.Add(monHeader);
+        coordInner.Children.Add(coordWrap);
+        var mouseMovePanel = SubGroup(null, coordInner);
+        void RefreshCoord() => coordWrap.Visibility = coordCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        coordCheck.Checked += (_, _) => RefreshCoord();
+        coordCheck.Unchecked += (_, _) => RefreshCoord();
+        RefreshCoord();
+
+        // 拟人化移动（动作级）：独立成块，排在最后；只在启用坐标时有意义。
+        var humanizeMoveCheck = new CheckBox { Content = "拟人化移动（走缓入缓出的弧线轨迹，更像真人）" };
+        var humanizeNote = new TextBlock
         {
             Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
             Text = "沿带随机弧度、缓入缓出的路径分多步移动，比瞬移多花约 0.2–0.6 秒。CH9329 下每步仍是真实硬件相对闭环。",
-        });
+        };
+        var humanizePanel = SubGroup(null, humanizeMoveCheck, humanizeNote);
         void UpdateCh9329Note()
         {
             bool ch9329 = string.Equals(_doc.Backend, "Serial", StringComparison.OrdinalIgnoreCase);
@@ -893,13 +929,6 @@ public partial class MainWindow
         var wheelText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 6), Height = 32 };
         mouseWheelPanel.Children.Add(wheelText);
         mouseWheelPanel.Children.Add(new TextBlock { Text = "以“格”为单位（一格＝常规滚一下）。两种输出方式一致；CH9329 单次上限 ±127 格。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
-
-        // 界面顺序：鼠标按钮 → 坐标 → 按住时间 → 滚轮格数（各自按动作类型收放）。
-        // 次数 + 重复间隔属于同一类，作为一整块排在基础设置的最后（见 repeatPanel）。
-        mousePanel.Children.Add(mouseButtonPanel);
-        mousePanel.Children.Add(mouseMovePanel);
-        mousePanel.Children.Add(mouseHoldPanel);
-        mousePanel.Children.Add(mouseWheelPanel);
 
         // 键盘面板
         var keyboardPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(keyboardPanel);
@@ -1024,21 +1053,39 @@ public partial class MainWindow
         var loopCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         // 鼠标的「点击次数 / 滚动次数 + 重复间隔」——放基础设置里，与该动作本身的参数在一起。
         // 移动动作没有次数概念，整块不显示；键盘/等待/激活窗口仍用控制逻辑里的通用「循环次数」。
-        var repeatPanel = new StackPanel();
         var repeatCountLabel = FieldLabel("点击次数（0 为无限）");
-        var repeatCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        var repeatCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 0), Height = 32 };
         var repeatDelayValue = new TextBox { Width = 96, Height = 32, Text = "1", VerticalAlignment = VerticalAlignment.Center };
         var repeatDelayUnit = new ComboBox { Width = 84, Height = 32, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         foreach (var u in new[] { "毫秒", "秒", "分钟", "小时" }) repeatDelayUnit.Items.Add(u);
         repeatDelayUnit.SelectedIndex = 1;   // 默认 1 秒
-        var repeatDelayRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 4) };
+        var repeatDelayRow = new StackPanel { Orientation = Orientation.Horizontal };
         repeatDelayRow.Children.Add(repeatDelayValue); repeatDelayRow.Children.Add(repeatDelayUnit);
-        repeatPanel.Children.Add(repeatCountLabel);
-        repeatPanel.Children.Add(repeatCountText);
-        repeatPanel.Children.Add(FieldLabel("重复间隔"));
-        repeatPanel.Children.Add(repeatDelayRow);
-        repeatPanel.Children.Add(new TextBlock { Text = "两次之间的等待时长，次数为 1 时不生效。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
-        baseContent.Children.Add(repeatPanel);
+        // 间隔只有在真的会重复（次数 != 1）时才出现
+        var repeatDelayBlock = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 12, 0, 0) };
+        repeatDelayBlock.Children.Add(FieldLabel("重复间隔"));
+        repeatDelayBlock.Children.Add(repeatDelayRow);
+        var repeatInner = new StackPanel();
+        repeatInner.Children.Add(repeatCountLabel);
+        repeatInner.Children.Add(repeatCountText);
+        repeatInner.Children.Add(repeatDelayBlock);
+        var repeatPanel = SubGroup(null, repeatInner);
+        void RefreshRepeatDelay()
+        {
+            int n = ParseInt(repeatCountText.Text, 1);
+            repeatDelayBlock.Visibility = n == 1 ? Visibility.Collapsed : Visibility.Visible;
+        }
+        repeatCountText.TextChanged += (_, _) => RefreshRepeatDelay();
+        RefreshRepeatDelay();
+
+        // 界面顺序（每块都是独立小卡，关联字段在同一卡内）：
+        // 鼠标按钮 → 坐标 → 按住时间 → 点击次数(+重复间隔) → 滚轮格数 → 拟人化移动（最后）
+        mousePanel.Children.Add(mouseButtonPanel);
+        mousePanel.Children.Add(mouseMovePanel);
+        mousePanel.Children.Add(mouseHoldPanel);
+        mousePanel.Children.Add(repeatPanel);
+        mousePanel.Children.Add(mouseWheelPanel);
+        mousePanel.Children.Add(humanizePanel);
 
         double RepeatUnitFactor() => repeatDelayUnit.SelectedIndex switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
         int RepeatDelayMs()
@@ -1099,12 +1146,12 @@ public partial class MainWindow
         // 当前选中的三级路径。非"输入"类别时后两级无意义，统一返回空串。
         string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
-        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "移动") : "";
+        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击/移动") : "";
 
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、以及带坐标的鼠标动作（移动 / 点击坐标）。
-            bool needScreens = Cat() == "激活窗口" || Act() == "移动" || Act() == "点击坐标";
+            bool needScreens = Cat() == "激活窗口" || (Act() == "点击/移动" && coordCheck.IsChecked == true);
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
         void UpdatePanels()
@@ -1117,15 +1164,22 @@ public partial class MainWindow
             keyboardPanel.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
             waitPanel.Visibility = t == "等待" ? Visibility.Visible : Visibility.Collapsed;
             windowPanel.Visibility = t == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
-            // 点击坐标 = 坐标面板 + 按钮面板都要（先移动再点击）。
-            mouseButtonPanel.Visibility = a is "点击" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
-            mouseHoldPanel.Visibility = a is "点击" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
-            mouseMovePanel.Visibility = a is "移动" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
-            mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
+            bool clickMove = a == "点击/移动";
+            bool moveOnly = clickMove && MoveOnly();     // 「仅移动」= 只移动不点击
+            // 仅移动必须有坐标：强制勾上且不给取消。
+            if (moveOnly && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
+            coordCheck.IsEnabled = !moveOnly;
+            coordCheck.Content = moveOnly ? "设置坐标（仅移动必须指定目标位置）" : "设置坐标（先移动到该位置再执行）";
 
-            // 次数/间隔的归属：点击类与滚轮放基础设置（叫点击次数/滚动次数），
-            // 移动动作没有次数，键盘/等待/激活窗口仍用控制逻辑里的通用「循环次数」。
-            bool hasRepeat = a is "点击" or "点击坐标" or "滚轮";
+            mouseButtonPanel.Visibility = clickMove ? Visibility.Visible : Visibility.Collapsed;
+            mouseMovePanel.Visibility = clickMove ? Visibility.Visible : Visibility.Collapsed;
+            // 按住时间/点击次数只对"真的会点"的情况有意义，仅移动时整块收起。
+            mouseHoldPanel.Visibility = clickMove && !moveOnly ? Visibility.Visible : Visibility.Collapsed;
+            mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
+            // 拟人化只在启用坐标（会发生移动）时才有意义。
+            humanizePanel.Visibility = clickMove && coordCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+
+            bool hasRepeat = (clickMove && !moveOnly) || a == "滚轮";
             repeatPanel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
             repeatCountLabel.Text = a == "滚轮" ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
             loopCountPanel.Visibility = (d == "鼠标") ? Visibility.Collapsed : Visibility.Visible;
@@ -1139,6 +1193,9 @@ public partial class MainWindow
         typeCombo.SelectionChanged += (_, _) => UpdatePanels();
         deviceCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
+        buttonCombo.SelectionChanged += (_, _) => UpdatePanels();   // 切「仅移动」要收起按住时间/次数
+        coordCheck.Checked += (_, _) => UpdatePanels();             // 勾选坐标才显示拟人化、才需要标屏
+        coordCheck.Unchecked += (_, _) => UpdatePanels();
 
         win.PreviewKeyDown += (_, e) =>
         {
@@ -1180,27 +1237,42 @@ public partial class MainWindow
                         m.HoldMs = holdRow.GetMs();
                         m.HoldUnit = holdRow.UnitIndex;
                     }
-                    switch (a)
+                    // 界面上是一个「点击/移动」，存储仍沿用三种既有类型，旧方案照常可读：
+                    //   仅移动          → MouseMove
+                    //   按钮 + 设坐标   → MouseClickAt
+                    //   按钮 + 不设坐标 → MouseClick
+                    if (a == "滚轮")
                     {
-                        case "移动": result = new MacroStep { Type = "MouseMove" }; FillMove(result); break;
-                        case "点击": result = new MacroStep { Type = "MouseClick" }; FillButton(result); break;
-                        case "点击坐标": result = new MacroStep { Type = "MouseClickAt" }; FillMove(result); FillButton(result); break;
-                        case "滚轮": result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) }; break;
-                        default: throw new InvalidOperationException("请选择鼠标动作。");
-                    }
-                    if (a is "点击" or "点击坐标" && holdRow.SetAsDefault)
-                    {
-                        var ms = holdRow.GetMs();
-                        if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
-                    }
-                    // 点击/点击坐标/滚轮：次数与重复间隔来自基础设置；移动没有次数，固定跑一次。
-                    if (a is "点击" or "点击坐标" or "滚轮")
-                    {
+                        result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) };
                         result.LoopCount = Math.Max(0, ParseInt(repeatCountText.Text, 1));
-                        result.LoopDelayMs = RepeatDelayMs();
-                        result.LoopDelayUnit = Math.Max(0, repeatDelayUnit.SelectedIndex);
+                        if (result.LoopCount != 1) { result.LoopDelayMs = RepeatDelayMs(); result.LoopDelayUnit = Math.Max(0, repeatDelayUnit.SelectedIndex); }
                     }
-                    else result.LoopCount = 1;
+                    else if (a == "点击/移动")
+                    {
+                        bool withCoord = coordCheck.IsChecked == true;
+                        bool moveOnly = MoveOnly();
+                        if (moveOnly && !withCoord) throw new InvalidOperationException("「仅移动」必须设置坐标。");
+                        if (moveOnly)
+                        {
+                            result = new MacroStep { Type = "MouseMove" };
+                            FillMove(result);
+                            result.LoopCount = 1;   // 仅移动没有次数概念
+                        }
+                        else
+                        {
+                            result = new MacroStep { Type = withCoord ? "MouseClickAt" : "MouseClick" };
+                            if (withCoord) FillMove(result);
+                            FillButton(result);
+                            result.LoopCount = Math.Max(0, ParseInt(repeatCountText.Text, 1));
+                            if (result.LoopCount != 1) { result.LoopDelayMs = RepeatDelayMs(); result.LoopDelayUnit = Math.Max(0, repeatDelayUnit.SelectedIndex); }
+                            if (holdRow.SetAsDefault)
+                            {
+                                var ms = holdRow.GetMs();
+                                if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
+                            }
+                        }
+                    }
+                    else throw new InvalidOperationException("请选择鼠标动作。");
                 }
                 else if (dev == "键盘")
                 {
@@ -1275,9 +1347,9 @@ public partial class MainWindow
             }
             switch (source.Type)
             {
-                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; LoadMoveFields(); break;
-                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; LoadButtonFields(); break;
-                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击坐标"; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; buttonCombo.SelectedItem = "仅移动"; coordCheck.IsChecked = true; LoadMoveFields(); break;
+                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; coordCheck.IsChecked = false; LoadButtonFields(); break;
+                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields(); break;
                 case "MouseWheel":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
                 case "KeyTap":        typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
                 case "Wait":          typeCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
