@@ -279,6 +279,7 @@ public sealed class MacroRunner
                 loops++;
                 if (step.LoopCount == 1) break;
                 if (step.LoopCount != 0 && loops >= step.LoopCount) break;
+                if (step.LoopDelayMs > 0) Wait(Jitter(step.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
             }
         }
         catch (OperationCanceledException) { StepStateChanged?.Invoke(step, false); ActEnd?.Invoke("已停止", "Stopped"); throw; }

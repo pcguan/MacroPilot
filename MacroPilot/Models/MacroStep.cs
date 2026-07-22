@@ -45,6 +45,10 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public string TargetTitle { get; set; } = "";         // ActivateWindow：目标窗口标题(回退/显示用)
     public int TargetPid { get; set; }                    // ActivateWindow：选定窗口的进程 PID(同名多开靠它区分)
     public int LoopCount { get; set; } = 1;               // 1=一次, 0=无限, N=N 次
+    // 动作自身重复之间的间隔（毫秒）。点击/点击坐标/滚轮在界面上叫「重复间隔」，与「点击次数/滚动次数」配套。
+    // 只在实际重复时生效（次数=1 时不产生等待）。LoopDelayUnit 仅记录用户选的显示单位。
+    public int LoopDelayMs { get; set; } = 1000;
+    public int LoopDelayUnit { get; set; } = 1;           // 0毫秒 1秒 2分钟 3小时
 
     // 执行后跳转：JumpTarget=目标动作序号(1 起, 0=不跳)；JumpTimes=次数(0=无限)
     public int JumpTarget { get; set; }
@@ -118,7 +122,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, Disabled = Disabled,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
-            LoopCount = LoopCount, JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
+            LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
+            JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
             DisplayIndex = DisplayIndex,   // 运行页跑的是克隆副本，带上序号否则运行列表全显 0.（编辑页会 RefreshIndices 重算，不受影响）
             RunConditionType = RunConditionType,
             RunConditionInvert = RunConditionInvert,
@@ -144,7 +149,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             "Wait" => $"等待 {FormatMs(DurationMs)}",
             "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
             "MouseMove" => MoveDisplay(),
-            "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}键按住 {FormatMs(HoldMs)}",
+            "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
             "MouseWheel" => $"滚轮 {Wheel} 格",
             "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
             "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
