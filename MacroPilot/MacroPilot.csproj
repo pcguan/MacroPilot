@@ -9,13 +9,15 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.0.15</Version>
+    <Version>0.0.16</Version>
     <AssemblyTitle>MacroPilot</AssemblyTitle>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="app.ico" />
+    <!-- 内置更新日志：概况页「本次更新」与发布说明共用的唯一来源 -->
+    <EmbeddedResource Include="changelog.json" />
   </ItemGroup>
 
   <ItemGroup>

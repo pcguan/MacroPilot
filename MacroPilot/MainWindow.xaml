@@ -69,6 +69,25 @@
               <TextBlock Name="UpdateStatusText" VerticalAlignment="Center" Margin="12,0,0,0"
                          Foreground="{DynamicResource Accent}" TextWrapping="Wrap" />
             </StackPanel>
+            <!-- 本次更新：当前版本的更新点（数据来自内置 changelog.json，版本不在表里时整块折叠） -->
+            <StackPanel Name="OvChangelogPanel" Visibility="Collapsed" Margin="0,14,0,0">
+              <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="本次更新" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+                <TextBlock Name="OvChangelogDate" DockPanel.Dock="Left" Margin="10,0,0,0" VerticalAlignment="Center"
+                           FontSize="12" Foreground="{DynamicResource Muted}" />
+              </DockPanel>
+              <ItemsControl Name="OvChangelogList" Margin="0,8,0,0">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <DockPanel Margin="0,2">
+                      <TextBlock DockPanel.Dock="Left" Text="•" Margin="0,0,8,0" VerticalAlignment="Top"
+                                 Foreground="{DynamicResource Accent}" />
+                      <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                    </DockPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
             <TextBlock Text="设备状态" FontSize="16" FontWeight="Bold" Margin="0,22,0,8" />
             <TextBlock Name="OvSerialStatus" TextWrapping="Wrap" Margin="0,2" />
             <TextBlock Name="OvNativeStatus" TextWrapping="Wrap" Margin="0,2" />

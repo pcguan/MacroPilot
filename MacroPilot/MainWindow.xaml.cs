@@ -116,6 +116,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             AddLog("Info", _plans.Count == 0 ? "就绪。请先新建方案。" : "已自动加载保存的方案。");
             AddLog("Info", App.IsRunningAsAdmin() ? "当前以管理员权限运行。" : "当前为普通权限。");
             OvVersionText.Text = "版本 " + Services.UpdateService.CurrentVersionText;
+            ShowCurrentChangelog();
             _ = StartupUpdateCheck();   // 启动后静默查一次更新，有新版才弹窗提示
         };
     }
@@ -125,6 +126,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         base.OnSourceInitialized(e);
         // 热键 F9/F10/F11 不再启动即全局注册——改到方案执行时才装（见 EnableHotkeys，由 RunPlan 调用），
         // 运行结束/停止即注销（OnRunFinished）。平时把这三个键还给系统，也不让低级键盘钩子常挂输入链。
+    }
+
+    // 概况页「本次更新」：列出当前版本的更新点。本地调试版号不在 changelog.json 里时整块隐藏。
+    private void ShowCurrentChangelog()
+    {
+        var entry = Services.Changelog.Current;
+        if (entry == null || entry.Notes.Count == 0) { OvChangelogPanel.Visibility = Visibility.Collapsed; return; }
+        OvChangelogDate.Text = entry.Date;
+        OvChangelogList.ItemsSource = entry.Notes;
+        OvChangelogPanel.Visibility = Visibility.Visible;
     }
 
     // ================= 导航 =================
