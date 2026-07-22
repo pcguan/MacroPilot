@@ -113,17 +113,16 @@ build.bat
 
 ## 发布流程
 
-每次改动后：
+详见 **[RELEASE.md](RELEASE.md)**。六步，顺序不能变：
 
-1. `git commit` + `push`
-2. **版本号 +1**：`MacroPilot/MacroPilot.csproj` 的 `<Version>` 与 `MacroPilotInstaller_Flutter_WPF/lib/app_meta.dart` 的 `appVersion` **两处必须同步**
-3. 构建安装器（同时产出本体包 `assets/payload/app.zip`）
-4. 生成 `version.json`（版本号 + 两个文件的 size 与 SHA-256）
-5. 发布到**两个源**：
-   - GitHub Release：上传 `MacroPilotInstaller_Flutter.exe`、`MacroPilot-app.zip`、**`version.json`**（三个都要传，否则回退源拿不到清单）
-   - 自建源：同步同样三个文件到 NAS 静态目录
+1. 本地改源码（版本号两处 +1、`changelog.json` 补本版条目）
+2. 推送到 corp-win 编译构建 —— **构建失败就回第 1 步**
+3. 产物同步回本地，清理 corp-win 上的中间产物
+4. 提交 commit 并走代理 push 到 GitHub
+5. 维护两个源的发布文件（`version.json` + 本体包 + 安装器，三个都要传）
+6. 走公网验证两个源的版本与 SHA-256 是否一致
 
-> 版本号取自程序集 `<Version>`，更新器只比较 `Major.Minor.Build` 且**严格大于**才算新版（不会降级），也不认 draft / prerelease。
+> 核心原则：**构建成功了才提交、才发布**。版本号取自程序集 `<Version>`，更新器只比较 `Major.Minor.Build` 且**严格大于**才算新版（不会降级），也不认 draft / prerelease。
 
 ## 许可
 
