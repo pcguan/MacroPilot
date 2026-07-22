@@ -765,16 +765,21 @@ public partial class MainWindow
         // 基础设置组：动作类型 + 其对应的类型面板（鼠标/键盘/等待/激活窗口），整组包进一张卡片。
         var baseContent = new StackPanel();
         baseContent.Children.Add(FieldLabel("动作类型"));
-        var typeCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        typeCombo.Items.Add("鼠标"); typeCombo.Items.Add("键盘"); typeCombo.Items.Add("等待"); typeCombo.Items.Add("激活窗口"); typeCombo.SelectedIndex = 0;
-        baseContent.Children.Add(typeCombo);
+        // 三级级联：类别 → 输入设备 → 具体动作（输入 > 鼠标 > 点击坐标）。
+        // 后两级按上一级收放，非"输入"类别时只剩第一个下拉。
+        var typeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
+        var typeCombo = new ComboBox { Width = 116, Height = 32 };
+        typeCombo.Items.Add("输入"); typeCombo.Items.Add("等待"); typeCombo.Items.Add("激活窗口"); typeCombo.SelectedIndex = 0;
+        var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
+        deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
+        var mouseActionCombo = new ComboBox { Width = 118, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
+        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("点击坐标"); mouseActionCombo.Items.Add("滚轮");
+        mouseActionCombo.SelectedIndex = 0;
+        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo);
+        baseContent.Children.Add(typeRow);
 
         // 鼠标面板
         var mousePanel = new StackPanel(); baseContent.Children.Add(mousePanel);
-        mousePanel.Children.Add(FieldLabel("鼠标动作"));
-        var mouseActionCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("滚轮"); mouseActionCombo.SelectedIndex = 0;
-        mousePanel.Children.Add(mouseActionCombo);
 
         var mouseButtonPanel = new StackPanel(); mousePanel.Children.Add(mouseButtonPanel);
         mouseButtonPanel.Children.Add(FieldLabel("鼠标按钮"));
@@ -1044,30 +1049,39 @@ public partial class MainWindow
         Grid.SetRow(footer, 1); grid.Children.Add(footer);
 
         // 屏幕序号标记同步：进入"目标显示器/选择窗口"视图显示、离开收起。放后台优先级异步做，别拖慢窗口打开。
+        // 当前选中的三级路径。非"输入"类别时后两级无意义，统一返回空串。
+        string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
+        string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
+        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "移动") : "";
+
         void SyncIdScreens()
         {
-            string t2 = typeCombo.SelectedItem?.ToString() ?? "鼠标";
-            string a2 = mouseActionCombo.SelectedItem?.ToString() ?? "点击";
-            if (t2 == "激活窗口" || (t2 == "鼠标" && a2 == "移动")) ShowIdScreens(win); else HideIdScreens(win);
+            // 需要选屏的两种：激活窗口、以及带坐标的鼠标动作（移动 / 点击坐标）。
+            bool needScreens = Cat() == "激活窗口" || Act() == "移动" || Act() == "点击坐标";
+            if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
         void UpdatePanels()
         {
-            string t = typeCombo.SelectedItem?.ToString() ?? "鼠标";
-            mousePanel.Visibility = t == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
-            keyboardPanel.Visibility = t == "键盘" ? Visibility.Visible : Visibility.Collapsed;
+            string t = Cat(), d = Dev(), a = Act();
+            deviceCombo.Visibility = t == "输入" ? Visibility.Visible : Visibility.Collapsed;
+            mouseActionCombo.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+
+            mousePanel.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            keyboardPanel.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
             waitPanel.Visibility = t == "等待" ? Visibility.Visible : Visibility.Collapsed;
             windowPanel.Visibility = t == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
-            string a = mouseActionCombo.SelectedItem?.ToString() ?? "点击";
-            mouseButtonPanel.Visibility = a == "点击" ? Visibility.Visible : Visibility.Collapsed;
-            mouseMovePanel.Visibility = a == "移动" ? Visibility.Visible : Visibility.Collapsed;
+            // 点击坐标 = 坐标面板 + 按钮面板都要（先移动再点击）。
+            mouseButtonPanel.Visibility = a is "点击" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
+            mouseMovePanel.Visibility = a is "移动" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
-            capturingKey = t == "键盘";
+            capturingKey = d == "键盘";
             if (capturingKey) win.Focus();
             // 窗口列表改按需枚举（点选择器时才 RefreshWindows，见 OpenPicker），不在打开时同步枚举；
             // 屏幕序号标记（每屏一个置顶窗口）也延后到后台优先级异步显示 —— 消除激活窗口/鼠标移动动作双击打开时的卡顿厚重感。
             win.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(SyncIdScreens));
         }
         typeCombo.SelectionChanged += (_, _) => UpdatePanels();
+        deviceCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
 
         win.PreviewKeyDown += (_, e) =>
@@ -1092,35 +1106,39 @@ public partial class MainWindow
         {
             try
             {
-                string t = typeCombo.SelectedItem?.ToString() ?? "鼠标";
-                if (t == "鼠标")
+                string t = Cat(), dev = Dev();
+                if (dev == "鼠标")
                 {
-                    string a = mouseActionCombo.SelectedItem?.ToString() ?? "点击";
-                    result = a switch
+                    string a = Act();
+                    // 点击坐标同时用到坐标与按钮两组字段，故与移动/点击共用同一套读取。
+                    void FillMove(MacroStep m)
                     {
-                        "点击" => new MacroStep { Type = "MouseClick", Button = ButtonToInternal(buttonCombo.SelectedItem?.ToString() ?? "左键"), HoldMs = holdRow.GetMs() },
-                        "移动" => new MacroStep
-                        {
-                            Type = "MouseMove",
-                            MoveMonitor = (monitorCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
-                            MoveNormX = Math.Clamp(ParseDouble(pctXText.Text, 50) / 100.0, 0, 1),
-                            MoveNormY = Math.Clamp(ParseDouble(pctYText.Text, 50) / 100.0, 0, 1),
-                            Humanize = humanizeMoveCheck.IsChecked == true,
-                        },
-                        "滚轮" => new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) },
-                        _ => throw new InvalidOperationException("请选择鼠标动作。"),
-                    };
-                    if (a == "点击")
+                        m.MoveMonitor = (monitorCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+                        m.MoveNormX = Math.Clamp(ParseDouble(pctXText.Text, 50) / 100.0, 0, 1);
+                        m.MoveNormY = Math.Clamp(ParseDouble(pctYText.Text, 50) / 100.0, 0, 1);
+                        m.Humanize = humanizeMoveCheck.IsChecked == true;
+                    }
+                    void FillButton(MacroStep m)
                     {
-                        result.HoldUnit = holdRow.UnitIndex;
-                        if (holdRow.SetAsDefault)
-                        {
-                            var ms = holdRow.GetMs();
-                            if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
-                        }
+                        m.Button = ButtonToInternal(buttonCombo.SelectedItem?.ToString() ?? "左键");
+                        m.HoldMs = holdRow.GetMs();
+                        m.HoldUnit = holdRow.UnitIndex;
+                    }
+                    switch (a)
+                    {
+                        case "移动": result = new MacroStep { Type = "MouseMove" }; FillMove(result); break;
+                        case "点击": result = new MacroStep { Type = "MouseClick" }; FillButton(result); break;
+                        case "点击坐标": result = new MacroStep { Type = "MouseClickAt" }; FillMove(result); FillButton(result); break;
+                        case "滚轮": result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) }; break;
+                        default: throw new InvalidOperationException("请选择鼠标动作。");
+                    }
+                    if (a is "点击" or "点击坐标" && holdRow.SetAsDefault)
+                    {
+                        var ms = holdRow.GetMs();
+                        if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
                     }
                 }
-                else if (t == "键盘")
+                else if (dev == "键盘")
                 {
                     if (string.IsNullOrWhiteSpace(capturedKey) && capturedModifier == 0)
                         throw new InvalidOperationException("请先按下需要模拟的键。");
@@ -1166,11 +1184,9 @@ public partial class MainWindow
         // 回填已有动作
         if (source != null)
         {
-            switch (source.Type)
+            // 回填坐标（移动 / 点击坐标共用）
+            void LoadMoveFields()
             {
-                case "MouseClick": typeCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; buttonCombo.SelectedItem = TranslateButtonToDisplay(source.Button); holdRow.SetMs(source.HoldMs, source.HoldUnit); break;
-                case "MouseMove":
-                    typeCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动";
                     if (!string.IsNullOrEmpty(source.MoveMonitor))
                     {
                         SelectMonitor(source.MoveMonitor);
@@ -1186,11 +1202,22 @@ public partial class MainWindow
                     }
                     humanizeMoveCheck.IsChecked = source.Humanize;
                     UpdateCh9329Note();
-                    break;
-                case "MouseWheel": typeCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
-                case "KeyTap": typeCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
-                case "Wait": typeCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
-                case "ActivateWindow": typeCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
+            }
+            // 回填按钮/按住（点击 / 点击坐标共用）
+            void LoadButtonFields()
+            {
+                buttonCombo.SelectedItem = TranslateButtonToDisplay(source.Button);
+                holdRow.SetMs(source.HoldMs, source.HoldUnit);
+            }
+            switch (source.Type)
+            {
+                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; LoadMoveFields(); break;
+                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; LoadButtonFields(); break;
+                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击坐标"; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseWheel":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
+                case "KeyTap":        typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
+                case "Wait":          typeCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
+                case "ActivateWindow":typeCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
             }
             loopCountText.Text = source.LoopCount.ToString();
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑

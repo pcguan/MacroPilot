@@ -417,15 +417,13 @@ public sealed class MacroRunner
                 _backend.KeyTap(step.Key, step.Modifier, Jitter(step.HoldMs), ct);
                 break;
             case "MouseClick": _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct); break;
-            case "MouseMove":
-            {
-                var (vx, vy) = string.IsNullOrEmpty(step.MoveMonitor)
-                    ? (step.X, step.Y)                                            // 旧数据：主屏像素
-                    : ScreenInfo.Resolve(step.MoveMonitor, step.MoveNormX, step.MoveNormY);
-                if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
-                else _backend.MouseMove(vx, vy);
+            case "MouseMove": MoveToStepTarget(step, ct); break;
+            // 点击坐标 = 移动 + 点击。移动段与 MouseMove 完全一致（含拟人化），到位后再按 MouseClick 那套点。
+            case "MouseClickAt":
+                MoveToStepTarget(step, ct);
+                ct.ThrowIfCancellationRequested();
+                _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
                 break;
-            }
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
             case "ActivateWindow":
                 if (step.TargetProcess == WindowActivator.DesktopSentinel)
@@ -439,6 +437,16 @@ public sealed class MacroRunner
                 Log?.Invoke("Info", $"已激活窗口：{matched}");
                 break;
         }
+    }
+
+    // 把光标移到该动作配置的目标点（MouseMove / MouseClickAt 共用）。
+    private void MoveToStepTarget(MacroStep step, CancellationToken ct)
+    {
+        var (vx, vy) = string.IsNullOrEmpty(step.MoveMonitor)
+            ? (step.X, step.Y)                                            // 旧数据：主屏像素
+            : ScreenInfo.Resolve(step.MoveMonitor, step.MoveNormX, step.MoveNormY);
+        if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
+        else _backend.MouseMove(vx, vy);
     }
 
     // 拟人化移动。同屏：直接 HumanizeWithin。跨屏按后端能力分流：

@@ -7,7 +7,11 @@ namespace MacroPilot.Models;
 
 /// <summary>
 /// 单个动作。字段名与参考版 plans.json 完全一致（PascalCase），可直接互读。
-/// Type: MouseClick / MouseMove / MouseWheel / KeyTap / Wait / Group
+/// Type（对应「动作类型」层级）：
+///   输入 → 鼠标 → 移动 = MouseMove、点击 = MouseClick、点击坐标 = MouseClickAt、滚轮 = MouseWheel
+///   输入 → 键盘        = KeyTap
+///   等待 = Wait、激活窗口 = ActivateWindow、组合 = Group
+/// MouseClickAt 复用 MouseMove 的坐标字段 + MouseClick 的按钮/按住字段，语义 = 先移动再点击。
 /// </summary>
 public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
 {
@@ -140,6 +144,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             "Wait" => $"等待 {FormatMs(DurationMs)}",
             "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
             "MouseMove" => MoveDisplay(),
+            "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}键按住 {FormatMs(HoldMs)}",
             "MouseWheel" => $"滚轮 {Wheel} 格",
             "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
             "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
@@ -169,13 +174,14 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         return $"{ms} 毫秒";
     }
 
-    private string MoveDisplay()
+    // verb：移动类动作说"移动到"，点击坐标说"点击"。
+    private string MoveDisplay(string verb = "移动")
     {
         string suffix = Humanize ? " · 拟人" : "";
-        if (string.IsNullOrEmpty(MoveMonitor)) return $"鼠标移动到 ({X}, {Y}){suffix}"; // 旧数据
+        if (string.IsNullOrEmpty(MoveMonitor)) return $"鼠标{verb}到 ({X}, {Y}){suffix}"; // 旧数据
         int i = MoveMonitor.LastIndexOf('\\');
         string mon = i >= 0 ? MoveMonitor[(i + 1)..] : MoveMonitor;
-        return $"鼠标移动到 {mon}（{MoveNormX * 100:0.#}%, {MoveNormY * 100:0.#}%）{suffix}";
+        return $"鼠标{verb}到 {mon}（{MoveNormX * 100:0.#}%, {MoveNormY * 100:0.#}%）{suffix}";
     }
 
     private string WindowTargetCn()
