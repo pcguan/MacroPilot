@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -9,30 +10,48 @@ using System.Threading.Tasks;
 
 namespace MacroPilot.Services;
 
+/// <summary>更新清单里的一个文件（本体 zip / 安装器 exe）。</summary>
+public sealed class UpdateAsset
+{
+    public required string Name { get; init; }
+    public long Size { get; init; }
+    public string? Sha256 { get; init; }   // 可为空（老清单）；有则下载后强校验
+}
+
 public sealed class UpdateInfo
 {
     public required Version Version { get; init; }
-    public required string Tag { get; init; }        // 原始 tag，如 v0.0.7
-    public string? ZipUrl { get; init; }             // 本体压缩包（MacroPilot-app.zip，~2.8MB，优先）
-    public long ZipSize { get; init; }
-    public string? ExeUrl { get; init; }             // 安装器 exe（兜底：release 无 zip 时用）
-    public long ExeSize { get; init; }
+    public required string VersionText { get; init; }   // 如 0.0.14
     public string? Notes { get; init; }
-    public bool HasAsset => ZipUrl != null || ExeUrl != null;
+    public UpdateAsset? Zip { get; init; }              // 本体包（优先，~2.8MB）
+    public UpdateAsset? Exe { get; init; }              // 安装器（兜底/全新安装）
+    /// <summary>可用源的基址，按尝试顺序；[0] 是本次成功返回清单的那个源。</summary>
+    public required string[] Bases { get; init; }
+    public bool HasAsset => Zip != null || Exe != null;
 }
 
 /// <summary>
-/// 在线更新：查 GitHub 公开仓库 pcguan/MacroPilot 的最新 release，比对本机版本。
-/// 更新优先下载【本体压缩包 zip】（轻量），经 PowerShell 助手就地解压覆盖（备份→覆盖→回滚→重启，
-/// 无需用户操作、保留 unins\ 卸载器）；release 若无 zip 则回退到静默跑安装器 exe。
-/// 仓库公开 → 查询与下载都免鉴权、无需内嵌 token。
+/// 在线更新：从【有序多源】读同一格式的 version.json 比对版本，下载后按 SHA-256 校验，再交给就地更新。
+///
+/// 源顺序（谁先应答用谁，前一个不通自动降级，不是单点）：
+///   ① 自建 NAS 静态源——国内直连快，给不翻墙的用户当主力；
+///   ② GitHub Release——源头/海外兜底（用 releases/latest/download/ 普通文件直链，
+///      不再走 api.github.com，因此彻底摆脱未鉴权 60次/小时限流，也便于被代理/CDN 缓存）。
 /// </summary>
 public static class UpdateService
 {
-    private const string LatestApi = "https://api.github.com/repos/pcguan/MacroPilot/releases/latest";
+    // 基址必须以 / 结尾；每个源下都放同名的 version.json / 本体 zip / 安装器 exe。
+    private static readonly string[] Sources =
+    {
+        "https://nas.pcguan.cn/macropilot/",
+        "https://github.com/pcguan/MacroPilot/releases/latest/download/",
+    };
     public const string ReleasesPage = "https://github.com/pcguan/MacroPilot/releases";
+    private const string ManifestName = "version.json";
 
-    /// <summary>本机版本（取程序集版本 Major.Minor.Build，忽略 Revision）。</summary>
+    private static UpdateInfo? _cached;   // 全部源都失败时沿用上次结果，不打扰用户
+
+    /// <summary>本机版本（程序集版本 Major.Minor.Build，忽略 Revision）。</summary>
     public static Version CurrentVersion
     {
         get { var v = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0); return Norm(v); }
@@ -43,94 +62,141 @@ public static class UpdateService
     {
         var c = new HttpClient { Timeout = timeout };
         c.DefaultRequestHeaders.UserAgent.ParseAdd("MacroPilot-Updater");
-        c.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        c.DefaultRequestHeaders.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true };
         return c;
     }
 
-    // 条件请求缓存：ETag + 上次结果。30s 轮询靠 If-None-Match 拿 304——GitHub 的 304 不计入
-    // 未鉴权的 60 次/小时配额，否则 30s 一次(=120/小时)必被限流。限流/故障/断网时沿用上次结果，不打扰。
-    private static string? _etag;
-    private static UpdateInfo? _cached;
-
-    /// <summary>查询最新 release。无网络 / 无 release / 无可用资产 / 解析失败都返回上次结果（首次则 null）。</summary>
+    /// <summary>依次向各源要 version.json，第一个成功的即采用。全失败则返回上次缓存（首次为 null）。</summary>
     public static async Task<UpdateInfo?> CheckLatestAsync(CancellationToken ct = default)
+    {
+        for (int i = 0; i < Sources.Length; i++)
+        {
+            try
+            {
+                using var c = NewClient(TimeSpan.FromSeconds(10));   // 单源短超时，坏源快速跳过
+                var json = await c.GetStringAsync(Sources[i] + ManifestName, ct);
+                var info = Parse(json, i);
+                if (info != null) { _cached = info; return info; }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { /* 该源不通 → 试下一个 */ }
+        }
+        return _cached;
+    }
+
+    // 解析清单；bases 以命中的源打头，其余按原顺序跟上（下载时可继续回退）。
+    private static UpdateInfo? Parse(string json, int hitIndex)
     {
         try
         {
-            using var c = NewClient(TimeSpan.FromSeconds(20));
-            using var req = new HttpRequestMessage(HttpMethod.Get, LatestApi);
-            if (!string.IsNullOrEmpty(_etag)) req.Headers.TryAddWithoutValidation("If-None-Match", _etag);
-            using var resp = await c.SendAsync(req, ct);
-            if (resp.StatusCode == System.Net.HttpStatusCode.NotModified) return _cached;  // 没变（不计配额）
-            if (!resp.IsSuccessStatusCode) return _cached;                                  // 限流/故障 → 沿用上次
-            var json = await resp.Content.ReadAsStringAsync(ct);
-            _etag = resp.Headers.ETag?.ToString();
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            var ver = ParseVersion(root.TryGetProperty("tag_name", out var t) ? t.GetString() : null);
+            var r = doc.RootElement;
+            var vs = r.TryGetProperty("version", out var v) ? v.GetString() : null;
+            var ver = ParseVersion(vs);
             if (ver == null) return null;
-            string tag = root.GetProperty("tag_name").GetString() ?? "";
 
-            string? zipUrl = null, exeUrl = null; long zipSize = 0, exeSize = 0;
-            if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
-                foreach (var a in assets.EnumerateArray())
+            UpdateAsset? Asset(string key)
+            {
+                if (!r.TryGetProperty(key, out var e) || e.ValueKind != JsonValueKind.Object) return null;
+                var n = e.TryGetProperty("name", out var nn) ? nn.GetString() : null;
+                if (string.IsNullOrWhiteSpace(n)) return null;
+                return new UpdateAsset
                 {
-                    var name = a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                    var url = a.TryGetProperty("browser_download_url", out var d) ? d.GetString() : null;
-                    long size = a.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
-                    if (url == null) continue;
-                    if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) { zipUrl = url; zipSize = size; }
-                    else if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) { exeUrl = url; exeSize = size; }
-                }
-            string? notes = root.TryGetProperty("body", out var b) ? b.GetString() : null;
-            var info = new UpdateInfo { Version = ver, Tag = tag, ZipUrl = zipUrl, ZipSize = zipSize, ExeUrl = exeUrl, ExeSize = exeSize, Notes = notes };
-            _cached = info.HasAsset ? info : null;
-            return _cached;
+                    Name = n!,
+                    Size = e.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : 0,
+                    Sha256 = e.TryGetProperty("sha256", out var h) ? h.GetString() : null,
+                };
+            }
+
+            var bases = new string[Sources.Length];
+            bases[0] = Sources[hitIndex];
+            for (int i = 0, k = 1; i < Sources.Length; i++) if (i != hitIndex) bases[k++] = Sources[i];
+
+            var info = new UpdateInfo
+            {
+                Version = ver,
+                VersionText = vs!.Trim().TrimStart('v', 'V'),
+                Notes = r.TryGetProperty("notes", out var nt) ? nt.GetString() : null,
+                Zip = Asset("zip"),
+                Exe = Asset("exe"),
+                Bases = bases,
+            };
+            return info.HasAsset ? info : null;
         }
-        catch { return _cached; }
+        catch { return null; }
     }
 
     public static bool IsNewer(UpdateInfo info) => info.Version > CurrentVersion;
 
-    private static Version? ParseVersion(string? tag)
+    private static Version? ParseVersion(string? s)
     {
-        if (string.IsNullOrWhiteSpace(tag)) return null;
-        var s = tag.Trim().TrimStart('v', 'V');
-        int cut = s.IndexOfAny(new[] { '-', '+', ' ' });
-        if (cut >= 0) s = s[..cut];
-        return Version.TryParse(s, out var v) ? Norm(v) : null;
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        var t = s.Trim().TrimStart('v', 'V');
+        int cut = t.IndexOfAny(new[] { '-', '+', ' ' });
+        if (cut >= 0) t = t[..cut];
+        return Version.TryParse(t, out var v) ? Norm(v) : null;
     }
     private static Version Norm(Version v) => new(Math.Max(0, v.Major), Math.Max(0, v.Minor), Math.Max(0, v.Build));
 
-    /// <summary>下载更新包到 %TEMP%\MacroPilotUpdate（优先 zip，否则 exe）。progress 报告 0..1（未知总大小报 -1）。返回落地路径。</summary>
+    /// <summary>
+    /// 下载更新包（优先本体 zip，无则安装器 exe）到 %TEMP%\MacroPilotUpdate。
+    /// 逐源尝试：下完即校验 SHA-256，不匹配/下载失败就删档换下一个源；全失败抛异常。
+    /// </summary>
     public static async Task<string> DownloadAsync(UpdateInfo info, IProgress<double>? progress, CancellationToken ct = default)
     {
-        bool useZip = info.ZipUrl != null;
-        string url = useZip ? info.ZipUrl! : info.ExeUrl!;
-        long knownSize = useZip ? info.ZipSize : info.ExeSize;
-        string ext = useZip ? "zip" : "exe";
-
+        bool useZip = info.Zip != null;
+        var asset = useZip ? info.Zip! : info.Exe!;
         var dir = Path.Combine(Path.GetTempPath(), "MacroPilotUpdate");
         Directory.CreateDirectory(dir);
-        var file = Path.Combine(dir, $"MacroPilot_{Safe(info.Tag)}.{ext}");
+        var file = Path.Combine(dir, $"MacroPilot_{Safe(info.VersionText)}.{(useZip ? "zip" : "exe")}");
 
+        Exception? last = null;
+        foreach (var b in info.Bases)
+        {
+            try
+            {
+                await DownloadOne(b + asset.Name, file, asset.Size, progress, ct);
+                if (Verify(file, asset.Sha256)) return file;
+                last = new InvalidOperationException("下载内容校验失败（SHA-256 不匹配），已换源重试");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { last = ex; }
+            try { File.Delete(file); } catch { }
+        }
+        throw last ?? new InvalidOperationException("所有更新源都不可用");
+    }
+
+    private static async Task DownloadOne(string url, string file, long knownSize, IProgress<double>? progress, CancellationToken ct)
+    {
         using var c = NewClient(TimeSpan.FromMinutes(10));
         using var resp = await c.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
         long total = resp.Content.Headers.ContentLength ?? knownSize;
         await using var src = await resp.Content.ReadAsStreamAsync(ct);
         await using var dst = new FileStream(file, FileMode.Create, FileAccess.Write, FileShare.None);
-        var buf = new byte[81920]; long read = 0; int nn;
-        while ((nn = await src.ReadAsync(buf, ct)) > 0)
+        var buf = new byte[81920]; long read = 0; int n;
+        while ((n = await src.ReadAsync(buf, ct)) > 0)
         {
-            await dst.WriteAsync(buf.AsMemory(0, nn), ct);
-            read += nn;
+            await dst.WriteAsync(buf.AsMemory(0, n), ct);
+            read += n;
             progress?.Report(total > 0 ? (double)read / total : -1);
         }
-        return file;
     }
 
-    /// <summary>应用下载好的更新并退出：zip → PowerShell 助手就地解压覆盖；exe → 静默跑安装器（兜底）。</summary>
+    /// <summary>校验 SHA-256；清单没给哈希则跳过（视为通过）。</summary>
+    private static bool Verify(string file, string? expect)
+    {
+        if (string.IsNullOrWhiteSpace(expect)) return true;
+        try
+        {
+            using var fs = File.OpenRead(file);
+            var hex = Convert.ToHexString(SHA256.HashData(fs));
+            return string.Equals(hex, expect.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>应用更新并退出：zip → PowerShell 助手就地覆盖；exe → 静默跑安装器（兜底）。</summary>
     public static void ApplyAndExit(string file)
     {
         if (file.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) ApplyZipUpdateAndExit(file);
@@ -163,7 +229,7 @@ public static class UpdateService
         System.Windows.Application.Current?.Shutdown();
     }
 
-    /// <summary>兜底：触发安装器静默就地更新（release 无 zip 时用），随即退出本程序。</summary>
+    /// <summary>兜底：触发安装器静默就地更新（拿到的是 exe 时用），随即退出本程序。</summary>
     public static void LaunchInstallerAndExit(string installerPath)
     {
         var installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');

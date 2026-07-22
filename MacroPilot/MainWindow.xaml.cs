@@ -1680,9 +1680,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 return;
             }
             _pendingUpdate = info;
-            UpdateStatusText.Text = $"发现新版本 {info.Tag}";
-            if (silent && _dismissedTag == info.Tag) return;   // 这个版本用户关过提醒 → 轮询不再打扰
-            UpdateBarText.Text = $"发现新版本 {info.Tag}（当前 {Services.UpdateService.CurrentVersionText}）";
+            UpdateStatusText.Text = $"发现新版本 v{info.VersionText}";
+            if (silent && _dismissedTag == info.VersionText) return;   // 这个版本用户关过提醒 → 轮询不再打扰
+            UpdateBarText.Text = $"发现新版本 v{info.VersionText}（当前 {Services.UpdateService.CurrentVersionText}）";
             UpdateBarText.ToolTip = string.IsNullOrWhiteSpace(info.Notes) ? null
                 : (info.Notes!.Length > 500 ? info.Notes![..500] + "…" : info.Notes);
             UpdateBar.Visibility = Visibility.Visible;
@@ -1701,7 +1701,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
     private void UpdateBarDismiss_Click(object sender, RoutedEventArgs e)
     {
-        _dismissedTag = _pendingUpdate?.Tag;   // 记住该版本，轮询不再提示；出更新版本时会重新提醒
+        _dismissedTag = _pendingUpdate?.VersionText;   // 记住该版本，轮询不再提示；出更新版本时会重新提醒
         UpdateBar.Visibility = Visibility.Collapsed;
     }
 
