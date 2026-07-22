@@ -56,25 +56,27 @@
     <Grid Grid.Row="1" Grid.Column="1" Margin="6,18,18,18">
 
       <!-- ===== 概况 ===== -->
-      <Border Name="PageOverview" Style="{StaticResource Card}" Padding="28" Visibility="Collapsed">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
+      <!-- 右侧只留 10 的内边距：滚动条贴近卡片右边框，与内容之间由 ThinScrollViewer 模板的 8 间距隔开，
+           不再出现"文字紧贴滚动条、条右边却空一大片"的情况。 -->
+      <Border Name="PageOverview" Style="{StaticResource Card}" Padding="28,28,10,28" Visibility="Collapsed">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Style="{StaticResource ThinScrollViewer}">
           <!-- 不设 MaxWidth：内容跟着窗口宽度走，拉宽窗口时说明文字会自然并成一行 -->
-          <StackPanel Margin="0,0,8,0">
+          <StackPanel>
             <TextBlock Text="键鼠宏助手" FontSize="26" FontWeight="Bold" />
             <TextBlock Foreground="{DynamicResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"
                        Text="一个用于编排并自动执行键盘 / 鼠标动作的工具。可将一系列点击、移动、滚轮、按键、等待等动作组成“方案”，按设定的循环次数与间隔重复执行。" />
             <!-- 版本卡片（同配置页 SettingCard 风格）：版本号 + 检查更新，下方直接列本版更新点 -->
             <Border Style="{StaticResource SettingCard}" Margin="0,18,0,0">
               <StackPanel>
-                <DockPanel LastChildFill="False">
-                  <TextBlock DockPanel.Dock="Left" Name="OvVersionText" Style="{StaticResource SettingTitle}" Text="版本 —" />
-                  <TextBlock DockPanel.Dock="Left" Name="OvChangelogDate" Margin="10,0,0,0" VerticalAlignment="Center"
-                             FontSize="12" Foreground="{DynamicResource Subtext}" />
-                  <TextBlock DockPanel.Dock="Left" Name="UpdateStatusText" VerticalAlignment="Center" Margin="12,0,0,0"
-                             FontSize="12" Foreground="{DynamicResource Accent}" TextWrapping="Wrap" />
-                  <Button DockPanel.Dock="Right" Name="CheckUpdateButton" Width="34" Height="34" Style="{StaticResource IconButton}"
+                <!-- 第一行：版本号 + 紧挨着的检查更新按钮 + 检查结果；第二行：版本日期 -->
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock Name="OvVersionText" Style="{StaticResource SettingTitle}" Text="版本 —" />
+                  <Button Name="CheckUpdateButton" Width="30" Height="30" Margin="6,0,0,0" Style="{StaticResource IconButton}"
                           Content="&#xE721;" ToolTip="检查更新" Click="CheckUpdate_Click" />
-                </DockPanel>
+                  <TextBlock Name="UpdateStatusText" VerticalAlignment="Center" Margin="6,0,0,0"
+                             FontSize="12" Foreground="{DynamicResource Accent}" TextWrapping="Wrap" />
+                </StackPanel>
+                <TextBlock Name="OvChangelogDate" Margin="0,4,0,0" FontSize="12" Foreground="{DynamicResource Subtext}" />
                 <!-- 本版更新点（数据来自内置 changelog.json，版本不在表里时折叠） -->
                 <ItemsControl Name="OvChangelogList" Margin="0,8,0,0" Visibility="Collapsed">
                   <ItemsControl.ItemTemplate>
