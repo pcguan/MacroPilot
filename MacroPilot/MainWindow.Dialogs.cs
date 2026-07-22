@@ -781,18 +781,20 @@ public partial class MainWindow
         // 鼠标面板
         var mousePanel = new StackPanel(); baseContent.Children.Add(mousePanel);
 
-        var mouseButtonPanel = new StackPanel(); mousePanel.Children.Add(mouseButtonPanel);
+        var mouseButtonPanel = new StackPanel();
         mouseButtonPanel.Children.Add(FieldLabel("鼠标按钮"));
         var buttonCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键"); buttonCombo.SelectedIndex = 0;
         mouseButtonPanel.Children.Add(buttonCombo);
-        mouseButtonPanel.Children.Add(FieldLabel("按住时间"));
-        var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs); mouseButtonPanel.Children.Add(holdRow.Panel);
+        // 按住时间单独成块：界面顺序要求它排在「坐标」之后
+        var mouseHoldPanel = new StackPanel();
+        mouseHoldPanel.Children.Add(FieldLabel("按住时间"));
+        var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs); mouseHoldPanel.Children.Add(holdRow.Panel);
 
         // 鼠标移动：目标显示器 + 屏内归一化百分比，支持 F8 热键拾取光标位置。
-        var mouseMovePanel = new StackPanel { Visibility = Visibility.Collapsed }; mousePanel.Children.Add(mouseMovePanel);
+        var mouseMovePanel = new StackPanel { Visibility = Visibility.Collapsed };
         var monHeader = new DockPanel { LastChildFill = false };
-        monHeader.Children.Add(new TextBlock { Text = "目标显示器", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+        monHeader.Children.Add(new TextBlock { Text = "坐标", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         var idBtnMove = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "标识屏幕（在各屏显示编号）" };
         DockPanel.SetDock(idBtnMove, Dock.Right); monHeader.Children.Add(idBtnMove);
         idBtnMove.Click += (_, _) => ShowIdScreens(win);
@@ -812,25 +814,31 @@ public partial class MainWindow
                 { monitorCombo.SelectedItem = it; return; }
             if (monitorCombo.Items.Count > 0) monitorCombo.SelectedIndex = 0;
         }
-        mouseMovePanel.Children.Add(monitorCombo);
+        // 一行放下：显示器下拉（自适应宽） + 点选 / 预览两个图标按钮
+        var monRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 6, 0, 10) };
+        var pickOverlayBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "在显示器上点选位置" };
+        var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览已选位置", Margin = new Thickness(4, 0, 0, 0) };
+        var pickRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        pickRow.Children.Add(pickOverlayBtn); pickRow.Children.Add(previewBtn);
+        DockPanel.SetDock(pickRow, Dock.Right); monRow.Children.Add(pickRow);
+        monitorCombo.Margin = new Thickness(0);
+        monRow.Children.Add(monitorCombo);
+        mouseMovePanel.Children.Add(monRow);
+
+        // X / Y 并排，同属「坐标」这一块
         var pctGrid = new Grid();
         pctGrid.ColumnDefinitions.Add(new ColumnDefinition());
         pctGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
         pctGrid.ColumnDefinitions.Add(new ColumnDefinition());
         var pxPanel = new StackPanel();
-        pxPanel.Children.Add(FieldLabel("屏内 X（%）"));
-        var pctXText = new TextBox { Text = "50", Margin = new Thickness(0, 0, 0, 12), Height = 32 };
+        pxPanel.Children.Add(FieldLabel("X（%）"));
+        var pctXText = new TextBox { Text = "50", Height = 32 };
         pxPanel.Children.Add(pctXText); Grid.SetColumn(pxPanel, 0); pctGrid.Children.Add(pxPanel);
         var pyPanel = new StackPanel();
-        pyPanel.Children.Add(FieldLabel("屏内 Y（%）"));
-        var pctYText = new TextBox { Text = "50", Margin = new Thickness(0, 0, 0, 12), Height = 32 };
+        pyPanel.Children.Add(FieldLabel("Y（%）"));
+        var pctYText = new TextBox { Text = "50", Height = 32 };
         pyPanel.Children.Add(pctYText); Grid.SetColumn(pyPanel, 2); pctGrid.Children.Add(pyPanel);
         mouseMovePanel.Children.Add(pctGrid);
-        var pickRow = new StackPanel { Orientation = Orientation.Horizontal };
-        var pickOverlayBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "在显示器上点选位置" };
-        var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览已选位置", Margin = new Thickness(6, 0, 0, 0) };
-        pickRow.Children.Add(pickOverlayBtn); pickRow.Children.Add(previewBtn);
-        mouseMovePanel.Children.Add(pickRow);
         var pickStatus = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
         mouseMovePanel.Children.Add(pickStatus);
         var ch9329Note = new TextBlock
@@ -880,11 +888,18 @@ public partial class MainWindow
             PreviewPositionOnMonitor(mon, nx, ny, win);
         };
 
-        var mouseWheelPanel = new StackPanel { Visibility = Visibility.Collapsed }; mousePanel.Children.Add(mouseWheelPanel);
+        var mouseWheelPanel = new StackPanel { Visibility = Visibility.Collapsed };
         mouseWheelPanel.Children.Add(FieldLabel("滚轮格数（正 = 向上，负 = 向下）"));
         var wheelText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 6), Height = 32 };
         mouseWheelPanel.Children.Add(wheelText);
         mouseWheelPanel.Children.Add(new TextBlock { Text = "以“格”为单位（一格＝常规滚一下）。两种输出方式一致；CH9329 单次上限 ±127 格。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
+
+        // 界面顺序：鼠标按钮 → 坐标 → 按住时间 → 滚轮格数（各自按动作类型收放）。
+        // 次数 + 重复间隔属于同一类，作为一整块排在基础设置的最后（见 repeatPanel）。
+        mousePanel.Children.Add(mouseButtonPanel);
+        mousePanel.Children.Add(mouseMovePanel);
+        mousePanel.Children.Add(mouseHoldPanel);
+        mousePanel.Children.Add(mouseWheelPanel);
 
         // 键盘面板
         var keyboardPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(keyboardPanel);
@@ -1104,6 +1119,7 @@ public partial class MainWindow
             windowPanel.Visibility = t == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
             // 点击坐标 = 坐标面板 + 按钮面板都要（先移动再点击）。
             mouseButtonPanel.Visibility = a is "点击" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
+            mouseHoldPanel.Visibility = a is "点击" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
             mouseMovePanel.Visibility = a is "移动" or "点击坐标" ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
 
