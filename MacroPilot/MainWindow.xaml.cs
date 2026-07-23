@@ -122,7 +122,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             OvVersionText.Text = "版本 " + Services.UpdateService.CurrentVersionText;
             ShowCurrentChangelog();
             ReportLastUpdateFailure();  // 上次就地更新若失败过，把原因摆出来
-            _ = StartupUpdateCheck();   // 启动后静默查一次更新，有新版才弹窗提示
+            _ = StartupUpdateCheck();   // 自动更新开→启动即查并直接更新；关→仅起 30s 轮询
         };
     }
 
@@ -215,6 +215,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         JitterText.Text = _doc.TimingJitterMs.ToString();
         JitterPanel.Visibility = _doc.TimingJitterEnabled ? Visibility.Visible : Visibility.Collapsed;
         AdminModeCheck.IsChecked = _doc.RunAsAdmin;
+        AutoUpdateCheck.IsChecked = _doc.AutoUpdate;
         ThemeCombo.SelectedIndex = _doc.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         UpdateBackendPanels(); // PortCombo 由 RescanDevices 填充
         UpdateDataDirText();
@@ -380,6 +381,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (double.TryParse(ExecDelayText.Text.Trim(), out var sec)) _doc.ExecutionDelayMs = (int)(Math.Max(0, sec) * 1000);
         PersistSettings();
     }
+    private void AutoUpdate_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _doc.AutoUpdate = AutoUpdateCheck.IsChecked == true;
+        PersistSettings();
+    }
+
     private void JitterEnabled_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
@@ -1681,10 +1689,18 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         try
         {
-            await System.Threading.Tasks.Task.Delay(1500);
-            await CheckForUpdate(silent: true);
-            // 启动后每 30s 自动查一次。靠 ETag 条件请求拿 304（GitHub 不计入未鉴权的 60 次/小时配额），
-            // 否则 30s 一次 =120/小时必被限流。
+            if (_doc.AutoUpdate)
+            {
+                // 自动更新：启动即查，有新版直接下载安装（UpdateProgressUi + 助手小窗全程显示进度）。
+                var info = await Services.UpdateService.CheckLatestAsync();
+                if (info != null && Services.UpdateService.IsNewer(info))
+                {
+                    AddLog("Info", $"检测到新版本 {info.VersionText}，正在自动更新…");
+                    await DownloadAndRun(info);
+                    if (_updatingNow) return;   // 正在退出安装，不必再起轮询
+                }
+            }
+            // 关闭自动更新时不做启动检查；两种模式都保留 30s 轮询 → 发现新版走状态栏提醒。
             _updateTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
             _updateTimer.Tick += async (_, _) => await CheckForUpdate(silent: true);
             _updateTimer.Start();

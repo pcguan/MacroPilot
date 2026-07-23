@@ -246,6 +246,18 @@
               </StackPanel>
             </Border>
 
+            <!-- 自动更新 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="自动更新" />
+                  <CheckBox Name="AutoUpdateCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                            Checked="AutoUpdate_Changed" Unchecked="AutoUpdate_Changed" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="开启后启动时立即检查新版本并自动完成更新（更新窗口会显示进度）；关闭则启动时不检查，仅由每 30 秒的后台检查在状态栏提醒、你手动确认更新。" />
+              </StackPanel>
+            </Border>
+
             <!-- 权限 -->
             <Border Style="{StaticResource SettingCard}">
               <StackPanel>

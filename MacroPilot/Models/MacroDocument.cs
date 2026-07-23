@@ -16,6 +16,8 @@ public sealed class MacroDocument
     public bool TimingJitterEnabled { get; set; }          // 是否启用拟人化时间抖动
     public double TimingJitterMs { get; set; } = 5;        // 抖动区间 ± 毫秒(可小数)，独立保存，关闭抖动也保留
     public bool RunAsAdmin { get; set; }
+    // 自动更新：启动时立即检查新版并直接更新；关闭则不做启动检查，仅靠 30s 轮询在状态栏提醒。
+    public bool AutoUpdate { get; set; }
 
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();

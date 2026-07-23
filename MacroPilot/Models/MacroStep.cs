@@ -8,7 +8,7 @@ namespace MacroPilot.Models;
 /// <summary>
 /// 单个动作。字段名与参考版 plans.json 完全一致（PascalCase），可直接互读。
 /// Type（对应「动作类型」层级）：
-///   输入 → 鼠标 → 移动 = MouseMove、点击 = MouseClick、点击坐标 = MouseClickAt、滚轮 = MouseWheel
+///   输入 → 鼠标 → 移动 = MouseMove、点击 = MouseClick / MouseClickAt(带坐标)、拖动 = MouseDrag、滚轮 = MouseWheel
 ///   输入 → 键盘        = KeyTap
 ///   运行 → 等待 = Wait、激活窗口 = ActivateWindow、跳转 = Jump（原先挂在动作上的"执行后跳转"已剥离成它）
 ///   组合 = Group
@@ -170,6 +170,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
         "MouseMove" => MoveDisplay(),
         "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
+        "MouseDrag" => MoveDisplay($"{ButtonCn(Button)}拖动"),
         "MouseWheel" => $"滚轮 {Wheel} 格",
         "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
         "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",

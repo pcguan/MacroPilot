@@ -25,6 +25,10 @@ public interface IInputBackend : IDisposable
     /// <summary>移动鼠标到屏幕绝对坐标。</summary>
     void MouseMove(int x, int y);
 
+    /// <summary>按下鼠标键并保持（拖动用）：期间的 MouseMove 均处于按住状态，直到 MouseUp。</summary>
+    void MouseDown(string button);
+    void MouseUp(string button);
+
     /// <summary>移动会话：拟人化等"一串连续移动"前后各调一次。硬件后端借此只关一次系统加速、跳过逐点判屏/路由；
     /// 软件后端无需实现（默认空）。会话内 MouseMove 由调用方保证落在同屏，或落在【相邻屏】（逐屏分段拟人化跨屏时，
     /// 段与段之间用一次相对收敛越过共享边——仅相邻屏可越）。</summary>

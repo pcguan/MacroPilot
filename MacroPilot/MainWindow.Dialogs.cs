@@ -793,7 +793,7 @@ public partial class MainWindow
         var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
-        mouseActionCombo.Items.Add("点击/移动"); mouseActionCombo.Items.Add("滚轮");
+        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
         var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
@@ -806,10 +806,9 @@ public partial class MainWindow
 
         // 鼠标按钮：多一个「仅移动」——选它即只移动不点击（存为 MouseMove）。
         var buttonCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 0), Height = 32 };
-        buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键"); buttonCombo.Items.Add("仅移动");
+        buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键");
         buttonCombo.SelectedIndex = 0;
         var mouseButtonPanel = SubGroup("鼠标按钮", buttonCombo);
-        bool MoveOnly() => (buttonCombo.SelectedItem?.ToString() ?? "左键") == "仅移动";
 
         var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs);
         holdRow.Panel.Margin = new Thickness(0, 0, 0, 0);
@@ -1139,13 +1138,14 @@ public partial class MainWindow
         // 当前选中的三级路径。非"输入"类别时后两级无意义，统一返回空串。
         string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
-        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击/移动") : "";
+        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "移动") : "";
         string RunAct() => Cat() == "运行" ? (runActionCombo.SelectedItem?.ToString() ?? "等待") : "";
 
         void SyncIdScreens()
         {
-            // 需要选屏的两种：激活窗口、以及带坐标的鼠标动作（移动 / 点击坐标）。
-            bool needScreens = RunAct() == "激活窗口" || (Act() == "点击/移动" && coordCheck.IsChecked == true);
+            // 需要选屏的两种：激活窗口、带坐标的鼠标动作。只有一块屏时不自动标（没意义），手动「标识屏幕」按钮不受影响。
+            bool coordView = Act() is "移动" or "拖动" || (Act() == "点击" && coordCheck.IsChecked == true);
+            bool needScreens = (RunAct() == "激活窗口" || coordView) && ScreenInfo.All().Count > 1;
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
         void UpdatePanels()
@@ -1160,22 +1160,24 @@ public partial class MainWindow
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
             windowPanel.Visibility = ra == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
             jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
-            bool clickMove = a == "点击/移动";
-            bool moveOnly = clickMove && MoveOnly();     // 「仅移动」= 只移动不点击
-            // 仅移动必须有坐标：强制勾上且不给取消。
-            if (moveOnly && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
-            coordCheck.IsEnabled = !moveOnly;
-            coordCheck.Content = moveOnly ? "设置坐标（仅移动必须指定目标位置）" : "设置坐标（先移动到该位置再执行）";
+            bool isMove = a == "移动", isClick = a == "点击", isDrag = a == "拖动";
+            // 移动/拖动必须有坐标：强制勾上且不给取消；点击的坐标是可选项（勾了=先移动再点击）。
+            bool coordForced = isMove || isDrag;
+            if (coordForced && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
+            coordCheck.IsEnabled = !coordForced;
+            coordCheck.Content = isMove ? "坐标（移动到该位置，必须设置）"
+                               : isDrag ? "坐标（按住鼠标键拖到该位置，必须设置）"
+                               : "设置坐标（先移动到该位置再点击）";
 
-            mouseButtonPanel.Visibility = clickMove ? Visibility.Visible : Visibility.Collapsed;
-            mouseMovePanel.Visibility = clickMove ? Visibility.Visible : Visibility.Collapsed;
-            // 按住时间/点击次数只对"真的会点"的情况有意义，仅移动时整块收起。
-            mouseHoldPanel.Visibility = clickMove && !moveOnly ? Visibility.Visible : Visibility.Collapsed;
+            mouseButtonPanel.Visibility = isClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
+            mouseMovePanel.Visibility = isMove || isClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
+            // 按住时间只对点击有意义；拖动的"按住"贯穿整个移动过程，无需时长。
+            mouseHoldPanel.Visibility = isClick ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
-            // 拟人化只在启用坐标（会发生移动）时才有意义。
-            humanizePanel.Visibility = clickMove && coordCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+            // 拟人化只在会发生移动时才有意义。
+            humanizePanel.Visibility = coordForced || (isClick && coordCheck.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
 
-            bool hasRepeat = (clickMove && !moveOnly) || a == "滚轮";
+            bool hasRepeat = isClick || a == "滚轮";
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
             mouseRepeat.CountLabel.Text = a == "滚轮" ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
             // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
@@ -1244,28 +1246,30 @@ public partial class MainWindow
                         result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) };
                         mouseRepeat.Apply(result);
                     }
-                    else if (a == "点击/移动")
+                    else if (a == "移动")
+                    {
+                        result = new MacroStep { Type = "MouseMove" };
+                        FillMove(result);
+                        result.LoopCount = 1;   // 移动没有次数概念
+                    }
+                    else if (a == "拖动")
+                    {
+                        // 拖动 = 按住鼠标键 → 移动到坐标 → 松开；起点是当前光标位置（前面接一个"移动"即可定起点）。
+                        result = new MacroStep { Type = "MouseDrag", Button = ButtonToInternal(buttonCombo.SelectedItem?.ToString() ?? "左键") };
+                        FillMove(result);
+                        result.LoopCount = 1;
+                    }
+                    else if (a == "点击")
                     {
                         bool withCoord = coordCheck.IsChecked == true;
-                        bool moveOnly = MoveOnly();
-                        if (moveOnly && !withCoord) throw new InvalidOperationException("「仅移动」必须设置坐标。");
-                        if (moveOnly)
+                        result = new MacroStep { Type = withCoord ? "MouseClickAt" : "MouseClick" };
+                        if (withCoord) FillMove(result);
+                        FillButton(result);
+                        mouseRepeat.Apply(result);
+                        if (holdRow.SetAsDefault)
                         {
-                            result = new MacroStep { Type = "MouseMove" };
-                            FillMove(result);
-                            result.LoopCount = 1;   // 仅移动没有次数概念
-                        }
-                        else
-                        {
-                            result = new MacroStep { Type = withCoord ? "MouseClickAt" : "MouseClick" };
-                            if (withCoord) FillMove(result);
-                            FillButton(result);
-                            mouseRepeat.Apply(result);
-                            if (holdRow.SetAsDefault)
-                            {
-                                var ms = holdRow.GetMs();
-                                if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
-                            }
+                            var ms = holdRow.GetMs();
+                            if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
                         }
                     }
                     else throw new InvalidOperationException("请选择鼠标动作。");
@@ -1348,9 +1352,10 @@ public partial class MainWindow
             }
             switch (source.Type)
             {
-                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; buttonCombo.SelectedItem = "仅移动"; coordCheck.IsChecked = true; LoadMoveFields(); break;
-                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; coordCheck.IsChecked = false; LoadButtonFields(); break;
-                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; coordCheck.IsChecked = true; LoadMoveFields(); break;
+                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; coordCheck.IsChecked = false; LoadButtonFields(); break;
+                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseDrag":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动"; coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields(); break;
                 case "MouseWheel":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
                 case "KeyTap":        typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
                 case "Wait":          typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;

@@ -426,6 +426,18 @@ public sealed class MacroRunner
                 break;
             case "MouseClick": _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct); break;
             case "MouseMove": MoveToStepTarget(step, ct); break;
+            // 拖动 = 按住鼠标键 → 移动到目标（按动作设置可拟人化）→ 松开。
+            // 按下后、松开前各留一小段，太快会被目标程序识别成一次点击而不是拖动。
+            case "MouseDrag":
+                _backend.MouseDown(step.Button);
+                try
+                {
+                    Wait(60, ct);
+                    MoveToStepTarget(step, ct);
+                    Wait(60, ct);
+                }
+                finally { _backend.MouseUp(step.Button); }
+                break;
             // 点击坐标 = 移动 + 点击。移动段与 MouseMove 完全一致（含拟人化），到位后再按 MouseClick 那套点。
             case "MouseClickAt":
                 MoveToStepTarget(step, ct);

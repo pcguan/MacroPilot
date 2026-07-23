@@ -40,16 +40,30 @@ public sealed class NativeInputDevice : IInputBackend
         _modDown &= (byte)~modifier;
     }
 
+    private static (uint Down, uint Up, uint Bit) ButtonFlags(string button) => button switch
+    {
+        "Right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, BtnR),
+        "Middle" => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, BtnM),
+        _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, BtnL),
+    };
+
     public void MouseClick(string button, double holdMs, CancellationToken ct = default)
     {
-        var (down, up, bit) = button switch
-        {
-            "Right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, BtnR),
-            "Middle" => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, BtnM),
-            _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, BtnL),
-        };
+        var (down, up, bit) = ButtonFlags(button);
         MouseEvent(down, 0, 0, 0); _btnDown |= bit;
         Sleep(holdMs, ct);
+        MouseEvent(up, 0, 0, 0); _btnDown &= ~bit;
+    }
+
+    public void MouseDown(string button)
+    {
+        var (down, _, bit) = ButtonFlags(button);
+        MouseEvent(down, 0, 0, 0); _btnDown |= bit;
+    }
+
+    public void MouseUp(string button)
+    {
+        var (_, up, bit) = ButtonFlags(button);
         MouseEvent(up, 0, 0, 0); _btnDown &= ~bit;
     }
 

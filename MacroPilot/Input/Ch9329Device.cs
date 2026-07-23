@@ -105,12 +105,28 @@ public sealed class Ch9329Device : IInputBackend
         "Left" => 0x01, "Right" => 0x02, "Middle" => 0x04, _ => 0x01
     };
 
+    // 拖动等场景按住的鼠标键位集合：随所有鼠标帧（相对/绝对/滚轮）一起发送，
+    // 否则移动帧的按键字节为 0 会把按住的键顶掉，拖动会中途变成松开。
+    private byte _held;
+
+    public void MouseDown(string button)
+    {
+        _held |= ButtonBit(button);
+        Send(0x05, new byte[] { 0x01, _held, 0, 0, 0 });
+    }
+
+    public void MouseUp(string button)
+    {
+        _held = (byte)(_held & ~ButtonBit(button));
+        Send(0x05, new byte[] { 0x01, _held, 0, 0, 0 });
+    }
+
     public void MouseClick(string button, double holdMs, CancellationToken ct = default)
     {
         byte b = ButtonBit(button);
-        Send(0x05, new byte[] { 0x01, b, 0, 0, 0 });   // 按下
+        Send(0x05, new byte[] { 0x01, (byte)(_held | b), 0, 0, 0 });   // 按下
         Sleep(holdMs, ct);
-        Send(0x05, new byte[] { 0x01, 0, 0, 0, 0 });   // 松开
+        Send(0x05, new byte[] { 0x01, _held, 0, 0, 0 });               // 松开（保留拖动按住的键）
     }
 
     // 参数为"虚拟桌面像素"。CH9329 的 0x04 绝对坐标 0–4096 只映射【主屏】，副屏只能靠相对移动跨过去：
@@ -223,7 +239,7 @@ public sealed class Ch9329Device : IInputBackend
         int ax = Math.Clamp((int)Math.Round(4096.0 * (px - primary.Left) / primary.Width), 0, 4095);
         int ay = Math.Clamp((int)Math.Round(4096.0 * (py - primary.Top) / primary.Height), 0, 4095);
         // 0x04 绝对鼠标帧：data = [0x02, 按键, X低, X高, Y低, Y高, 滚轮]，X/Y 为 0–4096 绝对坐标(小端)。
-        Send(0x04, new byte[] { 0x02, 0x00, (byte)(ax & 0xFF), (byte)((ax >> 8) & 0xFF), (byte)(ay & 0xFF), (byte)((ay >> 8) & 0xFF), 0x00 });
+        Send(0x04, new byte[] { 0x02, _held, (byte)(ax & 0xFF), (byte)((ax >> 8) & 0xFF), (byte)(ay & 0xFF), (byte)((ay >> 8) & 0xFF), 0x00 });
         // 轮询等光标真到锚点附近再返回（替代固定 sleep）：避免 0x04 尚未生效就走相对，导致首帧读到旧位置、冲过头。
         bool arrived = WaitCursorNear(px, py, 4, 150);
         if (MoveDiag)
@@ -249,7 +265,7 @@ public sealed class Ch9329Device : IInputBackend
             if (prevDx != 0 && Math.Sign(dx) != Math.Sign(prevDx)) dampX = Math.Min(dampX * 2, 64); else if (prevDx != 0) dampX = Math.Max(1, dampX / 2);
             if (prevDy != 0 && Math.Sign(dy) != Math.Sign(prevDy)) dampY = Math.Min(dampY * 2, 64); else if (prevDy != 0) dampY = Math.Max(1, dampY / 2);
             int sendX = DampStep(dx, dampX), sendY = DampStep(dy, dampY);
-            Send(0x05, new byte[] { 0x01, 0x00, Signed(sendX), Signed(sendY), 0x00 });
+            Send(0x05, new byte[] { 0x01, _held, Signed(sendX), Signed(sendY), 0x00 });
             bool moved = WaitCursorMoved(cx, cy, FrameWaitMs);
             var (ncx, ncy) = ScreenInfo.CursorPos();
             sb?.Append($"  [{tag}]帧{i}: ({cx},{cy}) 残差({dx},{dy}) 发({sendX},{sendY}) 阻尼({dampX},{dampY}) → ({ncx},{ncy}) 位移=({ncx - cx},{ncy - cy}) moved={moved}\n");
@@ -534,10 +550,11 @@ public sealed class Ch9329Device : IInputBackend
     }
 
     public void MouseWheel(int amount)
-        => Send(0x05, new byte[] { 0x01, 0x00, 0x00, 0x00, Signed(amount) });
+        => Send(0x05, new byte[] { 0x01, _held, 0x00, 0x00, Signed(amount) });
 
     public void ReleaseAll()
     {
+        _held = 0;
         Keyboard(0, 0);
         Send(0x05, new byte[] { 0x01, 0, 0, 0, 0 });
     }
