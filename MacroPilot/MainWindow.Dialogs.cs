@@ -41,6 +41,7 @@ public partial class MainWindow
         foreach (var c in children) sp.Children.Add(c);
         return new Border
         {
+            Background = (Brush)FindResource("Bg"),   // 比外层卡(Panel)深一档，小卡呈内凹层次
             BorderBrush = (Brush)FindResource("Line"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(6),
@@ -956,18 +957,21 @@ public partial class MainWindow
         keyboardPanel.Children.Add(kbRepeat.Panel);
 
         // 等待面板
-        var waitPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(waitPanel);
-        waitPanel.Children.Add(FieldLabel("等待时间"));
-        var waitRow = new TimeInputRow(this, _doc.DefaultWaitMs); waitPanel.Children.Add(waitRow.Panel);
+        var waitRow = new TimeInputRow(this, _doc.DefaultWaitMs);
+        waitRow.Panel.Margin = new Thickness(0, 0, 0, 0);
+        var waitPanel = SubGroup("等待时间", waitRow.Panel);
+        waitPanel.Visibility = Visibility.Collapsed; baseContent.Children.Add(waitPanel);
 
         // 激活窗口面板：从当前窗口列表选目标，选中即锁定该进程（含 PID）。
-        var windowPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(windowPanel);
+        var windowInner = new StackPanel();
+        var windowPanel = SubGroup(null, windowInner);
+        windowPanel.Visibility = Visibility.Collapsed; baseContent.Children.Add(windowPanel);
         var winHeader = new DockPanel { LastChildFill = false };
         winHeader.Children.Add(new TextBlock { Text = "选择目标窗口", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         var idBtnWin = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "标识屏幕（在各屏显示编号，帮你分清桌面对应哪块屏）" };
         DockPanel.SetDock(idBtnWin, Dock.Right); winHeader.Children.Add(idBtnWin);
         idBtnWin.Click += (_, _) => ShowIdScreens(win);
-        windowPanel.Children.Add(winHeader);
+        windowInner.Children.Add(winHeader);
         int selPid = 0; string selProc = ""; string selTitle = "";
         const string Desk = Services.WindowActivator.DesktopSentinel;
         static string TitleOr(string t) => string.IsNullOrEmpty(t) ? "(无标题)" : t;
@@ -984,8 +988,8 @@ public partial class MainWindow
         Grid.SetColumn(fieldBorder, 0); winGrid.Children.Add(fieldBorder);
         var refreshBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "刷新窗口列表", Margin = new Thickness(8, 0, 0, 0) };
         Grid.SetColumn(refreshBtn, 1); winGrid.Children.Add(refreshBtn);
-        windowPanel.Children.Add(winGrid);
-        windowPanel.Children.Add(new TextBlock { Text = "点上方选择目标窗口，可输入关键词搜索（标题 / 进程 / PID）。选中即锁定该进程（同名多开用 PID 区分）；下次运行优先按 PID 命中，PID 变了按进程名回退。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+        windowInner.Children.Add(winGrid);
+        windowInner.Children.Add(new TextBlock { Text = "点上方选择目标窗口，可输入关键词搜索（标题 / 进程 / PID）。选中即锁定该进程（同名多开用 PID 区分）；下次运行优先按 PID 命中，PID 变了按进程名回退。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
 
         // 弹出层：搜索框 + 窗口列表（我方完全掌控开合，不依赖 ComboBox 焦点行为）。
         var winItems = new ObservableCollection<WinPick>();
@@ -1066,7 +1070,6 @@ public partial class MainWindow
         UpdateSelLabel();
 
         // 标记区：循环 / 跳转 / 监听 / 备注
-        var loopCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         // 鼠标的「点击次数 / 滚动次数 + 重复间隔」（键盘那份在键盘面板里，同一套 RepeatBlock 逻辑）。
         var mouseRepeat = new RepeatBlock(this, "点击次数（0 为无限）");
 
@@ -1080,7 +1083,9 @@ public partial class MainWindow
         mousePanel.Children.Add(humanizePanel);
 
         // 跳转面板（运行 → 跳转）：原先挂在每个动作上的「执行后跳转到」已剥离成这个独立动作。
-        var jumpPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(jumpPanel);
+        var jumpInner = new StackPanel();
+        var jumpPanel = SubGroup(null, jumpInner);
+        jumpPanel.Visibility = Visibility.Collapsed; baseContent.Children.Add(jumpPanel);
         var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
         jumpTargetCombo.Items.Add("（选择目标动作）");
         int count = _plan?.Steps.Count ?? 0;
@@ -1091,27 +1096,23 @@ public partial class MainWindow
         var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 8), Height = 32 };
         jumpTimesPanel.Children.Add(jumpTimesText);
         jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
-        jumpPanel.Children.Add(FieldLabel("跳转到"));
-        jumpPanel.Children.Add(jumpTargetCombo);
-        jumpPanel.Children.Add(jumpTimesPanel);
-        jumpPanel.Children.Add(new TextBlock { Text = "执行到本动作时跳到指定序号继续（仅方案顶层生效）；达到跳转次数后不再跳、按顺序往下走。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
+        jumpInner.Children.Add(FieldLabel("跳转到"));
+        jumpInner.Children.Add(jumpTargetCombo);
+        jumpInner.Children.Add(jumpTimesPanel);
+        jumpInner.Children.Add(new TextBlock { Text = "执行到本动作时跳到指定序号继续（仅方案顶层生效）；达到跳转次数后不再跳、按顺序往下走。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+
+        // 运行类（等待/激活窗口）的 执行次数+重复间隔：与鼠标/键盘同一套 RepeatBlock，后续新类型照此办理。
+        var runRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
+        baseContent.Children.Add(runRepeat.Panel);
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var cond = BuildRunConditionEditor(null);    // 与方案级共用同一套控件与逻辑
-        // 通用循环次数只剩等待/激活窗口在用（鼠标/键盘的次数在基础设置里，跳转用自己的跳转次数）。
-        var loopCountPanel = new StackPanel();
-        loopCountPanel.Children.Add(FieldLabel("循环次数（0 为无限）"));
-        loopCountPanel.Children.Add(loopCountText);
 
         MacroStep? hookSuccess = source?.SuccessAction, hookComplete = source?.CompleteAction, hookFail = source?.FailAction;
         sp.Children.Add(GroupCard("基础设置", baseContent));
-        // 控制逻辑只剩通用循环次数；非等待/激活窗口时整卡隐藏（见 UpdatePanels）。
-        var controlCard = GroupCard("控制逻辑", loopCountPanel);
         {
             var condPanel = cond.Panel;
             condPanel.Margin = new Thickness(0, 0, 0, 4);
             sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡
-
-            sp.Children.Add(controlCard);
 
             var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(GroupCard("事件监听",
@@ -1174,8 +1175,8 @@ public partial class MainWindow
             bool hasRepeat = (clickMove && !moveOnly) || a == "滚轮";
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
             mouseRepeat.CountLabel.Text = a == "滚轮" ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
-            // 控制逻辑（通用循环次数）只剩等待/激活窗口在用。
-            controlCard.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
+            // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
+            runRepeat.Panel.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
 
             capturingKey = d == "键盘";
             if (capturingKey) win.Focus();
@@ -1300,7 +1301,7 @@ public partial class MainWindow
                     result = new MacroStep { Type = "ActivateWindow", TargetProcess = selProc, TargetTitle = selTitle, TargetPid = selPid };
                 }
                 {
-                    if (ra is "等待" or "激活窗口") result.LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1));   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
+                    if (ra is "等待" or "激活窗口") runRepeat.Apply(result);   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
@@ -1353,8 +1354,7 @@ public partial class MainWindow
                 case "ActivateWindow":typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
                 case "Jump":          typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "跳转"; break;   // 目标/次数由下方通用回填写入
             }
-            loopCountText.Text = source.LoopCount.ToString();
-            mouseRepeat.Load(source); kbRepeat.Load(source);
+            mouseRepeat.Load(source); kbRepeat.Load(source); runRepeat.Load(source);
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
             if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
             noteText.Text = source.Note;
@@ -1428,15 +1428,15 @@ public partial class MainWindow
         addBtn.Click += (_, _) => { var s = ShowAddActionDialog(); if (s != null) { working.Add(s); Rebuild(); } };
         Rebuild();
 
-        var loopCountText = new TextBox { Text = source.LoopCount.ToString(), Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        // 执行次数+重复间隔：与动作对话框同一套 RepeatBlock，放进「组合内容」卡（即组合的基础设置）。
+        var groupRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
+        groupRepeat.Load(source);
+        listContent.Children.Add(groupRepeat.Panel);
         // 组合级运行条件与方案级/动作级完全一致：同一套控件、同一份回填与写回逻辑。
         var cond = BuildRunConditionEditor(source);
         var condPanel = cond.Panel;
         condPanel.Margin = new Thickness(0, 0, 0, 4);
         sp.Children.Add(GroupCard("运行条件", condPanel));   // 与动作对话框一致：运行条件独立成卡
-        // 跳转已剥离成独立动作（运行 → 跳转），组合不再挂"执行后跳转到"。
-        sp.Children.Add(GroupCard("控制逻辑",
-            FieldLabel("循环次数（0 为无限）"), loopCountText));
 
         MacroStep? hookSuccess = source.SuccessAction, hookComplete = source.CompleteAction, hookFail = source.FailAction;
         var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
@@ -1462,10 +1462,11 @@ public partial class MainWindow
             result = new MacroStep
             {
                 Type = "Group", Children = new ObservableCollection<MacroStep>(working),
-                LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1)),
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
             };
+            try { groupRepeat.Apply(result); }
+            catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
             try { ApplyRunCondition(cond, result); }   // 与方案级/动作级同一份写回逻辑
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
             win.DialogResult = true;

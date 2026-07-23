@@ -252,6 +252,7 @@ public sealed class MacroRunner
             loops++;
             if (group.LoopCount == 1) break;
             if (group.LoopCount != 0 && loops >= group.LoopCount) break;
+            if (group.LoopDelayMs > 0) Wait(Jitter(group.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
         }
         RunHook(group.SuccessAction, "成功后", ct);
         RunHook(group.CompleteAction, "结束后", ct);
