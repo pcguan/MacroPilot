@@ -86,8 +86,6 @@ public static class Storage
     private static MacroDocument Migrate(MacroDocument doc)
     {
         if (doc.DefaultHoldMs == 50) doc.DefaultHoldMs = 75;
-        // v0.1.7 起「执行后跳转」剥离成独立 Jump 动作：旧数据挂在动作上的跳转迁成「结束后」监听里的跳转动作。
-        foreach (var p in doc.Plans) MigrateJumps(p.Steps);
         // 0.0.18 只记了主窗口，字段是平铺的；0.0.20 起所有窗口统一放进 Windows 字典，把老记录搬过去。
         if (doc.WindowWidth > 0 && doc.WindowHeight > 0 && !doc.Windows.ContainsKey("Main"))
         {
@@ -99,37 +97,6 @@ public static class Storage
         }
         doc.WindowLeft = doc.WindowTop = doc.WindowWidth = doc.WindowHeight = 0; doc.WindowMaximized = false;
         return doc;
-    }
-
-    /// <summary>
-    /// 把旧格式"挂在动作上的执行后跳转"迁成「结束后」监听里的独立 Jump 动作（递归含子动作与监听动作）。
-    /// 导入外部方案文件时也要调用（导入不走 Load/Migrate）。
-    /// </summary>
-    public static void MigrateJumps(System.Collections.Generic.IEnumerable<MacroStep> steps)
-    {
-        foreach (var s in steps) MigrateJump(s);
-    }
-
-    private static void MigrateJump(MacroStep s)
-    {
-        foreach (var c in s.Children) MigrateJump(c);
-        if (s.SuccessAction != null) MigrateJump(s.SuccessAction);
-        if (s.CompleteAction != null) MigrateJump(s.CompleteAction);
-        if (s.FailAction != null) MigrateJump(s.FailAction);
-        if (s.Type == "Jump" || s.JumpTarget < 1) return;
-
-        var jump = new MacroStep { Type = "Jump", JumpTarget = s.JumpTarget, JumpTimes = s.JumpTimes };
-        s.JumpTarget = 0; s.JumpTimes = 0;
-        if (s.CompleteAction == null) s.CompleteAction = jump;                    // 直接作为「结束后」动作
-        else if (s.CompleteAction.Type == "Group") s.CompleteAction.Children.Add(jump);   // 已是组合 → 追加到末尾
-        else
-        {
-            // 已有单个「结束后」动作 → 包成组合：先原动作、后跳转
-            var g = new MacroStep { Type = "Group" };
-            g.Children.Add(s.CompleteAction);
-            g.Children.Add(jump);
-            s.CompleteAction = g;
-        }
     }
 
     /// <summary>只读取当前数据目录（不做参考版首次导入）；无文件返回空文档。用于切换数据目录后重新加载。</summary>

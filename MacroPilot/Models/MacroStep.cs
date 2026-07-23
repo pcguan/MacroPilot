@@ -158,8 +158,6 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             _ => Type
         };
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
-        if (HasJump && Type != "Jump")   // Jump 类型的描述本身就是跳转，不再追加后缀
-            res += "　" + (JumpTimes <= 0 ? $"↩ 跳转到动作 {JumpTarget}" : $"↩ 跳转到动作 {JumpTarget}（{JumpTimes} 次）");
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
         if (HasListener)
         {

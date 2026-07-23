@@ -188,13 +188,11 @@ public sealed class MacroRunner
                 Log?.Invoke("Info", prefix + $"{step.Display}（已禁用，跳过）");
                 i++; continue;
             }
-            bool executed = true;
             if (step.IsGroup)
             {
                 if (!ShouldRun(step, out var conditionText))
                 {
                     Log?.Invoke("Info", prefix + $"{step.Display}，条件不满足，已跳过（{conditionText}）");
-                    executed = false;
                 }
                 else
                 {
@@ -205,13 +203,12 @@ public sealed class MacroRunner
             }
             else
             {
-                executed = RunLeaf(step, prefix + step.Display, ct);
+                RunLeaf(step, prefix + step.Display, ct);
             }
 
-            // 消费跳转：来自本步骤期间执行到的 Jump 动作（顶层 Jump / 组合内 / 监听「结束后」等都会上报）。
-            // 兜底：极旧数据仍把跳转挂在动作上（正常应已被 Storage.MigrateJumps 迁走）。
+            // 消费跳转：只认 Jump 动作（顶层 / 组合内 / 监听里执行都会上报）。
+            // 旧格式挂在其它动作上的 JumpTarget 一律忽略——不做数据迁移，保持逻辑单一。
             var jumpSrc = _pendingJump; _pendingJump = null;
-            if (jumpSrc == null && executed && step.Type != "Jump" && step.JumpTarget >= 1) jumpSrc = step;
             if (jumpSrc != null && jumpSrc.JumpTarget >= 1 && jumpSrc.JumpTarget <= steps.Count)
             {
                 bool inf = jumpSrc.JumpTimes <= 0;
