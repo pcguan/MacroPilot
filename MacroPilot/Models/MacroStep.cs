@@ -154,7 +154,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             "MouseWheel" => $"滚轮 {Wheel} 格",
             "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
             "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
-            "Jump" => JumpTarget >= 1 ? (JumpTimes <= 0 ? $"跳转到动作 {JumpTarget}（无限）" : $"跳转到动作 {JumpTarget}（{JumpTimes} 次）") : "跳转（未设置目标）",
+            "Jump" => JumpTarget >= 1 ? (JumpTimes > 0 ? $"跳转到动作 {JumpTarget}（最多 {JumpTimes} 次）" : $"跳转到动作 {JumpTarget}") : "跳转（未设置目标）",
             _ => Type
         };
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };

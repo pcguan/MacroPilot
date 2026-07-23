@@ -173,7 +173,7 @@ public sealed class MacroRunner
     // 顶层动作序列
     private void RunTop(System.Collections.Generic.IList<MacroStep> steps, CancellationToken ct)
     {
-        var jumpUsed = new System.Collections.Generic.Dictionary<MacroStep, int>();   // 次数按 Jump 动作实例计（本轮内）
+        var jumpUsed = new System.Collections.Generic.Dictionary<MacroStep, int>();   // 已跳次数按 Jump 实例计（本轮内）
         _pendingJump = null;
         int i = 0;
         while (i < steps.Count)
@@ -206,14 +206,14 @@ public sealed class MacroRunner
                 RunLeaf(step, prefix + step.Display, ct);
             }
 
-            // 消费跳转：只认 Jump 动作（顶层 / 组合内 / 监听里执行都会上报）。
-            // 旧格式挂在其它动作上的 JumpTarget 一律忽略——不做数据迁移，保持逻辑单一。
+            // 消费跳转：Jump = goto，执行到就跳（顶层 / 组合内 / 监听里执行都会上报）。
+            // JumpTimes =「最大重复次数」，仅作防死循环上限（0=不限）：本轮内已跳次数达到上限后
+            // 该跳转失效、顺序往下走。旧格式挂在其它动作上的 JumpTarget 一律忽略。
             var jumpSrc = _pendingJump; _pendingJump = null;
             if (jumpSrc != null && jumpSrc.JumpTarget >= 1 && jumpSrc.JumpTarget <= steps.Count)
             {
-                bool inf = jumpSrc.JumpTimes <= 0;
                 jumpUsed.TryGetValue(jumpSrc, out var used);
-                if (inf || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = jumpSrc.JumpTarget - 1; continue; }
+                if (jumpSrc.JumpTimes <= 0 || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = jumpSrc.JumpTarget - 1; continue; }
             }
             i++;
         }

@@ -1091,15 +1091,12 @@ public partial class MainWindow
         int count = _plan?.Steps.Count ?? 0;
         for (int n = 1; n <= count; n++) jumpTargetCombo.Items.Add($"第 {n} 个动作");
         jumpTargetCombo.SelectedIndex = 0;
-        var jumpTimesPanel = new StackPanel { Visibility = Visibility.Collapsed };
-        jumpTimesPanel.Children.Add(FieldLabel("跳转次数（0 为无限）"));
-        var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 8), Height = 32 };
-        jumpTimesPanel.Children.Add(jumpTimesText);
-        jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
         jumpInner.Children.Add(FieldLabel("跳转到"));
         jumpInner.Children.Add(jumpTargetCombo);
-        jumpInner.Children.Add(jumpTimesPanel);
-        jumpInner.Children.Add(new TextBlock { Text = "执行到本动作时跳到指定序号继续（仅方案顶层生效）；达到跳转次数后不再跳、按顺序往下走。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+        jumpInner.Children.Add(FieldLabel("最大重复次数（0 为不限）"));
+        var jumpMaxText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 8), Height = 32 };
+        jumpInner.Children.Add(jumpMaxText);
+        jumpInner.Children.Add(new TextBlock { Text = "每次执行到本动作就跳到指定序号继续（仅方案顶层生效）。最大重复次数是防死循环的上限：本轮内已跳次数达到上限后，该跳转不再生效、按顺序往下走；0 表示不设上限。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
 
         // 运行类（等待/激活窗口）的 执行次数+重复间隔：与鼠标/键盘同一套 RepeatBlock，后续新类型照此办理。
         var runRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
@@ -1292,7 +1289,7 @@ public partial class MainWindow
                 {
                     if (jumpTargetCombo.SelectedIndex < 1)
                         throw new InvalidOperationException("请选择跳转的目标动作。");
-                    result = new MacroStep { Type = "Jump", JumpTarget = jumpTargetCombo.SelectedIndex, JumpTimes = Math.Max(0, ParseInt(jumpTimesText.Text, 0)) };
+                    result = new MacroStep { Type = "Jump", JumpTarget = jumpTargetCombo.SelectedIndex, JumpTimes = Math.Max(0, ParseInt(jumpMaxText.Text, 0)) };
                 }
                 else // 激活窗口
                 {
@@ -1356,7 +1353,8 @@ public partial class MainWindow
             }
             mouseRepeat.Load(source); kbRepeat.Load(source); runRepeat.Load(source);
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
-            if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
+            if (source.JumpTarget >= 1 && source.JumpTarget <= count) jumpTargetCombo.SelectedIndex = source.JumpTarget;
+            jumpMaxText.Text = Math.Max(0, source.JumpTimes).ToString();
             noteText.Text = source.Note;
         }
 
