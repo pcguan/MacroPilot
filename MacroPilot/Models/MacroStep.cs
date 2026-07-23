@@ -10,7 +10,8 @@ namespace MacroPilot.Models;
 /// Type（对应「动作类型」层级）：
 ///   输入 → 鼠标 → 移动 = MouseMove、点击 = MouseClick、点击坐标 = MouseClickAt、滚轮 = MouseWheel
 ///   输入 → 键盘        = KeyTap
-///   等待 = Wait、激活窗口 = ActivateWindow、组合 = Group
+///   运行 → 等待 = Wait、激活窗口 = ActivateWindow、跳转 = Jump（原先挂在动作上的"执行后跳转"已剥离成它）
+///   组合 = Group
 /// MouseClickAt 复用 MouseMove 的坐标字段 + MouseClick 的按钮/按住字段，语义 = 先移动再点击。
 /// </summary>
 public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
@@ -153,10 +154,11 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             "MouseWheel" => $"滚轮 {Wheel} 格",
             "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
             "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
+            "Jump" => JumpTarget >= 1 ? (JumpTimes <= 0 ? $"跳转到动作 {JumpTarget}（无限）" : $"跳转到动作 {JumpTarget}（{JumpTimes} 次）") : "跳转（未设置目标）",
             _ => Type
         };
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
-        if (HasJump)
+        if (HasJump && Type != "Jump")   // Jump 类型的描述本身就是跳转，不再追加后缀
             res += "　" + (JumpTimes <= 0 ? $"↩ 跳转到动作 {JumpTarget}" : $"↩ 跳转到动作 {JumpTarget}（{JumpTimes} 次）");
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
         if (HasListener)

@@ -426,6 +426,8 @@ public sealed class MacroRunner
                 _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
                 break;
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
+            // 跳转动作：叶子本身无操作，跳转由 RunTop 统一消费（组合内/监听内与从前一样是 no-op）。
+            case "Jump": break;
             case "ActivateWindow":
                 if (step.TargetProcess == WindowActivator.DesktopSentinel)
                 {

@@ -788,13 +788,16 @@ public partial class MainWindow
         // 后两级按上一级收放，非"输入"类别时只剩第一个下拉。
         var typeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
         var typeCombo = new ComboBox { Width = 116, Height = 32 };
-        typeCombo.Items.Add("输入"); typeCombo.Items.Add("等待"); typeCombo.Items.Add("激活窗口"); typeCombo.SelectedIndex = 0;
+        typeCombo.Items.Add("输入"); typeCombo.Items.Add("运行"); typeCombo.SelectedIndex = 0;
         var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         mouseActionCombo.Items.Add("点击/移动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
-        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo);
+        var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
+        runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
+        runActionCombo.SelectedIndex = 0;
+        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(runActionCombo);
         baseContent.Children.Add(typeRow);
 
         // 鼠标面板
@@ -940,14 +943,17 @@ public partial class MainWindow
         mouseWheelPanel.Children.Add(wheelText);
         mouseWheelPanel.Children.Add(new TextBlock { Text = "以“格”为单位（一格＝常规滚一下）。两种输出方式一致；CH9329 单次上限 ±127 格。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
 
-        // 键盘面板
+        // 键盘面板（布局与鼠标对齐：按键 / 按住时间 / 按键次数+重复间隔 各自成独立小卡）
         var keyboardPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(keyboardPanel);
-        keyboardPanel.Children.Add(FieldLabel("按键"));
-        var capturedText = new TextBlock { Text = "请直接按键，自动捕获（以最新一次为准）", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 2, 0, 10) };
-        keyboardPanel.Children.Add(capturedText);
-        keyboardPanel.Children.Add(new TextBlock { Text = "支持左/右 Ctrl、Shift、Alt、Win 等特殊键，按其他键可随时覆盖", Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(0, 0, 0, 14) });
-        keyboardPanel.Children.Add(FieldLabel("按住时间"));
-        var keyboardHoldRow = new TimeInputRow(this, _doc.DefaultHoldMs); keyboardPanel.Children.Add(keyboardHoldRow.Panel);
+        var capturedText = new TextBlock { Text = "请直接按键，自动捕获（以最新一次为准）", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 2, 0, 6) };
+        keyboardPanel.Children.Add(SubGroup("按键",
+            capturedText,
+            new TextBlock { Text = "支持左/右 Ctrl、Shift、Alt、Win 等修饰键组合（如 Ctrl+Alt+A），按其他键可随时覆盖。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap }));
+        var keyboardHoldRow = new TimeInputRow(this, _doc.DefaultHoldMs);
+        keyboardHoldRow.Panel.Margin = new Thickness(0, 0, 0, 0);
+        keyboardPanel.Children.Add(SubGroup("按住时间", keyboardHoldRow.Panel));
+        var kbRepeat = new RepeatBlock(this, "按键次数（0 为无限）");
+        keyboardPanel.Children.Add(kbRepeat.Panel);
 
         // 等待面板
         var waitPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(waitPanel);
@@ -1061,78 +1067,51 @@ public partial class MainWindow
 
         // 标记区：循环 / 跳转 / 监听 / 备注
         var loopCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        // 鼠标的「点击次数 / 滚动次数 + 重复间隔」——放基础设置里，与该动作本身的参数在一起。
-        // 移动动作没有次数概念，整块不显示；键盘/等待/激活窗口仍用控制逻辑里的通用「循环次数」。
-        var repeatCountLabel = FieldLabel("点击次数（0 为无限）");
-        var repeatCountText = new TextBox { Text = "1", Margin = new Thickness(0, 0, 0, 0), Height = 32 };
-        var repeatDelayValue = new TextBox { Width = 96, Height = 32, Text = "1", VerticalAlignment = VerticalAlignment.Center };
-        var repeatDelayUnit = new ComboBox { Width = 84, Height = 32, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        foreach (var u in new[] { "毫秒", "秒", "分钟", "小时" }) repeatDelayUnit.Items.Add(u);
-        repeatDelayUnit.SelectedIndex = 1;   // 默认 1 秒
-        var repeatDelayRow = new StackPanel { Orientation = Orientation.Horizontal };
-        repeatDelayRow.Children.Add(repeatDelayValue); repeatDelayRow.Children.Add(repeatDelayUnit);
-        // 间隔只有在真的会重复（次数 != 1）时才出现
-        var repeatDelayBlock = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 12, 0, 0) };
-        repeatDelayBlock.Children.Add(FieldLabel("重复间隔"));
-        repeatDelayBlock.Children.Add(repeatDelayRow);
-        var repeatInner = new StackPanel();
-        repeatInner.Children.Add(repeatCountLabel);
-        repeatInner.Children.Add(repeatCountText);
-        repeatInner.Children.Add(repeatDelayBlock);
-        var repeatPanel = SubGroup(null, repeatInner);
-        void RefreshRepeatDelay()
-        {
-            int n = ParseInt(repeatCountText.Text, 1);
-            repeatDelayBlock.Visibility = n == 1 ? Visibility.Collapsed : Visibility.Visible;
-        }
-        repeatCountText.TextChanged += (_, _) => RefreshRepeatDelay();
-        RefreshRepeatDelay();
+        // 鼠标的「点击次数 / 滚动次数 + 重复间隔」（键盘那份在键盘面板里，同一套 RepeatBlock 逻辑）。
+        var mouseRepeat = new RepeatBlock(this, "点击次数（0 为无限）");
 
         // 界面顺序（每块都是独立小卡，关联字段在同一卡内）：
         // 鼠标按钮 → 坐标 → 按住时间 → 点击次数(+重复间隔) → 滚轮格数 → 拟人化移动（最后）
         mousePanel.Children.Add(mouseButtonPanel);
         mousePanel.Children.Add(mouseMovePanel);
         mousePanel.Children.Add(mouseHoldPanel);
-        mousePanel.Children.Add(repeatPanel);
+        mousePanel.Children.Add(mouseRepeat.Panel);
         mousePanel.Children.Add(mouseWheelPanel);
         mousePanel.Children.Add(humanizePanel);
 
-        double RepeatUnitFactor() => repeatDelayUnit.SelectedIndex switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
-        int RepeatDelayMs()
-        {
-            if (string.IsNullOrWhiteSpace(repeatDelayValue.Text))
-                throw new InvalidOperationException("请填写重复间隔。");
-            if (!double.TryParse(repeatDelayValue.Text.Trim(), out var v) || v < 0)
-                throw new InvalidOperationException("重复间隔需为不小于 0 的数字。");
-            return (int)Math.Round(v * RepeatUnitFactor());
-        }
+        // 跳转面板（运行 → 跳转）：原先挂在每个动作上的「执行后跳转到」已剥离成这个独立动作。
+        var jumpPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(jumpPanel);
         var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
-        jumpTargetCombo.Items.Add("不跳转");
+        jumpTargetCombo.Items.Add("（选择目标动作）");
         int count = _plan?.Steps.Count ?? 0;
         for (int n = 1; n <= count; n++) jumpTargetCombo.Items.Add($"第 {n} 个动作");
         jumpTargetCombo.SelectedIndex = 0;
         var jumpTimesPanel = new StackPanel { Visibility = Visibility.Collapsed };
         jumpTimesPanel.Children.Add(FieldLabel("跳转次数（0 为无限）"));
-        var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 8), Height = 32 };
         jumpTimesPanel.Children.Add(jumpTimesText);
         jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
+        jumpPanel.Children.Add(FieldLabel("跳转到"));
+        jumpPanel.Children.Add(jumpTargetCombo);
+        jumpPanel.Children.Add(jumpTimesPanel);
+        jumpPanel.Children.Add(new TextBlock { Text = "执行到本动作时跳到指定序号继续（仅方案顶层生效）；达到跳转次数后不再跳、按顺序往下走。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var cond = BuildRunConditionEditor(null);    // 与方案级共用同一套控件与逻辑
-        // 循环次数只对非鼠标动作显示（鼠标的次数已移到基础设置，移动动作则没有次数）。
+        // 通用循环次数只剩等待/激活窗口在用（鼠标/键盘的次数在基础设置里，跳转用自己的跳转次数）。
         var loopCountPanel = new StackPanel();
         loopCountPanel.Children.Add(FieldLabel("循环次数（0 为无限）"));
         loopCountPanel.Children.Add(loopCountText);
 
         MacroStep? hookSuccess = source?.SuccessAction, hookComplete = source?.CompleteAction, hookFail = source?.FailAction;
         sp.Children.Add(GroupCard("基础设置", baseContent));
+        // 控制逻辑只剩通用循环次数；非等待/激活窗口时整卡隐藏（见 UpdatePanels）。
+        var controlCard = GroupCard("控制逻辑", loopCountPanel);
         {
             var condPanel = cond.Panel;
             condPanel.Margin = new Thickness(0, 0, 0, 4);
-            sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡，不再和循环/跳转挤在"控制逻辑"里
+            sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡
 
-            sp.Children.Add(GroupCard("控制逻辑",
-                loopCountPanel,
-                FieldLabel("执行后跳转到"), jumpTargetCombo, jumpTimesPanel));
+            sp.Children.Add(controlCard);
 
             var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(GroupCard("事件监听",
@@ -1157,23 +1136,26 @@ public partial class MainWindow
         string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
         string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击/移动") : "";
+        string RunAct() => Cat() == "运行" ? (runActionCombo.SelectedItem?.ToString() ?? "等待") : "";
 
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、以及带坐标的鼠标动作（移动 / 点击坐标）。
-            bool needScreens = Cat() == "激活窗口" || (Act() == "点击/移动" && coordCheck.IsChecked == true);
+            bool needScreens = RunAct() == "激活窗口" || (Act() == "点击/移动" && coordCheck.IsChecked == true);
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
         void UpdatePanels()
         {
-            string t = Cat(), d = Dev(), a = Act();
+            string t = Cat(), d = Dev(), a = Act(), ra = RunAct();
             deviceCombo.Visibility = t == "输入" ? Visibility.Visible : Visibility.Collapsed;
             mouseActionCombo.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            runActionCombo.Visibility = t == "运行" ? Visibility.Visible : Visibility.Collapsed;
 
             mousePanel.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
             keyboardPanel.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
-            waitPanel.Visibility = t == "等待" ? Visibility.Visible : Visibility.Collapsed;
-            windowPanel.Visibility = t == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
+            waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
+            windowPanel.Visibility = ra == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
+            jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
             bool clickMove = a == "点击/移动";
             bool moveOnly = clickMove && MoveOnly();     // 「仅移动」= 只移动不点击
             // 仅移动必须有坐标：强制勾上且不给取消。
@@ -1190,9 +1172,10 @@ public partial class MainWindow
             humanizePanel.Visibility = clickMove && coordCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
 
             bool hasRepeat = (clickMove && !moveOnly) || a == "滚轮";
-            repeatPanel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
-            repeatCountLabel.Text = a == "滚轮" ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
-            loopCountPanel.Visibility = (d == "鼠标") ? Visibility.Collapsed : Visibility.Visible;
+            mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
+            mouseRepeat.CountLabel.Text = a == "滚轮" ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
+            // 控制逻辑（通用循环次数）只剩等待/激活窗口在用。
+            controlCard.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
 
             capturingKey = d == "键盘";
             if (capturingKey) win.Focus();
@@ -1203,6 +1186,7 @@ public partial class MainWindow
         typeCombo.SelectionChanged += (_, _) => UpdatePanels();
         deviceCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
+        runActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         buttonCombo.SelectionChanged += (_, _) => UpdatePanels();   // 切「仅移动」要收起按住时间/次数
         coordCheck.Checked += (_, _) => UpdatePanels();             // 勾选坐标才显示拟人化、才需要标屏
         coordCheck.Unchecked += (_, _) => UpdatePanels();
@@ -1229,7 +1213,7 @@ public partial class MainWindow
         {
             try
             {
-                string t = Cat(), dev = Dev();
+                string t = Cat(), dev = Dev(), ra = RunAct();
                 if (dev == "鼠标")
                 {
                     string a = Act();
@@ -1254,8 +1238,7 @@ public partial class MainWindow
                     if (a == "滚轮")
                     {
                         result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) };
-                        result.LoopCount = Math.Max(0, ParseInt(repeatCountText.Text, 1));
-                        if (result.LoopCount != 1) { result.LoopDelayMs = RepeatDelayMs(); result.LoopDelayUnit = Math.Max(0, repeatDelayUnit.SelectedIndex); }
+                        mouseRepeat.Apply(result);
                     }
                     else if (a == "点击/移动")
                     {
@@ -1273,8 +1256,7 @@ public partial class MainWindow
                             result = new MacroStep { Type = withCoord ? "MouseClickAt" : "MouseClick" };
                             if (withCoord) FillMove(result);
                             FillButton(result);
-                            result.LoopCount = Math.Max(0, ParseInt(repeatCountText.Text, 1));
-                            if (result.LoopCount != 1) { result.LoopDelayMs = RepeatDelayMs(); result.LoopDelayUnit = Math.Max(0, repeatDelayUnit.SelectedIndex); }
+                            mouseRepeat.Apply(result);
                             if (holdRow.SetAsDefault)
                             {
                                 var ms = holdRow.GetMs();
@@ -1289,13 +1271,14 @@ public partial class MainWindow
                     if (string.IsNullOrWhiteSpace(capturedKey) && capturedModifier == 0)
                         throw new InvalidOperationException("请先按下需要模拟的键。");
                     result = new MacroStep { Type = "KeyTap", Key = capturedKey, Modifier = capturedModifier, HoldMs = keyboardHoldRow.GetMs(), HoldUnit = keyboardHoldRow.UnitIndex };
+                    kbRepeat.Apply(result);   // 按键次数 + 重复间隔（与鼠标同一套逻辑）
                     if (keyboardHoldRow.SetAsDefault)
                     {
                         var ms = keyboardHoldRow.GetMs();
                         if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
                     }
                 }
-                else if (t == "等待")
+                else if (ra == "等待")
                 {
                     result = new MacroStep { Type = "Wait", DurationMs = waitRow.GetMs(), DurationUnit = waitRow.UnitIndex };
                     if (waitRow.SetAsDefault)
@@ -1304,6 +1287,12 @@ public partial class MainWindow
                         if (_doc.DefaultWaitMs != ms) { _doc.DefaultWaitMs = ms; settingsChanged = true; }
                     }
                 }
+                else if (ra == "跳转")
+                {
+                    if (jumpTargetCombo.SelectedIndex < 1)
+                        throw new InvalidOperationException("请选择跳转的目标动作。");
+                    result = new MacroStep { Type = "Jump", JumpTarget = jumpTargetCombo.SelectedIndex, JumpTimes = Math.Max(0, ParseInt(jumpTimesText.Text, 0)) };
+                }
                 else // 激活窗口
                 {
                     if (selPid <= 0 && selProc.Length == 0 && selTitle.Length == 0)
@@ -1311,10 +1300,10 @@ public partial class MainWindow
                     result = new MacroStep { Type = "ActivateWindow", TargetProcess = selProc, TargetTitle = selTitle, TargetPid = selPid };
                 }
                 {
-                    if (dev != "鼠标") result.LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1));   // 鼠标的次数已在上面按类型写过
+                    if (ra is "等待" or "激活窗口") result.LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1));   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
-                    result.JumpTarget = jumpTargetCombo.SelectedIndex;
-                    result.JumpTimes = result.JumpTarget >= 1 ? Math.Max(0, ParseInt(jumpTimesText.Text, 0)) : 0;
+                    // 「执行后跳转到」已剥离成独立跳转动作；旧数据里挂在动作上的跳转保留原值（引擎继续支持）。
+                    if (result.Type != "Jump" && source != null) { result.JumpTarget = source.JumpTarget; result.JumpTimes = source.JumpTimes; }
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
                 }
@@ -1362,18 +1351,12 @@ public partial class MainWindow
                 case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击/移动"; coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields(); break;
                 case "MouseWheel":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
                 case "KeyTap":        typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
-                case "Wait":          typeCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
-                case "ActivateWindow":typeCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
+                case "Wait":          typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
+                case "ActivateWindow":typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
+                case "Jump":          typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "跳转"; break;   // 目标/次数由下方通用回填写入
             }
             loopCountText.Text = source.LoopCount.ToString();
-            repeatCountText.Text = source.LoopCount.ToString();
-            {
-                int u = Math.Clamp(source.LoopDelayUnit, 0, 3);
-                repeatDelayUnit.SelectedIndex = u;
-                double f = u switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
-                double v = source.LoopDelayMs / f;
-                repeatDelayValue.Text = v % 1.0 == 0 ? ((long)v).ToString() : v.ToString("0.###");
-            }
+            mouseRepeat.Load(source); kbRepeat.Load(source);
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
             if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
             noteText.Text = source.Note;
@@ -1515,7 +1498,13 @@ public partial class MainWindow
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (key == Key.ImeProcessed) key = e.ImeProcessedKey;
         byte mod = GetModifierFromKey(key);
-        if (mod != 0) return new CapturedKey("", mod, FormatCapturedKey("", mod));
+        if (mod != 0)
+        {
+            // 按下的本身是修饰键：合并当前按住的全部修饰键一起显示——
+            // 按住 Ctrl 再按 Alt 应显示 Ctrl+Alt（而不是只显示 Alt），继续按 A 才落成 Ctrl+Alt+A。
+            mod |= GetCurrentModifierState();
+            return new CapturedKey("", mod, FormatCapturedKey("", mod));
+        }
         mod = GetCurrentModifierState();
         string k = KeyToHidName(key);
         // 收敛到 KeyMap：两张键码表都没有的键，捕获阶段就拒绝，避免录进去、运行时才静默失效。
@@ -1582,6 +1571,62 @@ public partial class MainWindow
     private static string TranslateButtonToDisplay(string button) => button switch { "Left" => "左键", "Right" => "右键", "Middle" => "中键", _ => "左键" };
 
     // 时间输入行：数值 + 单位(毫秒/秒/分钟/小时) + "设为默认"。
+    // 「次数 + 重复间隔」块：点击/滚动/按键共用同一套逻辑（间隔仅在次数 != 1 时显示；重复时必填校验）。
+    private sealed class RepeatBlock
+    {
+        public readonly Border Panel;
+        public readonly TextBlock CountLabel;
+        public readonly TextBox Count = new() { Text = "1", Height = 32 };
+        private readonly TextBox _delayVal = new() { Width = 96, Height = 32, Text = "1", VerticalAlignment = VerticalAlignment.Center };
+        private readonly ComboBox _delayUnit = new() { Width = 84, Height = 32, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        private readonly StackPanel _delayBlock;
+
+        public RepeatBlock(MainWindow owner, string label)
+        {
+            CountLabel = FieldLabel(label);
+            foreach (var u in new[] { "毫秒", "秒", "分钟", "小时" }) _delayUnit.Items.Add(u);
+            _delayUnit.SelectedIndex = 1;   // 默认 1 秒
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(_delayVal); row.Children.Add(_delayUnit);
+            _delayBlock = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 12, 0, 0) };
+            _delayBlock.Children.Add(FieldLabel("重复间隔"));
+            _delayBlock.Children.Add(row);
+            var inner = new StackPanel();
+            inner.Children.Add(CountLabel);
+            inner.Children.Add(Count);
+            inner.Children.Add(_delayBlock);
+            Panel = owner.SubGroup(null, inner);
+            Count.TextChanged += (_, _) => Refresh();
+            Refresh();
+        }
+
+        private void Refresh() => _delayBlock.Visibility = ParseInt(Count.Text, 1) == 1 ? Visibility.Collapsed : Visibility.Visible;
+        private double UnitFactor => _delayUnit.SelectedIndex switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
+
+        private int DelayMs()
+        {
+            if (string.IsNullOrWhiteSpace(_delayVal.Text)) throw new InvalidOperationException("请填写重复间隔。");
+            if (!double.TryParse(_delayVal.Text.Trim(), out var v) || v < 0) throw new InvalidOperationException("重复间隔需为不小于 0 的数字。");
+            return (int)Math.Round(v * UnitFactor);
+        }
+
+        public void Apply(MacroStep r)
+        {
+            r.LoopCount = Math.Max(0, ParseInt(Count.Text, 1));
+            if (r.LoopCount != 1) { r.LoopDelayMs = DelayMs(); r.LoopDelayUnit = Math.Max(0, _delayUnit.SelectedIndex); }
+        }
+
+        public void Load(MacroStep sSrc)
+        {
+            Count.Text = sSrc.LoopCount.ToString();
+            int u = Math.Clamp(sSrc.LoopDelayUnit, 0, 3);
+            _delayUnit.SelectedIndex = u;
+            double f = u switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
+            double v = sSrc.LoopDelayMs / f;
+            _delayVal.Text = v % 1.0 == 0 ? ((long)v).ToString() : v.ToString("0.###");
+        }
+    }
+
     private sealed class TimeInputRow
     {
         private static readonly (string Name, double Factor)[] Units = { ("毫秒", 1), ("秒", 1000), ("分钟", 60000), ("小时", 3600000) };
