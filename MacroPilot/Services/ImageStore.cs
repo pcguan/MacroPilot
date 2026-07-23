@@ -67,27 +67,75 @@ public static class ImageStore
         foreach (var c in s.Children) ForEach(c, act);
     }
 
-    /// <summary>就地把内联 base64 图片外置成 "file:&lt;hash&gt;"（保存前调用）。已是引用的跳过。</summary>
-    public static void Externalize(IEnumerable<MacroStep> steps)
+    // ---- 对单条运行条件（方案级/动作级通用）的三种就地处理 ----
+    private static void ExternalizeCond(IRunCondition c)
     {
-        foreach (var top in steps)
-            ForEach(top, s =>
-            {
-                var img = s.RunConditionImage;
-                if (!string.IsNullOrEmpty(img) && !IsRef(img))
-                {
-                    try { s.RunConditionImage = Ref(Convert.FromBase64String(img)); } catch { }
-                }
-            });
+        var img = c.RunConditionImage;
+        if (!string.IsNullOrEmpty(img) && !IsRef(img))
+        {
+            try { c.RunConditionImage = Ref(Convert.FromBase64String(img)); } catch { }
+        }
+    }
+    private static void InlineCond(IRunCondition c)
+    {
+        if (!string.IsNullOrEmpty(c.RunConditionImage)) c.RunConditionImage = ToBase64(c.RunConditionImage);
+    }
+    private static void CollectCond(IRunCondition c, HashSet<string> into)
+    {
+        var img = c.RunConditionImage;
+        if (!string.IsNullOrEmpty(img) && IsRef(img)) into.Add(img[Prefix.Length..]);
     }
 
-    /// <summary>就地把引用解析回内联 base64（导出前对【克隆】调用，保持导出文件自包含）。</summary>
-    public static void Inline(IEnumerable<MacroStep> steps)
+    /// <summary>就地把内联 base64 图片外置成 "file:&lt;hash&gt;"（保存/导入时调用）。已是引用的跳过。</summary>
+    public static void Externalize(IEnumerable<MacroStep> steps)
     {
-        foreach (var top in steps)
-            ForEach(top, s =>
+        foreach (var top in steps) ForEach(top, s => ExternalizeCond(s));
+    }
+
+    /// <summary>整方案外置：方案级图片条件 + 全部动作（含子动作/监听动作）。</summary>
+    public static void Externalize(MacroPlan plan)
+    {
+        ExternalizeCond(plan);
+        Externalize(plan.Steps);
+    }
+
+    /// <summary>整方案内联（导出前对【克隆】调用，保持导出文件自包含）：方案级图片条件 + 全部动作。</summary>
+    public static void Inline(MacroPlan plan)
+    {
+        InlineCond(plan);
+        foreach (var top in plan.Steps) ForEach(top, s => InlineCond(s));
+    }
+
+    /// <summary>收集一个方案（方案级条件 + 全部动作，递归）引用的图片 hash。</summary>
+    public static void CollectHashes(MacroPlan plan, HashSet<string> into)
+    {
+        CollectCond(plan, into);
+        foreach (var top in plan.Steps) ForEach(top, s => CollectCond(s, into));
+    }
+
+    /// <summary>收集若干动作（递归）引用的图片 hash（动作剪贴板用）。</summary>
+    public static void CollectHashes(IEnumerable<MacroStep> steps, HashSet<string> into)
+    {
+        foreach (var top in steps) ForEach(top, s => CollectCond(s, into));
+    }
+
+    /// <summary>
+    /// 清理孤儿图片：删除 images\ 下不在 referenced 里的 .png。
+    /// 动作/方案删除后其截图不再被引用，若不清理会永远留在磁盘上越积越多。单个删除失败静默（下次保存再试）。
+    /// </summary>
+    public static int Sweep(HashSet<string> referenced)
+    {
+        int removed = 0;
+        try
+        {
+            if (!Directory.Exists(ImagesDir)) return 0;
+            foreach (var f in Directory.GetFiles(ImagesDir, "*.png"))
             {
-                if (!string.IsNullOrEmpty(s.RunConditionImage)) s.RunConditionImage = ToBase64(s.RunConditionImage);
-            });
+                if (referenced.Contains(Path.GetFileNameWithoutExtension(f))) continue;
+                try { File.Delete(f); removed++; } catch { }
+            }
+        }
+        catch { }
+        return removed;
     }
 }

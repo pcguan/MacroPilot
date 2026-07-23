@@ -1375,7 +1375,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void Save()
     {
         _doc.Plans = _plans.ToList();
-        ImageStore.Externalize(_plans.SelectMany(p => p.Steps));   // 内联 base64 图片就地外置成 file:hash，plans.json 只留引用
+        foreach (var p in _plans) ImageStore.Externalize(p);   // 内联 base64 图片就地外置成 file:hash（含方案级条件），plans.json 只留引用
         if (!Storage.Save(_doc))
         {
             // 写盘失败不再静默假装"已保存"：保留脏标记、提示用户，避免误以为存上了。
@@ -1387,8 +1387,23 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         SnapshotAllPlans(); // 更新全部方案快照并清脏
         SaveButton.IsEnabled = false;
         _undo.Clear(); UndoButton.IsEnabled = false; // 保存后清空撤销历史，回撤按钮置灰
+        SweepOrphanImages();   // 清掉不再被任何方案引用的外置截图（孤儿图片）
         ShowToast("已保存");
     }
+    // 清理孤儿图片：保存是唯一让"引用集合"落定的时刻，在这里做正合适。
+    // 引用集合 = 全部方案（含方案级条件）+ 方案/动作剪贴板；撤销栈刚在保存时清空，无需考虑。
+    // 方案运行期间跳过——运行的是旧快照，其中的图片可能已不在当前方案里，删了会让运行中的条件失效。
+    private void SweepOrphanImages()
+    {
+        if (_runner is { IsRunning: true }) return;
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in _plans) ImageStore.CollectHashes(p, used);
+        if (_clipPlan != null) ImageStore.CollectHashes(_clipPlan, used);
+        if (_clip != null) ImageStore.CollectHashes(new[] { _clip }, used);
+        int n = ImageStore.Sweep(used);
+        if (n > 0) AddLog("Info", $"已清理 {n} 张不再使用的条件截图。");
+    }
+
     // 方案列表标题栏的导出：整个方案列表（存成方案数组）。
     private void ExportAll_Click(object sender, RoutedEventArgs e)
     {
@@ -1445,7 +1460,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         var opts = new JsonSerializerOptions { MaxDepth = 256 };
         var c = JsonSerializer.Deserialize<MacroPlan>(JsonSerializer.Serialize(p, opts), opts)!;
-        ImageStore.Inline(c.Steps);
+        ImageStore.Inline(c);   // 方案级条件 + 全部动作一起内联，导出文件完全自包含
         return c;
     }
 
@@ -1516,7 +1531,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         if (imported.Count > 0)
         {
-            foreach (var p in imported) ImageStore.Externalize(p.Steps);   // 内联 base64 图片落到本地 images\ 并转引用
+            foreach (var p in imported) ImageStore.Externalize(p);   // 内联 base64 图片（含方案级条件）落到本地 images\ 并转引用
             AddPlansUnsaved(imported);
             AddLog("Info", $"已导入 {imported.Count} 个方案（未保存）。");
             ShowToast($"已导入 {imported.Count} 个方案");
