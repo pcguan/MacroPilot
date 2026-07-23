@@ -1516,7 +1516,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         if (imported.Count > 0)
         {
-            foreach (var p in imported) ImageStore.Externalize(p.Steps);   // 内联 base64 图片落到本地 images\ 并转引用
+            foreach (var p in imported)
+            {
+                ImageStore.Externalize(p.Steps);   // 内联 base64 图片落到本地 images\ 并转引用
+                Storage.MigrateJumps(p.Steps);     // 旧格式"挂在动作上的跳转" → 结束后监听里的 Jump 动作
+            }
             AddPlansUnsaved(imported);
             AddLog("Info", $"已导入 {imported.Count} 个方案（未保存）。");
             ShowToast($"已导入 {imported.Count} 个方案");

@@ -167,10 +167,14 @@ public sealed class MacroRunner
         }
     }
 
+    // Jump 动作执行时上报到这里（无论它在顶层、组合内还是监听里），由 RunTop 在当前顶层步骤结束后统一消费。
+    private MacroStep? _pendingJump;
+
     // 顶层动作序列
     private void RunTop(System.Collections.Generic.IList<MacroStep> steps, CancellationToken ct)
     {
-        var jumpUsed = new int[steps.Count];
+        var jumpUsed = new System.Collections.Generic.Dictionary<MacroStep, int>();   // 次数按 Jump 动作实例计（本轮内）
+        _pendingJump = null;
         int i = 0;
         while (i < steps.Count)
         {
@@ -204,10 +208,15 @@ public sealed class MacroRunner
                 executed = RunLeaf(step, prefix + step.Display, ct);
             }
 
-            if (executed && step.JumpTarget >= 1 && step.JumpTarget <= steps.Count)
+            // 消费跳转：来自本步骤期间执行到的 Jump 动作（顶层 Jump / 组合内 / 监听「结束后」等都会上报）。
+            // 兜底：极旧数据仍把跳转挂在动作上（正常应已被 Storage.MigrateJumps 迁走）。
+            var jumpSrc = _pendingJump; _pendingJump = null;
+            if (jumpSrc == null && executed && step.Type != "Jump" && step.JumpTarget >= 1) jumpSrc = step;
+            if (jumpSrc != null && jumpSrc.JumpTarget >= 1 && jumpSrc.JumpTarget <= steps.Count)
             {
-                bool inf = step.JumpTimes <= 0;
-                if (inf || jumpUsed[i] < step.JumpTimes) { jumpUsed[i]++; i = step.JumpTarget - 1; continue; }
+                bool inf = jumpSrc.JumpTimes <= 0;
+                jumpUsed.TryGetValue(jumpSrc, out var used);
+                if (inf || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = jumpSrc.JumpTarget - 1; continue; }
             }
             i++;
         }
@@ -426,8 +435,8 @@ public sealed class MacroRunner
                 _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
                 break;
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
-            // 跳转动作：叶子本身无操作，跳转由 RunTop 统一消费（组合内/监听内与从前一样是 no-op）。
-            case "Jump": break;
+            // 跳转动作：上报给 RunTop，在当前顶层步骤结束后跳到目标序号（在组合内/监听里执行也生效）。
+            case "Jump": _pendingJump = step; break;
             case "ActivateWindow":
                 if (step.TargetProcess == WindowActivator.DesktopSentinel)
                 {

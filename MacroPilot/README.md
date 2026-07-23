@@ -23,7 +23,7 @@
 
 **执行引擎（`MacroRunner`）**
 - `RunTop` → `RunGroup`（递归嵌套组合）→ `RunLeaf`；监听动作经 `RunHook` 复用 `RunLeaf/RunGroup`，因此天然支持递归。
-- 跳转（goto）只在 `RunTop` 处理；组合子动作与监听动作里的跳转是 no-op。
+- 跳转是独立的 Jump 动作：执行时上报 `_pendingJump`，由 `RunTop` 在当前顶层步骤结束后统一消费（在组合内/监听「结束后」里执行同样生效）；旧数据挂在动作上的跳转由 `Storage.MigrateJumps` 加载/导入时迁走。
 - 运行的是当前方案的**克隆快照**，避免运行中编辑与引擎争同一个集合。`MacroStep.Clone()` 会带上 `DisplayIndex`，否则运行页序号全是 0。
 - 运行页是**扁平列表**（只有顶层行）：自动滚动时要把当前步映射到它的**顶层祖先行**，否则执行组合内部时列表不滚。
 

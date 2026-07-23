@@ -1302,8 +1302,6 @@ public partial class MainWindow
                 {
                     if (ra is "等待" or "激活窗口") result.LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1));   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
-                    // 「执行后跳转到」已剥离成独立跳转动作；旧数据里挂在动作上的跳转保留原值（引擎继续支持）。
-                    if (result.Type != "Jump" && source != null) { result.JumpTarget = source.JumpTarget; result.JumpTimes = source.JumpTimes; }
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
                 }
@@ -1435,20 +1433,10 @@ public partial class MainWindow
         var cond = BuildRunConditionEditor(source);
         var condPanel = cond.Panel;
         condPanel.Margin = new Thickness(0, 0, 0, 4);
-        var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
-        jumpTargetCombo.Items.Add("不跳转");
-        int count = _plan?.Steps.Count ?? 0;
-        for (int n = 1; n <= count; n++) jumpTargetCombo.Items.Add($"第 {n} 个动作");
-        jumpTargetCombo.SelectedIndex = 0;
-        var jumpTimesPanel = new StackPanel { Visibility = Visibility.Collapsed };
-        jumpTimesPanel.Children.Add(FieldLabel("跳转次数（0 为无限）"));
-        var jumpTimesText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        jumpTimesPanel.Children.Add(jumpTimesText);
-        jumpTargetCombo.SelectionChanged += (_, _) => jumpTimesPanel.Visibility = jumpTargetCombo.SelectedIndex <= 0 ? Visibility.Collapsed : Visibility.Visible;
         sp.Children.Add(GroupCard("运行条件", condPanel));   // 与动作对话框一致：运行条件独立成卡
+        // 跳转已剥离成独立动作（运行 → 跳转），组合不再挂"执行后跳转到"。
         sp.Children.Add(GroupCard("控制逻辑",
-            FieldLabel("循环次数（0 为无限）"), loopCountText,
-            FieldLabel("执行后跳转到"), jumpTargetCombo, jumpTimesPanel));
+            FieldLabel("循环次数（0 为无限）"), loopCountText));
 
         MacroStep? hookSuccess = source.SuccessAction, hookComplete = source.CompleteAction, hookFail = source.FailAction;
         var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
@@ -1460,7 +1448,6 @@ public partial class MainWindow
 
         var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         sp.Children.Add(GroupCard("备注（可选）", noteText));
-        if (source.JumpTarget >= 1 && source.JumpTarget <= count) { jumpTargetCombo.SelectedIndex = source.JumpTarget; jumpTimesText.Text = source.JumpTimes.ToString(); }
 
         var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
         var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
@@ -1472,12 +1459,10 @@ public partial class MainWindow
         MacroStep? result = null;
         okBtn.Click += (_, _) =>
         {
-            int jt = jumpTargetCombo.SelectedIndex;
             result = new MacroStep
             {
                 Type = "Group", Children = new ObservableCollection<MacroStep>(working),
                 LoopCount = Math.Max(0, ParseInt(loopCountText.Text, 1)),
-                JumpTarget = jt, JumpTimes = jt >= 1 ? Math.Max(0, ParseInt(jumpTimesText.Text, 0)) : 0,
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
             };
