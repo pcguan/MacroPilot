@@ -263,7 +263,22 @@ $backup = ""$Dir.bak_"" + ([DateTimeOffset]::Now.ToUnixTimeSeconds())
 $renamed = $false
 Log ""=== start dir=$Dir pid=$AppPid ===""
 try {
-  if ($AppPid -gt 0) { try { Wait-Process -Id $AppPid -Timeout 30 -ErrorAction SilentlyContinue } catch {} }
+  if ($AppPid -gt 0) {
+    try { Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue } catch {}
+    # 没退干净就强杀：本体若被模态框(如未保存询问)挂住，等多久都不会退，
+    # 之前的表现就是「进程还在、目录被占、改名失败」。
+    $p = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
+    if ($p) {
+      Log ""app pid=$AppPid still alive after wait -> force kill""
+      try { Stop-Process -Id $AppPid -Force -ErrorAction SilentlyContinue } catch {}
+      try { Wait-Process -Id $AppPid -Timeout 10 -ErrorAction SilentlyContinue } catch {}
+    }
+  }
+  # 同名残留进程（上一次更新失败留下的）也一并清掉，否则照样占住目录
+  foreach ($q in @(Get-Process -Name 'MacroPilot' -ErrorAction SilentlyContinue)) {
+    Log ""stray MacroPilot pid=$($q.Id) -> force kill""
+    try { Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue } catch {}
+  }
   for ($i=0; $i -lt 60; $i++) {
     try { $fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break } catch { Start-Sleep -Milliseconds 300 }
   }
@@ -271,7 +286,10 @@ try {
     try { Rename-Item -LiteralPath $Dir -NewName (Split-Path $backup -Leaf) -Force; $renamed = $true }
     catch { Start-Sleep -Milliseconds 300 }
   }
-  if (-not $renamed) { throw 'backup rename failed: dir still in use' }
+  if (-not $renamed) {
+    $still = @(Get-Process -Name 'MacroPilot' -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ','
+    throw ""backup rename failed: dir still in use (MacroPilot pids: [$still])""
+  }
   Log ""backup -> $backup""
   New-Item -ItemType Directory -Force -Path $Dir | Out-Null
   Expand-Archive -LiteralPath $Zip -DestinationPath $Dir -Force

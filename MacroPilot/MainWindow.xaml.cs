@@ -1718,8 +1718,22 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         UpdateBar.Visibility = Visibility.Collapsed;
     }
 
+    // 更新中：关窗不再弹"未保存"询问（下面已提前处理过），否则 Shutdown 会被模态框卡住、
+    // 本体不退出 → 助手等不到解锁 → "backup rename failed: dir still in use"。
+    private bool _updatingNow;
+
     private async System.Threading.Tasks.Task DownloadAndRun(Services.UpdateInfo info)
     {
+        // 更新会重启本体，必须先把"未保存的方案"和"正在运行的方案"处理干净，
+        // 否则退出流程会被拦下（这正是 v0.1.3 之前点更新后进程不退、更新失败的原因）。
+        if (_runner is { IsRunning: true })
+        {
+            if (ThemedDialog.Show("方案正在运行，更新需要重启程序。是否停止运行并继续更新？", "更新",
+                    MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            _runner?.Stop();
+        }
+        if (!EnsureCurrentPlanClean()) return;   // 用户选"取消"→ 放弃本次更新
+
         _updateBusy = true;
         CheckUpdateButton.IsEnabled = false;
         try
@@ -1728,6 +1742,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 UpdateStatusText.Text = p < 0 ? "正在下载更新…" : $"正在下载更新… {p * 100:0}%");
             var file = await Services.UpdateService.DownloadAsync(info, prog);
             UpdateStatusText.Text = "下载完成，正在静默更新并自动重启…";
+            _updatingNow = true;   // 让 OnClosing 直接放行，别再弹任何模态框
             Services.UpdateService.ApplyAndExit(file);   // zip→就地解压覆盖(备份/回滚/保留unins)；exe→静默安装器兜底
         }
         catch (Exception ex)
@@ -1751,7 +1766,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 退出前：若有未保存的方案修改（增删改/排序/循环间隔等），弹框确认保存/放弃/取消。
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        if (!EnsureCurrentPlanClean()) { e.Cancel = true; return; }
+        // 更新流程已在 DownloadAndRun 里问过未保存方案，这里必须无条件放行：
+        // 任何模态询问都会挂住 Shutdown，导致进程不退、安装目录被占、更新失败。
+        if (!_updatingNow && !EnsureCurrentPlanClean()) { e.Cancel = true; return; }
         base.OnClosing(e);   // 窗口几何由 WindowMemory 在 Closing 时统一保存
     }
 
