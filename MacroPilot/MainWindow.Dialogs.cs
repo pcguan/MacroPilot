@@ -834,31 +834,41 @@ public partial class MainWindow
                 { monitorCombo.SelectedItem = it; return; }
             if (monitorCombo.Items.Count > 0) monitorCombo.SelectedIndex = 0;
         }
-        // 一行放下：显示器下拉（自适应宽） + 点选 / 预览两个图标按钮
-        var monRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 6, 0, 10) };
-        var pickOverlayBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "在显示器上点选位置" };
-        var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览已选位置", Margin = new Thickness(4, 0, 0, 0) };
-        var pickRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
-        pickRow.Children.Add(pickOverlayBtn); pickRow.Children.Add(previewBtn);
-        DockPanel.SetDock(pickRow, Dock.Right); monRow.Children.Add(pickRow);
+        // 表单式两行（参考自动精灵）：标签同宽左对齐；坐标值行 = 横/纵紧凑输入(% 后缀) + 拾取/预览图标同排。
+        TextBlock CoordLabel(string t) => new TextBlock { Text = t, Width = 52, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+
+        var monRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 6, 0, 12) };
+        monRow.Children.Add(CoordLabel("显示器"));
         monitorCombo.Margin = new Thickness(0);
         monRow.Children.Add(monitorCombo);
         coordDetail.Children.Add(monRow);
 
-        // X / Y 并排，同属「坐标」这一块
-        var pctGrid = new Grid();
-        pctGrid.ColumnDefinitions.Add(new ColumnDefinition());
-        pctGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-        pctGrid.ColumnDefinitions.Add(new ColumnDefinition());
-        var pxPanel = new StackPanel();
-        pxPanel.Children.Add(FieldLabel("X（%）"));
-        var pctXText = new TextBox { Text = "50", Height = 32 };
-        pxPanel.Children.Add(pctXText); Grid.SetColumn(pxPanel, 0); pctGrid.Children.Add(pxPanel);
-        var pyPanel = new StackPanel();
-        pyPanel.Children.Add(FieldLabel("Y（%）"));
-        var pctYText = new TextBox { Text = "50", Height = 32 };
-        pyPanel.Children.Add(pctYText); Grid.SetColumn(pyPanel, 2); pctGrid.Children.Add(pyPanel);
-        coordDetail.Children.Add(pctGrid);
+        var pctXText = new TextBox { Text = "50", Width = 86, Height = 32 };
+        var pctYText = new TextBox { Text = "50", Width = 86, Height = 32 };
+        // 单个坐标域：上方小字说明（横坐标/纵坐标），下方输入框 + % 后缀
+        StackPanel PctField(string cap, TextBox box)
+        {
+            var f = new StackPanel();
+            f.Children.Add(new TextBlock { Text = cap, FontSize = 10, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(2, 0, 0, 2) });
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(box);
+            row.Children.Add(new TextBlock { Text = "%", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(5, 0, 0, 0) });
+            f.Children.Add(row);
+            return f;
+        }
+        var pickOverlayBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "在屏幕上点选坐标" };
+        var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览已选位置", Margin = new Thickness(2, 0, 0, 0) };
+        var valRow = new DockPanel { LastChildFill = false };
+        var valLabel = CoordLabel("坐标值");
+        valLabel.VerticalAlignment = VerticalAlignment.Bottom; valLabel.Margin = new Thickness(0, 0, 0, 7);
+        valRow.Children.Add(valLabel);
+        valRow.Children.Add(PctField("横坐标", pctXText));
+        var yField = PctField("纵坐标", pctYText); yField.Margin = new Thickness(12, 0, 0, 0);
+        valRow.Children.Add(yField);
+        var pickBtns = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 0) };
+        pickBtns.Children.Add(pickOverlayBtn); pickBtns.Children.Add(previewBtn);
+        valRow.Children.Add(pickBtns);
+        coordDetail.Children.Add(valRow);
         var pickStatus = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
         coordDetail.Children.Add(pickStatus);
         var ch9329Note = new TextBlock
