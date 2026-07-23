@@ -142,21 +142,12 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         };
     }
 
+    /// <summary>简易描述：有备注用备注，否则用动作本身的简述（不带循环/监听等后缀）。跳转目标下拉等紧凑场景用。</summary>
+    [JsonIgnore] public string Brief => string.IsNullOrWhiteSpace(Note) ? BaseDesc() : Note.Trim();
+
     public override string ToString()
     {
-        string desc = Type switch
-        {
-            "Group" => $"组合（{Children.Count} 个动作）",
-            "Wait" => $"等待 {FormatMs(DurationMs)}",
-            "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
-            "MouseMove" => MoveDisplay(),
-            "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
-            "MouseWheel" => $"滚轮 {Wheel} 格",
-            "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
-            "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
-            "Jump" => JumpTarget >= 1 ? (JumpTimes > 0 ? $"跳转到动作 {JumpTarget}（最多 {JumpTimes} 次）" : $"跳转到动作 {JumpTarget}") : "跳转（未设置目标）",
-            _ => Type
-        };
+        string desc = BaseDesc();
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
         if (HasListener)
@@ -170,6 +161,21 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         // 备注不再拼到描述里——动作行模板已在最右侧单独显示备注（避免重复出现 "// 备注"）。
         return res;
     }
+
+    // 动作本身的简述（ToString 的主体部分，无循环/监听后缀）。
+    private string BaseDesc() => Type switch
+    {
+        "Group" => $"组合（{Children.Count} 个动作）",
+        "Wait" => $"等待 {FormatMs(DurationMs)}",
+        "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
+        "MouseMove" => MoveDisplay(),
+        "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
+        "MouseWheel" => $"滚轮 {Wheel} 格",
+        "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
+        "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
+        "Jump" => JumpTarget >= 1 ? (JumpTimes > 0 ? $"跳转到动作 {JumpTarget}（最多 {JumpTimes} 次）" : $"跳转到动作 {JumpTarget}") : "跳转（未设置目标）",
+        _ => Type
+    };
 
     private static string FormatMs(int ms)
     {

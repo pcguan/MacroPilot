@@ -1089,7 +1089,13 @@ public partial class MainWindow
         var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
         jumpTargetCombo.Items.Add("（选择目标动作）");
         int count = _plan?.Steps.Count ?? 0;
-        for (int n = 1; n <= count; n++) jumpTargetCombo.Items.Add($"第 {n} 个动作");
+        for (int n = 1; n <= count; n++)
+        {
+            // 有备注显示备注，否则显示动作简述（截断防超宽）
+            var brief = _plan!.Steps[n - 1].Brief;
+            if (brief.Length > 42) brief = brief[..42] + "…";
+            jumpTargetCombo.Items.Add($"{n}. {brief}");
+        }
         jumpTargetCombo.SelectedIndex = 0;
         jumpInner.Children.Add(FieldLabel("跳转到"));
         jumpInner.Children.Add(jumpTargetCombo);
