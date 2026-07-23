@@ -121,6 +121,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             AddLog("Info", App.IsRunningAsAdmin() ? "当前以管理员权限运行。" : "当前为普通权限。");
             OvVersionText.Text = "版本 " + Services.UpdateService.CurrentVersionText;
             ShowCurrentChangelog();
+            ReportLastUpdateFailure();  // 上次就地更新若失败过，把原因摆出来
             _ = StartupUpdateCheck();   // 启动后静默查一次更新，有新版才弹窗提示
         };
     }
@@ -1736,12 +1737,25 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _updateBusy = true;
         CheckUpdateButton.IsEnabled = false;
+        var ui = new UpdateProgressUi(this, info.VersionText);
         try
         {
+            ui.SetStep(0, "正在下载更新包…", "");
             var prog = new Progress<double>(p =>
-                UpdateStatusText.Text = p < 0 ? "正在下载更新…" : $"正在下载更新… {p * 100:0}%");
+            {
+                ui.SetProgress(p);
+                UpdateStatusText.Text = p < 0 ? "正在下载更新…" : $"正在下载更新… {p * 100:0}%";
+            });
             var file = await Services.UpdateService.DownloadAsync(info, prog);
+            if (ui.Canceled) { ui.Close(); UpdateStatusText.Text = "已取消更新"; return; }
+
+            ui.SetStep(1, "正在校验完整性…", "核对 SHA-256");
+            ui.Indeterminate();
+            await System.Threading.Tasks.Task.Delay(150);   // 让这一步在界面上可见（校验在下载时已完成）
+
+            ui.SetStep(2, "正在退出并覆盖安装…", "程序即将关闭，安装完成后会自动重启");
             UpdateStatusText.Text = "下载完成，正在静默更新并自动重启…";
+            await System.Threading.Tasks.Task.Delay(400);   // 给用户看清这句话的时间
             _updatingNow = true;   // 让 OnClosing 直接放行，别再弹任何模态框
             Services.UpdateService.ApplyAndExit(file);   // zip→就地解压覆盖(备份/回滚/保留unins)；exe→静默安装器兜底
         }
@@ -1750,8 +1764,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _updateBusy = false;
             CheckUpdateButton.IsEnabled = true;
             UpdateStatusText.Text = "更新失败：" + ex.Message;
-            Services.ThemedDialog.Show("下载更新失败：" + ex.Message + "\n\n可前往发布页手动下载。", "更新失败",
-                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            ui.Fail(ex.Message + "\n\n可前往发布页手动下载安装。");
         }
     }
 

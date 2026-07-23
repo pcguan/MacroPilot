@@ -21,6 +21,26 @@ public partial class App : Application
         base.OnExit(e);
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr h, int cmd);
+
+    /// <summary>把已在运行的那个实例唤到前台（取代"已在运行"模态提示）。找不到就静默退出。</summary>
+    private static void ActivateExistingInstance()
+    {
+        try
+        {
+            int self = Environment.ProcessId;
+            foreach (var p in Process.GetProcessesByName("MacroPilot"))
+            {
+                if (p.Id == self || p.MainWindowHandle == IntPtr.Zero) continue;
+                ShowWindow(p.MainWindowHandle, 9);   // SW_RESTORE
+                SetForegroundWindow(p.MainWindowHandle);
+                return;
+            }
+        }
+        catch { }
+    }
+
     private static void LogCrash(Exception? ex)
     {
         try
@@ -68,8 +88,11 @@ public partial class App : Application
         catch (AbandonedMutexException) { _ownsMutex = true; } // 上个实例异常退出遗弃了锁 = 我们已获得
         if (!_ownsMutex)
         {
-            Services.ThemedDialog.Show("MacroPilot 已在运行，请勿重复启动。", "MacroPilot",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            // 【不能弹模态框】更新助手在失败/重试时也会拉起本体；若旧实例还没退干净，
+            // 这个新实例就会带着一个（很可能在后台、用户看不见的）模态框常驻，占住安装目录，
+            // 导致下次更新"改名失败：目录仍被占用"；而任务管理器「结束任务」发的 WM_CLOSE
+            // 又被该模态框吃掉，表现为"进程杀不掉"。改成：把已有窗口唤到前台，然后立刻退出。
+            ActivateExistingInstance();
             Shutdown();
             return;
         }
