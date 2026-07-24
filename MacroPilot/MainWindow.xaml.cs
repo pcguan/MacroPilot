@@ -227,10 +227,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         AutoUpdateCheck.IsChecked = _doc.AutoUpdate;
         ActivateOnFinishCheck.IsChecked = _doc.ActivateOnFinish;
         ShowHudCheck.IsChecked = _doc.ShowRunHud;
-        HudOpacitySlider.Value = Math.Clamp(_doc.HudOpacity, 0.3, 1.0);
+        HudOpacitySlider.Value = Math.Clamp((int)Math.Round(_doc.HudOpacity * 100), 10, 100);
         HudOpacityValue.Text = $"{(int)Math.Round(_doc.HudOpacity * 100)}%";
         TrayCheck.IsChecked = _doc.MinimizeToTray;
-        RefreshScheduleSummary();
         ThemeCombo.SelectedIndex = _doc.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         UpdateBackendPanels(); // PortCombo 由 RescanDevices 填充
         UpdateDataDirText();
@@ -657,9 +656,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         string loops = _plan.LoopCount == 0 ? "无限循环" : $"循环 {_plan.LoopCount} 次";
         string delay = _plan.LoopDelayMs > 0 ? $" · 间隔 {FormatDelayValue(_plan.LoopDelayMs, unit)}{LoopUnitNames[unit]}" : "";
         string cond = _plan.HasRunCondition ? "  · 已设运行条件" : "";
-        PlanSummaryText.Text = loops + delay + cond;
-        // 有运行条件时整行用强调色，一眼看出这个方案不是无条件执行的。
-        PlanSummaryText.Foreground = _plan.HasRunCondition ? (Brush)FindResource("Accent") : (Brush)FindResource("Muted");
+        string sched = _plan.ScheduleEnabled ? $"  · 定时 {_plan.ScheduleTimeMinutes / 60:00}:{_plan.ScheduleTimeMinutes % 60:00}（{DaysText(_plan.ScheduleDays)}）" : "";
+        PlanSummaryText.Text = loops + delay + cond + sched;
+        // 有运行条件或定时时整行用强调色，一眼看出这个方案不是无条件执行的。
+        PlanSummaryText.Foreground = (_plan.HasRunCondition || _plan.ScheduleEnabled) ? (Brush)FindResource("Accent") : (Brush)FindResource("Muted");
     }
     private void PlansList_KeyDown(object sender, KeyEventArgs e)
     {

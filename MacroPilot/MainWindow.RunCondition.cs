@@ -121,6 +121,53 @@ public partial class MainWindow
             },
             ed.Panel));
 
+        // ---- 定时启动（每方案独立）----
+        var schedEnable = new CheckBox { Style = (Style)FindResource("ToggleSwitch"), IsChecked = plan.ScheduleEnabled, VerticalAlignment = VerticalAlignment.Center };
+        var schedHead = new DockPanel { LastChildFill = false };
+        var schedTitle = new TextBlock { Text = "到点自动运行本方案", VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(schedTitle, Dock.Left); schedHead.Children.Add(schedTitle);
+        DockPanel.SetDock(schedEnable, Dock.Right); schedHead.Children.Add(schedEnable);
+
+        var schedHour = new ComboBox { Width = 66, Height = 32 };
+        for (int hh = 0; hh < 24; hh++) schedHour.Items.Add(hh.ToString("00"));
+        var schedMinute = new ComboBox { Width = 66, Height = 32, Margin = new Thickness(6, 0, 0, 0) };
+        for (int mm = 0; mm < 60; mm++) schedMinute.Items.Add(mm.ToString("00"));
+        schedHour.SelectedIndex = Math.Clamp(plan.ScheduleTimeMinutes / 60, 0, 23);
+        schedMinute.SelectedIndex = Math.Clamp(plan.ScheduleTimeMinutes % 60, 0, 59);
+        var timeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
+        timeRow.Children.Add(new TextBlock { Text = "时间", Width = 40, VerticalAlignment = VerticalAlignment.Center, FontSize = 13 });
+        timeRow.Children.Add(schedHour);
+        timeRow.Children.Add(new TextBlock { Text = ":", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 4, 0) });
+        timeRow.Children.Add(schedMinute);
+
+        var dayChecks = new CheckBox[7];
+        var dayRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        dayRow.Children.Add(new TextBlock { Text = "星期", Width = 40, VerticalAlignment = VerticalAlignment.Center, FontSize = 13 });
+        for (int d = 0; d < 7; d++)
+        {
+            var c = new CheckBox { Content = WeekCn[d], IsChecked = plan.ScheduleDays == 0 || (plan.ScheduleDays & (1 << d)) != 0, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+            dayChecks[d] = c; dayRow.Children.Add(c);
+        }
+        var schedDetail = new StackPanel();
+        schedDetail.Children.Add(timeRow);
+        schedDetail.Children.Add(dayRow);
+        var schedWrap = new Border
+        {
+            BorderBrush = (System.Windows.Media.Brush)FindResource("Accent"), BorderThickness = new Thickness(2, 0, 0, 0),
+            CornerRadius = new CornerRadius(0, 6, 6, 0), Padding = new Thickness(12, 10, 0, 2),
+            Margin = new Thickness(2, 10, 0, 0), Child = schedDetail,
+            Visibility = plan.ScheduleEnabled ? Visibility.Visible : Visibility.Collapsed,
+        };
+        schedEnable.Checked += (_, _) => schedWrap.Visibility = Visibility.Visible;
+        schedEnable.Unchecked += (_, _) => schedWrap.Visibility = Visibility.Collapsed;
+        sp.Children.Add(GroupCard("定时启动",
+            new TextBlock
+            {
+                Text = "到设定时刻（可选星期）自动运行本方案；到点若正在运行会跳过并记入日志。设置随方案一起保存。",
+                Foreground = (System.Windows.Media.Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10),
+            },
+            schedHead, schedWrap));
+
         var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
         var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton") };
         var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -155,8 +202,17 @@ public partial class MainWindow
                           || probe.RunConditionRectH != plan.RunConditionRectH
                           || Math.Abs(probe.RunConditionThreshold - plan.RunConditionThreshold) > 1e-9;
 
+                bool schedEn = schedEnable.IsChecked == true;
+                int schedMin = Math.Max(0, schedHour.SelectedIndex) * 60 + Math.Max(0, schedMinute.SelectedIndex);
+                int mask = 0; for (int k = 0; k < 7; k++) if (dayChecks[k].IsChecked == true) mask |= (1 << k);
+                int schedDays = (mask == 0x7F) ? 0 : mask;   // 全选 → 0（每天）
+
+                changed = changed || schedEn != plan.ScheduleEnabled || schedMin != plan.ScheduleTimeMinutes || schedDays != plan.ScheduleDays;
+
                 plan.LoopCount = loops; plan.LoopDelayMs = delayMs; plan.LoopDelayUnit = u;
                 RunCondition.Copy(probe, plan);
+                plan.ScheduleEnabled = schedEn; plan.ScheduleTimeMinutes = schedMin; plan.ScheduleDays = schedDays;
+                _lastFired.Remove(plan);   // 改了定时，重置本方案触发记录
                 win.DialogResult = true;
             }
             catch (Exception ex)

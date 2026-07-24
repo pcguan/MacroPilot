@@ -29,6 +29,11 @@ public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
     public double RunConditionThreshold { get; set; } = 0.9;
     [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);
 
+    // 定时启动（每方案独立）：到设定时刻（可选星期）自动运行本方案。随方案存 plans.json。
+    public bool ScheduleEnabled { get; set; }
+    public int ScheduleTimeMinutes { get; set; }   // 一天内分钟数 0..1439
+    public int ScheduleDays { get; set; }          // 位掩码：周日=1<<0 … 周六=1<<6；0=每天
+
     public ObservableCollection<MacroStep> Steps { get; set; } = new();
 
     // 仅 UI：未保存标记

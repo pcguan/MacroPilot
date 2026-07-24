@@ -271,8 +271,8 @@
                   <DockPanel LastChildFill="True">
                     <TextBlock DockPanel.Dock="Left" Text="不透明度" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,10,0" />
                     <TextBlock DockPanel.Dock="Right" Name="HudOpacityValue" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="10,0,0,0" Width="40" TextAlignment="Right" Text="50%" />
-                    <Slider Name="HudOpacitySlider" Minimum="0.3" Maximum="1.0" Value="0.5" TickFrequency="0.05" IsSnapToTickEnabled="True"
-                            VerticalAlignment="Center" ValueChanged="HudOpacity_Changed" />
+                    <Slider Name="HudOpacitySlider" Minimum="10" Maximum="100" Value="50" SmallChange="1" LargeChange="10"
+                            TickFrequency="1" IsSnapToTickEnabled="False" VerticalAlignment="Center" ValueChanged="HudOpacity_Changed" />
                   </DockPanel>
                 </Border>
               </StackPanel>
@@ -287,18 +287,6 @@
                             Checked="Tray_Changed" Unchecked="Tray_Changed" />
                 </DockPanel>
                 <TextBlock Style="{StaticResource SettingDesc}" Text="点最小化时收进系统托盘（隐藏任务栏项）。托盘图标始终常驻：双击显示主窗口，右键可直接选方案运行、停止或退出。" />
-              </StackPanel>
-            </Border>
-
-            <!-- 定时启动 -->
-            <Border Style="{StaticResource SettingCard}">
-              <StackPanel>
-                <DockPanel LastChildFill="False">
-                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="定时启动" />
-                  <Button DockPanel.Dock="Right" Content="管理…" Height="32" Padding="16,0" Style="{StaticResource GhostButton}" Click="ManageSchedules_Click" />
-                </DockPanel>
-                <TextBlock Style="{StaticResource SettingDesc}" Text="到设定的时刻（可选星期）自动运行指定方案。到点若正在运行、或找不到同名方案，会跳过并记入日志。" />
-                <TextBlock Name="ScheduleSummaryText" Foreground="{DynamicResource Accent}" FontSize="12" Margin="0,6,0,0" />
               </StackPanel>
             </Border>
 

@@ -26,8 +26,6 @@ public sealed class MacroDocument
     public double HudOpacity { get; set; } = 0.5;
     // 最小化时收进托盘（隐藏任务栏、留托盘图标）。默认开。托盘图标始终常驻，可右键选方案直接跑。
     public bool MinimizeToTray { get; set; } = true;
-    // 定时启动：到点自动运行指定方案。
-    public List<ScheduleEntry> Schedules { get; set; } = new();
 
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();
@@ -44,15 +42,6 @@ public sealed class MacroDocument
     public bool WindowMaximized { get; set; }
 
     public List<MacroPlan> Plans { get; set; } = new();
-}
-
-/// <summary>一个定时启动项：到设定时刻（可选星期）自动运行指定名字的方案。</summary>
-public sealed class ScheduleEntry
-{
-    public string PlanName { get; set; } = "";
-    public int TimeMinutes { get; set; }          // 一天内的分钟数 0..1439
-    public int Days { get; set; }                 // 位掩码：周日=1<<0 … 周六=1<<6；0=每天
-    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>一个窗口记住的几何信息（WPF DIP 坐标）。</summary>

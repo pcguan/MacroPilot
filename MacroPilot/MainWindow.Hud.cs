@@ -18,7 +18,7 @@ public partial class MainWindow
         if (!_doc.ShowRunHud) return;
         if (_hud == null)
         {
-            _hud = new RunHud(this, () => _runner?.Pause(), () => _runner?.Resume(), () => _runner?.Stop(), _doc.HudOpacity);
+            _hud = new RunHud(this, () => _runner?.Pause(), () => _runner?.Resume(), () => _runner?.Stop(), HideHud, _doc.HudOpacity);
             Services.WindowMemory.Attach(_hud, "Hud");   // 记住位置（只挂一次，避免累积 Closing 处理器）
             if (!Services.WindowMemory.WasRestored(_hud))
             {
@@ -44,8 +44,9 @@ public partial class MainWindow
     private void HudOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        _doc.HudOpacity = System.Math.Round(e.NewValue, 2);
-        HudOpacityValue.Text = $"{(int)System.Math.Round(e.NewValue * 100)}%";
+        int pct = (int)System.Math.Round(e.NewValue);   // 滑块单位是百分比 10..100
+        _doc.HudOpacity = System.Math.Clamp(pct / 100.0, 0.1, 1.0);
+        HudOpacityValue.Text = pct + "%";
         _hud?.SetOpacity(_doc.HudOpacity);
         PersistSettings();
     }
@@ -68,7 +69,7 @@ public sealed class RunHud : Window
 
     private readonly Window _owner;
 
-    public RunHud(Window owner, Action onPause, Action onResume, Action onStop, double opacity)
+    public RunHud(Window owner, Action onPause, Action onResume, Action onStop, Action onClose, double opacity)
     {
         _owner = owner;   // 只用于取主题画刷；【不】设 Window.Owner，否则主窗口最小化会连带隐藏 HUD
         _baseOpacity = System.Math.Clamp(opacity, 0.3, 1.0);
@@ -88,8 +89,16 @@ public sealed class RunHud : Window
         _dot = new System.Windows.Shapes.Ellipse { Width = 10, Height = 10, Fill = B("Success"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
         _plan = new TextBlock { FontWeight = FontWeights.SemiBold, FontSize = 13, Foreground = B("Ink"), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         _loop = new TextBlock { FontSize = 11, Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        var closeBtn = new Button
+        {
+            Content = "\uE711", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 11,
+            Width = 22, Height = 22, ToolTip = "关闭悬浮窗（运行不受影响，可用热键或托盘控制）",
+            Foreground = B("Muted"), Background = System.Windows.Media.Brushes.Transparent, BorderThickness = new Thickness(0), Cursor = System.Windows.Input.Cursors.Hand,
+        };
+        closeBtn.Click += (_, _) => onClose();
         var head = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(_dot, Dock.Left); head.Children.Add(_dot);
+        DockPanel.SetDock(closeBtn, Dock.Right); head.Children.Add(closeBtn);
         DockPanel.SetDock(_loop, Dock.Right); head.Children.Add(_loop);
         head.Children.Add(_plan);
 
