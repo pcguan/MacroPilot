@@ -365,6 +365,8 @@
                   <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案" Click="RenamePlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="删除当前方案" Click="DeletePlanIcon_Click" />
                   <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE823;" ToolTip="定时启动（全局：只让一个方案到点自动运行）" Click="Schedule_Click" />
+                  <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="导入方案（可多选文件，单方案 / 多方案自动识别）" Click="Import_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE898;" ToolTip="导出全部方案到一个文件" Click="ExportAll_Click" />
                 </StackPanel>
@@ -382,11 +384,16 @@
                       <!-- 未保存标记：编辑器惯例的小圆点(VS Code 脏文件标记)，比"未保存"胶囊更安静。 -->
                       <Ellipse Name="DirtyTag" DockPanel.Dock="Right" Width="8" Height="8" Fill="{DynamicResource Accent}" Margin="8,0,2,0" VerticalAlignment="Center" Visibility="Collapsed"
                                ToolTip="有未保存的修改" />
+                      <TextBlock Name="SchedMark" DockPanel.Dock="Left" FontFamily="Segoe MDL2 Assets" FontSize="12" Text="&#xE823;" Foreground="{DynamicResource Accent}"
+                                 VerticalAlignment="Center" Margin="0,0,6,0" Visibility="Collapsed" ToolTip="已设定时启动" />
                       <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Name}" />
                     </DockPanel>
                     <DataTemplate.Triggers>
                       <DataTrigger Binding="{Binding Dirty}" Value="True">
                         <Setter TargetName="DirtyTag" Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding IsScheduled}" Value="True">
+                        <Setter TargetName="SchedMark" Property="Visibility" Value="Visible" />
                       </DataTrigger>
                     </DataTemplate.Triggers>
                   </DataTemplate>

@@ -122,6 +122,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             OvVersionText.Text = "版本 " + Services.UpdateService.CurrentVersionText;
             ShowCurrentChangelog();
             ReportLastUpdateFailure();  // 上次就地更新若失败过，把原因摆出来
+            RefreshScheduleMark();      // 标出定时目标方案
             _ = StartupUpdateCheck();   // 自动更新开→启动即查并直接更新；关→仅起 30s 轮询
         };
     }
@@ -624,7 +625,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         name = name.Trim();
         if (name == _plan.Name) return;
         PushUndo();
+        string old2 = _plan.Name;
         _plan.Name = name; PlansList.Items.Refresh(); MarkDirty();
+        if (_doc.ScheduledPlan == old2 && _doc.ScheduleMode != "") { _doc.ScheduledPlan = name; PersistSettings(); }
+        RefreshScheduleMark();
     }
     private void DeletePlanIcon_Click(object sender, RoutedEventArgs e)
     {
@@ -634,6 +638,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (ThemedDialog.Show($"确定删除“{_plan.Name}”吗？", "删除方案", MessageBoxButton.OKCancel, MessageBoxImage.Exclamation) != MessageBoxResult.OK) return;
         var del = _plan; _plan = null; // 先置空，避免切换选择时对已删方案弹"未保存"
         _plans.Remove(del);
+        ClearScheduleIfPlan(del.Name);
         if (_plans.Count > 0) PlansList.SelectedIndex = 0; else ShowNoPlan();
         Save();   // 删除属结构改动，立即提交（此前已确保最多一个未保存方案）
     }
@@ -656,10 +661,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         string loops = _plan.LoopCount == 0 ? "无限循环" : $"循环 {_plan.LoopCount} 次";
         string delay = _plan.LoopDelayMs > 0 ? $" · 间隔 {FormatDelayValue(_plan.LoopDelayMs, unit)}{LoopUnitNames[unit]}" : "";
         string cond = _plan.HasRunCondition ? "  · 已设运行条件" : "";
-        string sched = _plan.ScheduleEnabled ? $"  · 定时 {_plan.ScheduleTimeMinutes / 60:00}:{_plan.ScheduleTimeMinutes % 60:00}（{DaysText(_plan.ScheduleDays)}）" : "";
-        PlanSummaryText.Text = loops + delay + cond + sched;
-        // 有运行条件或定时时整行用强调色，一眼看出这个方案不是无条件执行的。
-        PlanSummaryText.Foreground = (_plan.HasRunCondition || _plan.ScheduleEnabled) ? (Brush)FindResource("Accent") : (Brush)FindResource("Muted");
+        PlanSummaryText.Text = loops + delay + cond;
+        // 有运行条件时整行用强调色，一眼看出这个方案不是无条件执行的。
+        PlanSummaryText.Foreground = _plan.HasRunCondition ? (Brush)FindResource("Accent") : (Brush)FindResource("Muted");
     }
     private void PlansList_KeyDown(object sender, KeyEventArgs e)
     {

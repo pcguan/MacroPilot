@@ -27,6 +27,13 @@ public sealed class MacroDocument
     // 最小化时收进托盘（隐藏任务栏、留托盘图标）。默认开。托盘图标始终常驻，可右键选方案直接跑。
     public bool MinimizeToTray { get; set; } = true;
 
+    // 定时启动（全局单一：只允许一个方案定时）。ScheduleMode: ""=关闭 / "Daily"=每日定时 / "Once"=指定时间一次。
+    public string ScheduledPlan { get; set; } = "";     // 目标方案名
+    public string ScheduleMode { get; set; } = "";
+    public int ScheduleSecondOfDay { get; set; }        // Daily：一天内的秒数 0..86399
+    public int ScheduleDays { get; set; }               // Daily：星期位掩码，0=每天
+    public string ScheduleOnceAt { get; set; } = "";    // Once：目标时刻 ISO 8601（yyyy-MM-ddTHH:mm:ss）
+
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();
 
