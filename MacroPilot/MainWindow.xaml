@@ -258,6 +258,42 @@
               </StackPanel>
             </Border>
 
+            <!-- 运行悬浮窗 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="运行悬浮窗" />
+                  <CheckBox Name="ShowHudCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                            Checked="ShowHud_Changed" Unchecked="ShowHud_Changed" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="方案运行时在屏幕上显示一个置顶浮条：当前动作、进度、循环与热键提示，并可就地暂停 / 停止。本体运行时会下沉到后台，靠它随时看到状态。" />
+              </StackPanel>
+            </Border>
+
+            <!-- 最小化到托盘 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="最小化到托盘" />
+                  <CheckBox Name="TrayCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                            Checked="Tray_Changed" Unchecked="Tray_Changed" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="点最小化时收进系统托盘（隐藏任务栏项）。托盘图标始终常驻：双击显示主窗口，右键可直接选方案运行、停止或退出。" />
+              </StackPanel>
+            </Border>
+
+            <!-- 定时启动 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="定时启动" />
+                  <Button DockPanel.Dock="Right" Content="管理…" Height="32" Padding="16,0" Style="{StaticResource GhostButton}" Click="ManageSchedules_Click" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="到设定的时刻（可选星期）自动运行指定方案。到点若正在运行、或找不到同名方案，会跳过并记入日志。" />
+                <TextBlock Name="ScheduleSummaryText" Foreground="{DynamicResource Accent}" FontSize="12" Margin="0,6,0,0" />
+              </StackPanel>
+            </Border>
+
             <!-- 自动更新 -->
             <Border Style="{StaticResource SettingCard}">
               <StackPanel>

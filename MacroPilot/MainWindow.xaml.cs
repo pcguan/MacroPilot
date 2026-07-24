@@ -131,6 +131,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         base.OnSourceInitialized(e);
         // 热键 F9/F10/F11 不再启动即全局注册——改到方案执行时才装（见 EnableHotkeys，由 RunPlan 调用），
         // 运行结束/停止即注销（OnRunFinished）。平时把这三个键还给系统，也不让低级键盘钩子常挂输入链。
+        InitTray();              // 托盘图标常驻（右键可直接选方案跑）
+        StartScheduleTimer();    // 定时启动轮询
+    }
+
+    // 最小化到托盘：隐藏窗口与任务栏项，图标留托盘。
+    protected override void OnStateChanged(EventArgs e)
+    {
+        base.OnStateChanged(e);
+        if (_doc.MinimizeToTray && WindowState == WindowState.Minimized) HideToTray();
     }
 
     // 概况页版本卡片：版本号下方直接列出本版更新点。本地调试版号不在 changelog.json 里时隐藏列表。
@@ -217,6 +226,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         AdminModeCheck.IsChecked = _doc.RunAsAdmin;
         AutoUpdateCheck.IsChecked = _doc.AutoUpdate;
         ActivateOnFinishCheck.IsChecked = _doc.ActivateOnFinish;
+        ShowHudCheck.IsChecked = _doc.ShowRunHud;
+        TrayCheck.IsChecked = _doc.MinimizeToTray;
+        RefreshScheduleSummary();
         ThemeCombo.SelectedIndex = _doc.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         UpdateBackendPanels(); // PortCombo 由 RescanDevices 填充
         UpdateDataDirText();
@@ -393,6 +405,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_loading) return;
         _doc.ActivateOnFinish = ActivateOnFinishCheck.IsChecked == true;
+        PersistSettings();
+    }
+
+    private void Tray_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _doc.MinimizeToTray = TrayCheck.IsChecked == true;
         PersistSettings();
     }
 
@@ -1006,6 +1025,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         PauseButton.IsEnabled = true; ResumeButton.IsEnabled = false; StopButton.IsEnabled = true;
         SetRunStatus("Running", $"运行中 · {displayName}");
+        ShowHud(displayName);   // 运行悬浮窗（配置开则显示）
         SendWindowToBottom();   // 下沉到最底层、不抢焦点，方便用户切到目标程序窗口
         StartRunUiTimer();
         EnableHotkeys();        // 仅在方案执行期间独占 F9/F10/F11 + 挂低级键盘钩子；OnRunFinished 里注销
@@ -1150,10 +1170,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         // 进度 / 状态栏
         if (RunPlanLoopText.Text != _planLoopText) RunPlanLoopText.Text = _planLoopText;   // 方案级循环（方案名后，与动作级进度分开）
+        _hud?.SetLoop(_planLoopText);
         if (_progActive)
         {
             ProgressStrip.Visibility = Visibility.Visible;
             ProgressBar.Value = _progPct; ProgressPercentText.Text = _progPct + "%"; ProgressActionText.Text = _progText;
+            _hud?.SetAction(_progPct, _progText);
         }
         // 暂停/继续
         int p = _pausedSignal;
@@ -1172,6 +1194,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private System.Threading.Tasks.Task? _backendClosing;
     private void OnRunFinished(string reason)
     {
+        HideHud();              // 收起运行悬浮窗
         DisableHotkeys();       // 运行结束（完成/停止/出错）即释放 F9/F10/F11 与键盘钩子
         _uiFlush?.Stop();
         PauseButton.IsEnabled = ResumeButton.IsEnabled = StopButton.IsEnabled = false;
@@ -1206,6 +1229,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 状态文字颜色：停止/出错=红，其余=普通 Ink。
     private void SetRunStatus(string kind, string text)
     {
+        _hud?.SetStatus(kind, text);
         RunStatusText.Text = text;
         string key = kind switch
         {
@@ -1843,6 +1867,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             // 避免卡住 UI 线程导致进程迟迟不退、单实例锁不释放。
             var backend = _backend; _backend = null;
             if (backend != null) System.Threading.Tasks.Task.Run(() => { try { backend.Dispose(); } catch { } });
+            _scheduleTimer?.Stop();
+            RemoveTray();
+            CloseHud();
         }
         catch { }
         base.OnClosed(e);
