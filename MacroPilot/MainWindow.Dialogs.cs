@@ -597,8 +597,8 @@ public partial class MainWindow
             inited = true;
             double r = R();
             if (curW is int cW && cW > 0 && curH is int cH && cH > 0)
-            { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }
-            else { rw = cw * 0.35; rh = chh * 0.35; rx = (cw - rw) / 2; ry = (chh - rh) / 2; }   // 默认居中 35%
+            { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }   // 有区域→画出既有框
+            else { rx = ry = rw = rh = 0; }   // 无区域→不预置框，让用户自行拖拽画（hint 有提示）
             Layout();
         }
         snapImg.SizeChanged += (_, _) => InitRegion();
@@ -1654,7 +1654,65 @@ public partial class MainWindow
     /// 坐标块：显示器 + 屏内百分比 + 点选/预览。可复用——点击/移动各一个，拖动用两个（起点、终点）。
     /// showCheck=true 时带勾选框（勾选后才展开明细），false 则常驻展开。
     /// </summary>
-    // 「点击图片」编辑块：目标图（截图 / 导入 / 粘贴）+ 限制区域（编辑·预览）+ 相似度 + 匹配第几。
+    // 限制区域的一个「尖角」边输入格（对齐自动精灵）：无圆角、与相邻格贴合（-1px 让边框共享）；
+    // 标签(左/右/上/下)在空且未聚焦时作占位居中，聚焦或有值时缩小浮到上边框（Material 描边式，用 Bg 底色在边框上开缺口）；
+    // 右侧单位可点击在 % / DP(屏内像素) 间切换并自动换算。值对外统一以「屏内像素」读写。
+    private sealed class EdgeCell
+    {
+        private readonly MainWindow _o;
+        private readonly TextBox _box;
+        private readonly TextBlock _lbl, _unit;
+        private readonly Border _lblBg;
+        private readonly Func<int> _dim;     // 该边换算用的屏尺寸（左右=宽，上下=高）
+        private bool _isDp;
+        public readonly Border Root;
+        public event Action? Committed;      // 失焦提交（→ 面板 EdgesToRegion）
+
+        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first)
+        {
+            _o = o; _dim = dim;
+            Brush B(string k) => (Brush)o.FindResource(k);
+            _box = new TextBox { BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Width = 30, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 0, 0, 0), VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink") };
+            _unit = new TextBlock { Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 8, 0), ToolTip = "点击切换 % / DP（屏内像素）" };
+            _lbl = new TextBlock { Text = label, Foreground = B("Muted") };
+            _lblBg = new Border { Child = _lbl, HorizontalAlignment = HorizontalAlignment.Left };
+
+            var grid = new Grid { Height = 40 };
+            grid.Children.Add(_box); grid.Children.Add(_unit); grid.Children.Add(_lblBg);
+            Root = new Border { BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 74, Child = grid };
+
+            _box.GotFocus += (_, _) => Render();
+            _box.LostFocus += (_, _) => { Render(); Committed?.Invoke(); };
+            _box.TextChanged += (_, _) => Render();
+            _unit.MouseLeftButtonDown += (_, _) => { var px = GetPx(); _isDp = !_isDp; _unit.Text = _isDp ? "DP" : "%"; if (px is int p) SetPx(p); };
+            Render();
+        }
+
+        private void Render()
+        {
+            bool active = _box.IsFocused || !string.IsNullOrEmpty(_box.Text);
+            _lbl.FontSize = active ? 10 : 13;
+            _lblBg.VerticalAlignment = active ? VerticalAlignment.Top : VerticalAlignment.Center;
+            _lblBg.Margin = active ? new Thickness(6, -8, 0, 0) : new Thickness(10, 0, 0, 0);
+            _lblBg.Padding = active ? new Thickness(3, 0, 3, 0) : new Thickness(0);
+            _lblBg.Background = active ? (Brush)_o.FindResource("Bg") : Brushes.Transparent;   // 浮起时遮住上边框做缺口
+        }
+
+        public int? GetPx()
+        {
+            var t = _box.Text?.Trim();
+            if (string.IsNullOrEmpty(t) || !double.TryParse(t, out var v)) return null;
+            return _isDp ? (int)Math.Round(v) : (int)Math.Round(Math.Clamp(v, 0, 100) / 100.0 * Math.Max(1, _dim()));
+        }
+        public void SetPx(int px)
+        {
+            _box.Text = _isDp ? px.ToString() : (Math.Clamp(px / (double)Math.Max(1, _dim()), 0, 1) * 100).ToString("0.#");
+            Render();
+        }
+        public void Clear() { _box.Text = ""; Render(); }
+    }
+
+    // 「点击图片」编辑块：目标图（截图 / 导入 / 复制 / 粘贴）+ 限制区域 + 相似度 + 匹配第几。
     private sealed class ClickImagePanel
     {
         private readonly MainWindow _o;
@@ -1665,19 +1723,16 @@ public partial class MainWindow
         private readonly System.Windows.Controls.Image _thumb = new() { MaxWidth = 220, MaxHeight = 150, Stretch = System.Windows.Media.Stretch.Uniform };
         private readonly Border _thumbBorder;
         private readonly TextBlock _imgStatus, _regionHint;
-        // 限制区域四边（屏内相对像素，可手动编辑）：左/上/右/下。
-        private readonly TextBox _left = new() { Width = 66, Height = 30 };
-        private readonly TextBox _top = new() { Width = 66, Height = 30 };
-        private readonly TextBox _right = new() { Width = 66, Height = 30 };
-        private readonly TextBox _bottom = new() { Width = 66, Height = 30 };
-        // 相似度阈值：复用运行条件那套百分比文本框（越高越严格）。
-        private readonly TextBox _thrText = new() { Width = 64, Height = 30, Text = "80" };
+        // 限制区域四边（尖角浮标输入格，值内部统一为屏内像素）：左/右/上/下。构造时 new（需 dim 委托）。
+        private EdgeCell _left = null!, _right = null!, _top = null!, _bottom = null!;
+        // 相似度阈值：复用运行条件那套百分比文本框（越高越严格），默认 90。
+        private readonly TextBox _thrText = new() { Width = 64, Height = 30, Text = "90" };
         private readonly TextBox _index = new() { Text = "1", Width = 64, Height = 30 };
         private readonly Button _previewBtn;
         private bool _syncing;   // 防"区域→四边框→区域"回填递归
         public readonly Border Panel;
 
-        public double Threshold => Math.Clamp(ParseInt(_thrText.Text, 80) / 100.0, 0.1, 1.0);
+        public double Threshold => Math.Clamp(ParseInt(_thrText.Text, 90) / 100.0, 0.1, 1.0);
         public int Index => Math.Max(1, ParseInt(_index.Text, 1));
         public bool HasImage => Png != null && Png.Length > 0;
 
@@ -1689,14 +1744,15 @@ public partial class MainWindow
             // 动作按钮统一：图标 + 悬停中文 tooltip（IconButton 样式），不用文字按钮。
             Button MkIcon(string glyph, string tip) => new() { Style = (Style)o.FindResource("IconButton"), FontSize = 16, Content = glyph, ToolTip = tip, Margin = new Thickness(0, 0, 4, 0) };
 
-            // —— 图片（截图 / 导入 / 粘贴，对齐自动精灵的图标行）——
+            // —— 图片（截图 / 导入 / 复制 / 粘贴，对齐自动精灵图标行）——
             var imgHeader = new DockPanel { LastChildFill = false };
             imgHeader.Children.Add(new TextBlock { Text = "图片", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Width = 64 });
             var shotBtn = MkIcon("", "截图：框选屏幕截取目标图（并自动把限制区域设为截图位置）");
             var importBtn = MkIcon("", "导入：从本地图片文件导入");
+            var copyBtn = MkIcon("", "复制：把当前目标图复制到剪贴板");
             var pasteBtn = MkIcon("", "粘贴：从剪贴板粘贴图片");
             var imgBtns = new StackPanel { Orientation = Orientation.Horizontal };
-            imgBtns.Children.Add(shotBtn); imgBtns.Children.Add(importBtn); imgBtns.Children.Add(pasteBtn);
+            imgBtns.Children.Add(shotBtn); imgBtns.Children.Add(importBtn); imgBtns.Children.Add(copyBtn); imgBtns.Children.Add(pasteBtn);
             imgHeader.Children.Add(imgBtns);
             inner.Children.Add(imgHeader);
             _imgStatus = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, Margin = new Thickness(0, 6, 0, 0), Text = "未设置图片" };
@@ -1704,30 +1760,39 @@ public partial class MainWindow
             _thumbBorder = new Border { BorderBrush = (Brush)o.FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Child = _thumb, Visibility = Visibility.Collapsed };
             inner.Children.Add(_thumbBorder);
 
-            // —— 限制区域（对齐自动精灵：标签 + 四个 [左 _ %][右 _ %][上 _ %][下 _ %] 单元 + 编辑/预览/清除 图标）——
+            // —— 限制区域（对齐自动精灵：尖角浮标格 [左][右][上][下] 贴合一体 + 编辑/预览/清除 图标）——
             var editBtn = MkIcon("", "编辑区域：在屏幕上拖动·缩放调整搜索范围");
             _previewBtn = MkIcon("", "预览：在屏幕上白框回显当前区域");
             var clearBtn = MkIcon("", "清除限制区域（改为搜索整块主屏）");
-            // 每边＝带边框的一个单元：框内左侧标签(左/右/上/下) + 无边框输入 + 框内右侧 %。
-            FrameworkElement EdgeBox(string cap, TextBox box)
-            {
-                box.BorderThickness = new Thickness(0); box.Background = Brushes.Transparent; box.Padding = new Thickness(0);
-                box.Width = 34; box.Height = 26; box.VerticalContentAlignment = VerticalAlignment.Center;
-                var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-                sp.Children.Add(new TextBlock { Text = cap, Foreground = (Brush)o.FindResource("Muted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 2, 0) });
-                sp.Children.Add(box);
-                sp.Children.Add(new TextBlock { Text = "%", Foreground = (Brush)o.FindResource("Muted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(1, 0, 8, 0) });
-                return new Border { BorderBrush = (Brush)o.FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, Child = sp };
-            }
-            var regionRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
-            regionRow.Children.Add(new TextBlock { Text = "限制区域", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
-            regionRow.Children.Add(EdgeBox("左", _left)); regionRow.Children.Add(EdgeBox("右", _right));
-            regionRow.Children.Add(EdgeBox("上", _top)); regionRow.Children.Add(EdgeBox("下", _bottom));
-            regionRow.Children.Add(editBtn); regionRow.Children.Add(_previewBtn); regionRow.Children.Add(clearBtn);
-            inner.Children.Add(regionRow);
+            var regionHeader = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 16, 0, 6) };
+            regionHeader.Children.Add(new TextBlock { Text = "限制区域", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+            var regionBtns = new StackPanel { Orientation = Orientation.Horizontal };
+            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn); regionBtns.Children.Add(clearBtn);
+            DockPanel.SetDock(regionBtns, Dock.Right); regionHeader.Children.Add(regionBtns);
+            inner.Children.Add(regionHeader);
+            _left = new EdgeCell(o, "左", () => RegionMon().Width, true);
+            _right = new EdgeCell(o, "右", () => RegionMon().Width, false);
+            _top = new EdgeCell(o, "上", () => RegionMon().Height, false);
+            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false);
+            foreach (var c in new[] { _left, _right, _top, _bottom }) c.Committed += EdgesToRegion;
+            var cellsRow = new StackPanel { Orientation = Orientation.Horizontal };
+            cellsRow.Children.Add(_left.Root); cellsRow.Children.Add(_right.Root); cellsRow.Children.Add(_top.Root); cellsRow.Children.Add(_bottom.Root);
+            inner.Children.Add(cellsRow);
             _regionHint = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
             inner.Children.Add(_regionHint);
-            clearBtn.Click += (_, _) => { Monitor = ""; RelX = RelY = W = H = 0; Refresh(); };
+            clearBtn.Click += (_, _) => { Monitor = ""; RelX = RelY = W = H = 0; Refresh(); SyncEdges(); };
+            copyBtn.Click += (_, _) =>
+            {
+                if (!HasImage) return;
+                try
+                {
+                    var bi = new System.Windows.Media.Imaging.BitmapImage();
+                    using var ms = new System.IO.MemoryStream(Png!);
+                    bi.BeginInit(); bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad; bi.StreamSource = ms; bi.EndInit();
+                    System.Windows.Clipboard.SetImage(bi);
+                }
+                catch { }
+            };
 
             // —— 相似度阈值（复用运行条件风格：百分比文本框）——
             var thrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
@@ -1745,8 +1810,7 @@ public partial class MainWindow
 
             Panel = o.SubGroup(null, inner);
 
-            // 四边框改动 → 回写区域（失焦时生效，避免逐字符抖动）
-            foreach (var b in new[] { _left, _top, _right, _bottom }) b.LostFocus += (_, _) => EdgesToRegion();
+            // 四边格提交（失焦）→ 回写区域，已在上面 c.Committed += EdgesToRegion 里挂好。
 
             shotBtn.Click += (_, _) =>
             {
@@ -1756,7 +1820,7 @@ public partial class MainWindow
                     var (dev, _, _) = ScreenInfo.FromPoint(c.vx, c.vy);
                     var mon = ScreenInfo.ByDevice(dev);
                     Png = c.png; Monitor = dev; RelX = c.vx - mon.Left; RelY = c.vy - mon.Top; W = c.w; H = c.h;   // 截图自动填充限制区域
-                    Refresh();
+                    Refresh(); SyncEdges();
                 }
             };
             importBtn.Click += (_, _) =>
@@ -1784,7 +1848,7 @@ public partial class MainWindow
                     var (dev, _, _) = ScreenInfo.FromPoint(g.vx, g.vy);
                     var mon = ScreenInfo.ByDevice(dev);
                     Monitor = dev; RelX = g.vx - mon.Left; RelY = g.vy - mon.Top; W = g.w; H = g.h;
-                    Refresh();
+                    Refresh(); SyncEdges();
                 }
             };
             _previewBtn.Click += (_, _) =>
@@ -1827,39 +1891,38 @@ public partial class MainWindow
             else { _imgStatus.Text = "未设置图片"; _thumbBorder.Visibility = Visibility.Collapsed; }
 
             bool hasRegion = W > 0 && H > 0;
-            RegionToEdges();
+            // 注意：不在 Refresh 里回写四边格——否则用户填一个格失焦(区域仍不完整)时会把刚输入的清掉。
+            // 只有区域被【程序化】改动(截图/编辑/清除/回填)时才 SyncEdges。
             _regionHint.Text = hasRegion
-                ? $"屏幕 {ScreenInfo.ByDevice(Monitor).Label}：{W}×{H}px（四边为该屏内百分比，可直接改）"
-                : "未限制（搜索整块主屏）。可手动填四边百分比，或用截图 / 编辑区域设定。";
+                ? $"屏幕 {ScreenInfo.ByDevice(Monitor).Label}：{W}×{H}px（四边可切 % / DP，直接改）"
+                : "未限制（搜索整块主屏）。可手动填四边，或用截图 / 编辑区域设定。";
             _previewBtn.IsEnabled = hasRegion;
         }
 
         private ScreenInfo.Monitor RegionMon() => ScreenInfo.ByDevice(string.IsNullOrEmpty(Monitor) ? ScreenInfo.Primary().Device : Monitor);
-        private static string Pct(int v, int total) => (Math.Clamp(v / (double)Math.Max(1, total), 0, 1) * 100).ToString("0.#");
 
-        // 区域 → 四边框（该屏内百分比：左=RelX/W 上=RelY/H 右=(RelX+W)/W 下=(RelY+H)/H）。空区域→清空框（露出占位）。
-        private void RegionToEdges()
+        // 区域 → 四边格（各格按自身 %/DP 模式渲染屏内像素）。空区域→清空（露出占位标签）。
+        // 仅在区域被程序化改动时调用（截图/编辑/清除/回填），别在 Refresh 里无脑调（会清掉用户半途输入）。
+        private void SyncEdges()
         {
             _syncing = true;
             if (W > 0 && H > 0)
             {
-                var m = RegionMon();
-                _left.Text = Pct(RelX, m.Width); _top.Text = Pct(RelY, m.Height);
-                _right.Text = Pct(RelX + W, m.Width); _bottom.Text = Pct(RelY + H, m.Height);
+                _left.SetPx(RelX); _right.SetPx(RelX + W); _top.SetPx(RelY); _bottom.SetPx(RelY + H);
             }
-            else { _left.Text = _top.Text = _right.Text = _bottom.Text = ""; }
+            else { _left.Clear(); _right.Clear(); _top.Clear(); _bottom.Clear(); }
             _syncing = false;
         }
 
-        // 四边框 → 区域（失焦时）：百分比 → 屏内像素；无效（右≤左或下≤上）则不动。手填且未绑屏时默认绑主屏。
+        // 四边格 → 区域（失焦提交）：各格取屏内像素；四个都有值且右>左、下>上 才更新。手填且未绑屏时默认绑主屏。
         private void EdgesToRegion()
         {
             if (_syncing) return;
-            var m = RegionMon();
-            double l = ParseDouble(_left.Text, 0), t = ParseDouble(_top.Text, 0), r = ParseDouble(_right.Text, 0), b = ParseDouble(_bottom.Text, 0);
-            int lx = (int)Math.Round(Math.Clamp(l, 0, 100) / 100.0 * m.Width), tx = (int)Math.Round(Math.Clamp(t, 0, 100) / 100.0 * m.Height);
-            int rx = (int)Math.Round(Math.Clamp(r, 0, 100) / 100.0 * m.Width), bx = (int)Math.Round(Math.Clamp(b, 0, 100) / 100.0 * m.Height);
-            if (rx - lx >= 4 && bx - tx >= 4) { Monitor = m.Device; RelX = lx; RelY = tx; W = rx - lx; H = bx - tx; }
+            if (_left.GetPx() is int lx && _right.GetPx() is int rx && _top.GetPx() is int tx && _bottom.GetPx() is int bx
+                && rx - lx >= 4 && bx - tx >= 4)
+            {
+                Monitor = RegionMon().Device; RelX = lx; RelY = tx; W = rx - lx; H = bx - tx;
+            }
             Refresh();
         }
 
@@ -1869,7 +1932,7 @@ public partial class MainWindow
             Monitor = s.ClickImageMonitor; RelX = s.ClickImageRectX; RelY = s.ClickImageRectY; W = s.ClickImageRectW; H = s.ClickImageRectH;
             _thrText.Text = ((int)Math.Round(Math.Clamp(s.ClickImageThreshold, 0.1, 1.0) * 100)).ToString();
             _index.Text = Math.Max(1, s.ClickImageIndex).ToString();
-            Refresh();
+            Refresh(); SyncEdges();
         }
 
         public void Apply(MacroStep s)

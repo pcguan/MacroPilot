@@ -53,7 +53,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public int ClickImageRectY { get; set; }
     public int ClickImageRectW { get; set; }
     public int ClickImageRectH { get; set; }
-    public double ClickImageThreshold { get; set; } = 0.8;  // 相似度阈值 0.5~1.0
+    public double ClickImageThreshold { get; set; } = 0.9;  // 相似度阈值 0.1~1.0（默认 90%）
     public int ClickImageIndex { get; set; } = 1;           // 命中多个时点击第几个（1 起，按从上到下、从左到右）
     // 禁用：true 则执行时整步跳过（组合/嵌套组合同理）。持久化；UI 用勾选框切换（绑 Enabled）。
     private bool _disabled;
