@@ -793,7 +793,7 @@ public partial class MainWindow
         var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
-        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
+        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
         var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
@@ -1033,7 +1033,7 @@ public partial class MainWindow
         // 当前选中的三级路径。非"输入"类别时后两级无意义，统一返回空串。
         string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
-        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "移动") : "";
+        string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击") : "";
         string RunAct() => Cat() == "运行" ? (runActionCombo.SelectedItem?.ToString() ?? "等待") : "";
 
         void SyncIdScreens()
@@ -1579,9 +1579,14 @@ public partial class MainWindow
         private void FillMonitors()
         {
             _monitor.Items.Clear();
+            int primaryIdx = 0, i = 0;
             foreach (var m in ScreenInfo.All())
+            {
                 _monitor.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Device });
-            if (_monitor.Items.Count > 0) _monitor.SelectedIndex = 0;
+                if (m.Primary) primaryIdx = i;
+                i++;
+            }
+            if (_monitor.Items.Count > 0) _monitor.SelectedIndex = primaryIdx;   // 默认选主屏
         }
 
         /// <summary>读取当前设置：(显示器设备名, 屏内归一化 X, Y)。</summary>

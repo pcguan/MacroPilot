@@ -216,6 +216,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         JitterPanel.Visibility = _doc.TimingJitterEnabled ? Visibility.Visible : Visibility.Collapsed;
         AdminModeCheck.IsChecked = _doc.RunAsAdmin;
         AutoUpdateCheck.IsChecked = _doc.AutoUpdate;
+        ActivateOnFinishCheck.IsChecked = _doc.ActivateOnFinish;
         ThemeCombo.SelectedIndex = _doc.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         UpdateBackendPanels(); // PortCombo 由 RescanDevices 填充
         UpdateDataDirText();
@@ -385,6 +386,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_loading) return;
         _doc.AutoUpdate = AutoUpdateCheck.IsChecked == true;
+        PersistSettings();
+    }
+
+    private void ActivateOnFinish_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _doc.ActivateOnFinish = ActivateOnFinishCheck.IsChecked == true;
         PersistSettings();
     }
 
@@ -1180,6 +1188,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             bool serial = b is Ch9329Device;
             _backendClosing = System.Threading.Tasks.Task.Run(() => { try { b.Dispose(); } catch { } });
             if (serial) AddLog("Info", "已释放串口（已让给其它软件）。");
+        }
+        // 运行结束后按配置把本体激活到前台（默认开）。运行期一直下沉，结束才抬起。
+        if (_doc.ActivateOnFinish)
+        {
+            var h = new WindowInteropHelper(this).Handle;
+            if (h != IntPtr.Zero) Services.WindowActivator.ActivateHwnd(h);
         }
     }
 

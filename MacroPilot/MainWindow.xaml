@@ -246,6 +246,18 @@
               </StackPanel>
             </Border>
 
+            <!-- 结束后激活到前台 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="结束后回到前台" />
+                  <CheckBox Name="ActivateOnFinishCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                            Checked="ActivateOnFinish_Changed" Unchecked="ActivateOnFinish_Changed" />
+                </DockPanel>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="方案执行完毕后，把本程序自动激活到最前面；关闭则保持在后台，需要你手动点亮窗口。" />
+              </StackPanel>
+            </Border>
+
             <!-- 自动更新 -->
             <Border Style="{StaticResource SettingCard}">
               <StackPanel>

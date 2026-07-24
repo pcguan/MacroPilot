@@ -18,6 +18,8 @@ public sealed class MacroDocument
     public bool RunAsAdmin { get; set; }
     // 自动更新：启动时立即检查新版并直接更新；关闭则不做启动检查，仅靠 30s 轮询在状态栏提醒。
     public bool AutoUpdate { get; set; }
+    // 方案结束后是否把本体自动激活到前台（默认是）。关则结束后仍停在后台，等用户手动点亮。
+    public bool ActivateOnFinish { get; set; } = true;
 
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();
