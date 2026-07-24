@@ -815,7 +815,7 @@ public partial class MainWindow
         var mouseHoldPanel = SubGroup("按住时间", holdRow.Panel);
 
         // 坐标块（可复用）：点击/移动用一个；拖动用两个（起点、终点）。
-        var coord = new CoordBlock(this, win, "设置坐标（先移动到该位置再执行）", showCheck: true);
+        var coord = new CoordBlock(this, win, "设置坐标（先移动到该位置再执行）", showCheck: true, withOffset: true);
         var mouseMovePanel = coord.Panel;
         var coordCheck = coord.Enabled;
         // 拖动终点：始终展开、无勾选框
@@ -830,18 +830,6 @@ public partial class MainWindow
             Text = "沿带随机弧度、缓入缓出的路径分多步移动，比瞬移多花约 0.2–0.6 秒。CH9329 下每步仍是真实硬件相对闭环。",
         };
         var humanizePanel = SubGroup(null, humanizeMoveCheck, humanizeNote);
-
-        // 落点偏移（动作级）：在目标点周围 ±N 像素随机落点；只在会发生移动/点击到坐标时有意义。
-        var offsetText = new TextBox { Text = "0", Width = 90, Height = 32 };
-        var offsetRow = new StackPanel { Orientation = Orientation.Horizontal };
-        offsetRow.Children.Add(offsetText);
-        offsetRow.Children.Add(new TextBlock { Text = "像素", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
-        var offsetNote = new TextBlock
-        {
-            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
-            Text = "在目标点周围该半径的圆内随机落点，配合拟人化移动更像真人；0 = 每次精确命中同一像素。多次点击时每次各自随机。",
-        };
-        var offsetPanel = SubGroup("落点偏移（半径）", offsetRow, offsetNote);
 
         var mouseWheelPanel = new StackPanel { Visibility = Visibility.Collapsed };
         mouseWheelPanel.Children.Add(FieldLabel("滚轮格数（正 = 向上，负 = 向下）"));
@@ -999,7 +987,6 @@ public partial class MainWindow
         mousePanel.Children.Add(mouseHoldPanel);
         mousePanel.Children.Add(mouseRepeat.Panel);
         mousePanel.Children.Add(mouseWheelPanel);
-        mousePanel.Children.Add(offsetPanel);
         mousePanel.Children.Add(humanizePanel);
 
         // 跳转面板（运行 → 跳转）：原先挂在每个动作上的「执行后跳转到」已剥离成这个独立动作。
@@ -1096,10 +1083,8 @@ public partial class MainWindow
             // 按住时间只对点击有意义；拖动的"按住"贯穿整个移动过程，无需时长。
             mouseHoldPanel.Visibility = isClick ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
-            // 拟人化 / 落点偏移只在会发生移动到坐标时才有意义。
-            bool coordActive = coordForced || (isClick && coordCheck.IsChecked == true);
-            humanizePanel.Visibility = coordActive ? Visibility.Visible : Visibility.Collapsed;
-            offsetPanel.Visibility = coordActive ? Visibility.Visible : Visibility.Collapsed;
+            // 拟人化只在会发生移动到坐标时才有意义（落点偏移已并入坐标块，随坐标一起显隐）。
+            humanizePanel.Visibility = coordForced || (isClick && coordCheck.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
 
             bool hasRepeat = isClick || a == "滚轮";
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
@@ -1153,7 +1138,7 @@ public partial class MainWindow
                         var (dev0, nx0, ny0) = coord.Read();
                         m.MoveMonitor = dev0; m.MoveNormX = nx0; m.MoveNormY = ny0;
                         m.Humanize = humanizeMoveCheck.IsChecked == true;
-                        m.ClickOffset = Math.Max(0, ParseInt(offsetText.Text, 0));
+                        m.ClickOffset = coord.ReadOffset();
                     }
                     void FillButton(MacroStep m)
                     {
@@ -1261,7 +1246,7 @@ public partial class MainWindow
                     coord.Write(pm.Device, source.X / (double)pm.Width, source.Y / (double)pm.Height);
                 }
                 humanizeMoveCheck.IsChecked = source.Humanize;
-                offsetText.Text = source.ClickOffset.ToString();
+                coord.WriteOffset(source.ClickOffset);
             }
             // 回填按钮/按住（点击 / 点击坐标共用）
             void LoadButtonFields()
@@ -1500,12 +1485,13 @@ public partial class MainWindow
         private readonly ComboBox _monitor = new() { Height = 32 };
         private readonly TextBox _x = new() { Text = "50", Width = 86, Height = 32 };
         private readonly TextBox _y = new() { Text = "50", Width = 86, Height = 32 };
+        private readonly TextBox _offset = new() { Text = "0", Width = 90, Height = 32 };
         private readonly TextBlock _status;
         private readonly Border _wrap;
         public readonly CheckBox Enabled = new() { VerticalAlignment = VerticalAlignment.Center };
         public readonly Border Panel;
 
-        public CoordBlock(MainWindow o, Window win, string title, bool showCheck)
+        public CoordBlock(MainWindow o, Window win, string title, bool showCheck, bool withOffset = false)
         {
             _o = o; _win = win;
             var detail = new StackPanel();
@@ -1558,6 +1544,25 @@ public partial class MainWindow
             pickBtns.Children.Add(pickBtn); pickBtns.Children.Add(previewBtn);
             valRow.Children.Add(pickBtns);
             detail.Children.Add(valRow);
+
+            // 落点偏移（可选）：随坐标一起收纳在本块内，而不是另起一张卡。
+            if (withOffset)
+            {
+                var offRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 12, 0, 0) };
+                var offLabel = Label("落点偏移");
+                offLabel.VerticalAlignment = VerticalAlignment.Center;
+                offRow.Children.Add(offLabel);
+                var offInner = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                offInner.Children.Add(_offset);
+                offInner.Children.Add(new TextBlock { Text = "像素", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)o.FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
+                offRow.Children.Add(offInner);
+                detail.Children.Add(offRow);
+                detail.Children.Add(new TextBlock
+                {
+                    Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+                    Text = "在目标点周围该半径的圆内随机落点，配合拟人化移动更像真人；0 = 每次精确命中同一像素。多次点击时每次各自随机。",
+                });
+            }
 
             _status = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
             detail.Children.Add(_status);
@@ -1618,6 +1623,10 @@ public partial class MainWindow
             }
             if (_monitor.Items.Count > 0) _monitor.SelectedIndex = primaryIdx;   // 默认选主屏
         }
+
+        /// <summary>落点偏移半径（像素，≥0）。仅 withOffset 的块有意义，其余恒为 0。</summary>
+        public int ReadOffset() => Math.Max(0, ParseInt(_offset.Text, 0));
+        public void WriteOffset(int v) => _offset.Text = Math.Max(0, v).ToString();
 
         /// <summary>读取当前设置：(显示器设备名, 屏内归一化 X, Y)。</summary>
         public (string dev, double nx, double ny) Read() =>
