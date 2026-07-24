@@ -35,6 +35,10 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public string MoveMonitor { get; set; } = "";
     public double MoveNormX { get; set; }
     public double MoveNormY { get; set; }
+    // MouseDrag 的终点：起点复用上面的 MoveMonitor/MoveNormX/MoveNormY。
+    public string DragEndMonitor { get; set; } = "";
+    public double DragEndNormX { get; set; }
+    public double DragEndNormY { get; set; }
     // 拟人化移动（动作级）：true 则该"鼠标移动"走缓入缓出的弧线轨迹分多步逼近，而非瞬间跳到目标。
     public bool Humanize { get; set; }
     // 禁用：true 则执行时整步跳过（组合/嵌套组合同理）。持久化；UI 用勾选框切换（绑 Enabled）。
@@ -122,6 +126,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             Type = Type, Button = Button, Key = Key, Modifier = Modifier,
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, Disabled = Disabled,
+            DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
             JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
@@ -170,7 +175,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
         "MouseMove" => MoveDisplay(),
         "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
-        "MouseDrag" => MoveDisplay($"{ButtonCn(Button)}拖动"),
+        "MouseDrag" => DragDisplay(),
         "MouseWheel" => $"滚轮 {Wheel} 格",
         "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
         "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
@@ -194,6 +199,22 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         int i = MoveMonitor.LastIndexOf('\\');
         string mon = i >= 0 ? MoveMonitor[(i + 1)..] : MoveMonitor;
         return $"鼠标{verb}到 {mon}（{MoveNormX * 100:0.#}%, {MoveNormY * 100:0.#}%）{suffix}";
+    }
+
+    // 拖动：起点 → 终点（同屏时终点只报百分比，跨屏才带屏名）。
+    private string DragDisplay()
+    {
+        string Pct(double nx, double ny) => $"{nx * 100:0.#}%, {ny * 100:0.#}%";
+        static string Short(string dev)
+        {
+            int i = dev.LastIndexOf('\\');
+            return i >= 0 ? dev[(i + 1)..] : dev;
+        }
+        string from = string.IsNullOrEmpty(MoveMonitor) ? Pct(MoveNormX, MoveNormY) : $"{Short(MoveMonitor)}（{Pct(MoveNormX, MoveNormY)}）";
+        string to = string.IsNullOrEmpty(DragEndMonitor) || DragEndMonitor == MoveMonitor
+            ? $"（{Pct(DragEndNormX, DragEndNormY)}）"
+            : $"{Short(DragEndMonitor)}（{Pct(DragEndNormX, DragEndNormY)}）";
+        return $"{ButtonCn(Button)}拖动 {from} → {to}" + (Humanize ? " · 拟人" : "");
     }
 
     private string WindowTargetCn()
