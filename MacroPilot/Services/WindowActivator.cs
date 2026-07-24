@@ -74,22 +74,31 @@ public static class WindowActivator
         if (pid <= 0 && proc.Length == 0 && ttl.Length == 0) return false;
 
         var windows = ListTopWindows();
+        bool ProcOk(WinInfo w) => proc.Length == 0 || string.Equals(NormalizeProcess(w.Process), proc, StringComparison.OrdinalIgnoreCase);
+        bool TitleExact(WinInfo w) => ttl.Length > 0 && string.Equals(w.Title.Trim(), ttl, StringComparison.OrdinalIgnoreCase);
+        bool TitleLike(WinInfo w) => ttl.Length == 0 || w.Title.Contains(ttl, StringComparison.OrdinalIgnoreCase);
         WinInfo? found = null;
 
-        // 1) PID 精确命中（若同时有进程名，校验名字一致，防 PID 被系统复用）。
-        if (pid > 0)
+        // 同一进程可能有多个顶层窗口（同 PID、标题不同）。命中优先级从最精确到最宽松：
+        // 1) PID + 标题完全一致 —— 精确定位用户当初选的那个窗口（多窗口进程的关键）。
+        if (pid > 0 && ttl.Length > 0)
             foreach (var w in windows)
-                if (w.Pid == pid && (proc.Length == 0 || string.Equals(NormalizeProcess(w.Process), proc, StringComparison.OrdinalIgnoreCase)))
-                { found = w; break; }
-
-        // 2) 回退：进程名 + 标题包含（跨重启/换实例时用）。
+                if (w.Pid == pid && ProcOk(w) && TitleExact(w)) { found = w; break; }
+        // 2) PID + 标题包含。
+        if (found == null && pid > 0 && ttl.Length > 0)
+            foreach (var w in windows)
+                if (w.Pid == pid && ProcOk(w) && TitleLike(w)) { found = w; break; }
+        // 3) PID 命中（无标题信息，或同 PID 无标题匹配 → 取该进程任一窗口）。
+        if (found == null && pid > 0)
+            foreach (var w in windows)
+                if (w.Pid == pid && ProcOk(w)) { found = w; break; }
+        // 4) 回退：进程名 + 标题（跨重启/换实例，PID 已变）——先要标题完全一致，再要包含。
+        if (found == null && ttl.Length > 0)
+            foreach (var w in windows)
+                if (ProcOk(w) && TitleExact(w)) { found = w; break; }
         if (found == null)
             foreach (var w in windows)
-            {
-                bool procOk = proc.Length == 0 || string.Equals(NormalizeProcess(w.Process), proc, StringComparison.OrdinalIgnoreCase);
-                bool titleOk = ttl.Length == 0 || w.Title.Contains(ttl, StringComparison.OrdinalIgnoreCase);
-                if (procOk && titleOk) { found = w; break; }
-            }
+                if (ProcOk(w) && TitleLike(w)) { found = w; break; }
 
         if (found == null) return false;
         matchedTitle = found.Title;

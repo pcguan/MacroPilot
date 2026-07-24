@@ -935,12 +935,17 @@ public partial class MainWindow
             t.Tick += (_, _) => { t.Stop(); Services.WindowActivator.ActivateHwnd(back); };
             t.Start();
         }
+        bool picking = false;
         void Pick(WinPick wp)
         {
             selPid = wp.Info.Pid; selProc = wp.Info.Process; selTitle = wp.Info.Title;
             UpdateSelLabel();
             popup.IsOpen = false;
-            FlashPick(wp.Info.Hwnd);
+            // 延后"闪一下目标窗口"：FlashPick → ActivateHwnd 内部会 SetForegroundWindow，
+            // 若在 SelectionChanged 同步调用会泵消息循环、被排队的输入事件重入，
+            // 造成 SelectedItem 在处理中途变化 → 间歇性选中/激活到另一个窗口。放到输入处理完成后再跑。
+            var hwnd = wp.Info.Hwnd;
+            win.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() => FlashPick(hwnd)));
         }
         void OpenPicker()
         {
@@ -958,7 +963,15 @@ public partial class MainWindow
             string q = searchBox.Text ?? "";
             winView.Filter = q.Length == 0 ? null : o => ((WinPick)o).Display.Contains(q, StringComparison.OrdinalIgnoreCase);
         };
-        listBox.SelectionChanged += (_, _) => { if (!loadingList && listBox.SelectedItem is WinPick wp) Pick(wp); };
+        listBox.SelectionChanged += (_, e) =>
+        {
+            if (loadingList || picking) return;
+            // 用 e.AddedItems（本次确实新选中的项）而非 SelectedItem——后者在重入/刷新时可能已被改写。
+            var wp = (e.AddedItems.Count > 0 ? e.AddedItems[0] : listBox.SelectedItem) as WinPick;
+            if (wp == null) return;
+            picking = true;
+            try { Pick(wp); } finally { picking = false; }
+        };
         refreshBtn.Click += (_, _) => OpenPicker();
         UpdateSelLabel();
 
