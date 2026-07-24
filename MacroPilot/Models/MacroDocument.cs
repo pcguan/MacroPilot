@@ -22,6 +22,8 @@ public sealed class MacroDocument
     public bool ActivateOnFinish { get; set; } = true;
     // 运行时显示悬浮 HUD（当前动作/进度/热键 + 暂停停止按钮）。默认开。
     public bool ShowRunHud { get; set; } = true;
+    // 悬浮 HUD 的不透明度（0.3~1.0）。默认 0.5（半透明）；鼠标悬停时临时变为不透明便于看清。
+    public double HudOpacity { get; set; } = 0.5;
     // 最小化时收进托盘（隐藏任务栏、留托盘图标）。默认开。托盘图标始终常驻，可右键选方案直接跑。
     public bool MinimizeToTray { get; set; } = true;
     // 定时启动：到点自动运行指定方案。

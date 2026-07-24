@@ -146,7 +146,8 @@ public sealed class MacroRunner
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (true)
         {
-            Gate(ct);
+            // 暂停时停表、继续时重新计时——否则暂停期间秒表照走，恢复后 remain 变负、等待被"跳过"。
+            if (!_gate.IsSet) { sw.Stop(); _gate.Wait(ct); sw.Start(); }
             double remain = total - sw.Elapsed.TotalMilliseconds;
             if (remain <= 0) break;
             if (remain > 2)

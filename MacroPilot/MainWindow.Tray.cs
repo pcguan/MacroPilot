@@ -98,7 +98,7 @@ public partial class MainWindow
         cm.Items.Add(runItem);
         cm.Items.Add(MakeMenuItem("停止运行", () => _runner?.Stop(), running));
         cm.Items.Add(new Separator());
-        cm.Items.Add(MakeMenuItem("退出", () => { _exiting = true; Close(); }));
+        cm.Items.Add(MakeMenuItem("退出", Close));
 
         // 托盘菜单需先把某个窗口置前，点菜单外才会正常关闭（经典 tray 菜单怪癖）。
         var h = new WindowInteropHelper(this).Handle;
@@ -106,8 +106,6 @@ public partial class MainWindow
         cm.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         cm.IsOpen = true;
     }
-
-    private bool _exiting;   // true = 真正退出（区别于最小化到托盘）
 
     // 从托盘运行一个方案：运行中则忽略，否则直接跑其克隆快照（不改动当前正在编辑的方案）。
     private void RunPlanFromTray(Models.MacroPlan plan)

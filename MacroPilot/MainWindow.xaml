@@ -266,7 +266,15 @@
                   <CheckBox Name="ShowHudCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
                             Checked="ShowHud_Changed" Unchecked="ShowHud_Changed" />
                 </DockPanel>
-                <TextBlock Style="{StaticResource SettingDesc}" Text="方案运行时在屏幕上显示一个置顶浮条：当前动作、进度、循环与热键提示，并可就地暂停 / 停止。本体运行时会下沉到后台，靠它随时看到状态。" />
+                <TextBlock Style="{StaticResource SettingDesc}" Text="方案运行时在屏幕上显示一个置顶浮条：当前动作、进度、循环与热键提示，并可就地暂停 / 停止。开启后，运行时会把本体窗口最小化，靠浮条随时看到状态（鼠标悬停浮条会临时变清晰）。" />
+                <Border Style="{StaticResource SubSetting}">
+                  <DockPanel LastChildFill="True">
+                    <TextBlock DockPanel.Dock="Left" Text="不透明度" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,10,0" />
+                    <TextBlock DockPanel.Dock="Right" Name="HudOpacityValue" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="10,0,0,0" Width="40" TextAlignment="Right" Text="50%" />
+                    <Slider Name="HudOpacitySlider" Minimum="0.3" Maximum="1.0" Value="0.5" TickFrequency="0.05" IsSnapToTickEnabled="True"
+                            VerticalAlignment="Center" ValueChanged="HudOpacity_Changed" />
+                  </DockPanel>
+                </Border>
               </StackPanel>
             </Border>
 

@@ -18,7 +18,7 @@ public partial class MainWindow
         if (!_doc.ShowRunHud) return;
         if (_hud == null)
         {
-            _hud = new RunHud(this, () => _runner?.Pause(), () => _runner?.Resume(), () => _runner?.Stop());
+            _hud = new RunHud(this, () => _runner?.Pause(), () => _runner?.Resume(), () => _runner?.Stop(), _doc.HudOpacity);
             Services.WindowMemory.Attach(_hud, "Hud");   // 记住位置（只挂一次，避免累积 Closing 处理器）
             if (!Services.WindowMemory.WasRestored(_hud))
             {
@@ -40,6 +40,15 @@ public partial class MainWindow
         if (!_doc.ShowRunHud) HideHud();
         else if (_runner is { IsRunning: true }) ShowHud(_runDisplayName);
     }
+
+    private void HudOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_loading) return;
+        _doc.HudOpacity = System.Math.Round(e.NewValue, 2);
+        HudOpacityValue.Text = $"{(int)System.Math.Round(e.NewValue * 100)}%";
+        _hud?.SetOpacity(_doc.HudOpacity);
+        PersistSettings();
+    }
 }
 
 /// <summary>
@@ -54,9 +63,16 @@ public sealed class RunHud : Window
     private readonly ProgressBar _bar;
     private readonly Button _pause, _resume, _stop;
 
-    public RunHud(Window owner, Action onPause, Action onResume, Action onStop)
+    private double _baseOpacity = 0.5;
+    private readonly System.Windows.Threading.DispatcherTimer _topmostTimer;
+
+    private readonly Window _owner;
+
+    public RunHud(Window owner, Action onPause, Action onResume, Action onStop, double opacity)
     {
-        Owner = owner;
+        _owner = owner;   // 只用于取主题画刷；【不】设 Window.Owner，否则主窗口最小化会连带隐藏 HUD
+        _baseOpacity = System.Math.Clamp(opacity, 0.3, 1.0);
+        Opacity = _baseOpacity;
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
@@ -120,6 +136,9 @@ public sealed class RunHud : Window
 
         // 拖动：按住浮条任意非按钮处即可移动
         MouseLeftButtonDown += (_, e) => { if (e.OriginalSource is not Button) { try { DragMove(); } catch { } } };
+        // 鼠标悬停时临时变不透明，便于看清；移开恢复设定透明度。
+        MouseEnter += (_, _) => Opacity = 1.0;
+        MouseLeave += (_, _) => Opacity = _baseOpacity;
         // 不抢焦点：置 WS_EX_NOACTIVATE + TOOLWINDOW，运行时不打断用户在目标程序里的操作
         SourceInitialized += (_, _) =>
         {
@@ -127,6 +146,18 @@ public sealed class RunHud : Window
             int ex = GetWindowLong(h, GWL_EXSTYLE);
             SetWindowLong(h, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
         };
+        // 永远置顶：Topmost 仍可能被其它置顶窗口/全屏程序压下，定时重申 HWND_TOPMOST（不激活、不移位）。
+        _topmostTimer = new System.Windows.Threading.DispatcherTimer { Interval = System.TimeSpan.FromMilliseconds(700) };
+        _topmostTimer.Tick += (_, _) => ReassertTopmost();
+        IsVisibleChanged += (_, _) => { if (IsVisible) _topmostTimer.Start(); else _topmostTimer.Stop(); };
+    }
+
+    public void SetOpacity(double opacity) { _baseOpacity = System.Math.Clamp(opacity, 0.3, 1.0); if (!IsMouseOver) Opacity = _baseOpacity; }
+
+    private void ReassertTopmost()
+    {
+        var h = new WindowInteropHelper(this).Handle;
+        if (h != IntPtr.Zero) SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     public void SetPlan(string name) => _plan.Text = name;
@@ -142,7 +173,7 @@ public sealed class RunHud : Window
     public void SetStatus(string kind, string text)
     {
         string dotKey = kind switch { "Running" or "Success" or "Done" => "Success", "Paused" => "Warning", _ => "Danger" };
-        _dot.Fill = (Brush)(Owner?.TryFindResource(dotKey) ?? System.Windows.Media.Brushes.Gray);
+        _dot.Fill = (Brush)(_owner.TryFindResource(dotKey) ?? System.Windows.Media.Brushes.Gray);
         bool paused = kind == "Paused";
         _pause.Visibility = paused ? Visibility.Collapsed : Visibility.Visible;
         _resume.Visibility = paused ? Visibility.Visible : Visibility.Collapsed;
@@ -153,4 +184,7 @@ public sealed class RunHud : Window
     private const int WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOOLWINDOW = 0x00000080;
     [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr h, int idx);
     [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr h, int idx, int val);
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10;
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }

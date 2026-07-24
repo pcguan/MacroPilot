@@ -5,7 +5,7 @@ import 'package:path/path.dart' as p;
 class AppMeta {
   static const String appName = 'MacroPilot'; // 内部标识 / 安装文件夹名
   static const String appNameCn = '键鼠宏助手'; // 显示名
-  static const String appVersion = '0.2.0';
+  static const String appVersion = '0.2.1';
   static const String publisher = 'MacroPilot';
   static const String appExe = 'MacroPilot.exe'; // 主程序
   static const String uninstallerExe =

@@ -227,6 +227,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         AutoUpdateCheck.IsChecked = _doc.AutoUpdate;
         ActivateOnFinishCheck.IsChecked = _doc.ActivateOnFinish;
         ShowHudCheck.IsChecked = _doc.ShowRunHud;
+        HudOpacitySlider.Value = Math.Clamp(_doc.HudOpacity, 0.3, 1.0);
+        HudOpacityValue.Text = $"{(int)Math.Round(_doc.HudOpacity * 100)}%";
         TrayCheck.IsChecked = _doc.MinimizeToTray;
         RefreshScheduleSummary();
         ThemeCombo.SelectedIndex = _doc.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
@@ -974,6 +976,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     // 运行指定方案（快照副本；"从此动作开始/单次"另构临时方案）。
     private bool _startingRun;
+    private bool _minimizedForRun;   // 本次运行是否为悬浮窗把本体最小化了（结束时据此恢复）
     private async void RunPlan(MacroPlan plan, string displayName)
     {
         if (_runner is { IsRunning: true } || _startingRun) return;
@@ -1026,7 +1029,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         PauseButton.IsEnabled = true; ResumeButton.IsEnabled = false; StopButton.IsEnabled = true;
         SetRunStatus("Running", $"运行中 · {displayName}");
         ShowHud(displayName);   // 运行悬浮窗（配置开则显示）
-        SendWindowToBottom();   // 下沉到最底层、不抢焦点，方便用户切到目标程序窗口
+        if (_doc.ShowRunHud) { _minimizedForRun = true; WindowState = WindowState.Minimized; }   // 有悬浮窗就把本体最小化收起
+        else SendWindowToBottom();   // 无悬浮窗：下沉到最底层、不抢焦点，方便切到目标程序窗口
         StartRunUiTimer();
         EnableHotkeys();        // 仅在方案执行期间独占 F9/F10/F11 + 挂低级键盘钩子；OnRunFinished 里注销
         _runner.Start(plan, _doc.ExecutionDelayMs, _doc.TimingJitterEnabled ? _doc.TimingJitterMs : 0);
@@ -1212,11 +1216,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _backendClosing = System.Threading.Tasks.Task.Run(() => { try { b.Dispose(); } catch { } });
             if (serial) AddLog("Info", "已释放串口（已让给其它软件）。");
         }
-        // 运行结束后按配置把本体激活到前台（默认开）。运行期一直下沉，结束才抬起。
+        // 运行结束后按配置把本体激活到前台（默认开）。运行期最小化/下沉，结束才抬起。
+        bool wasMin = _minimizedForRun; _minimizedForRun = false;
         if (_doc.ActivateOnFinish)
         {
-            var h = new WindowInteropHelper(this).Handle;
-            if (h != IntPtr.Zero) Services.WindowActivator.ActivateHwnd(h);
+            if (wasMin) RestoreFromTray();   // 曾为悬浮窗最小化/收托盘 → 完整恢复（Show+Normal+任务栏+置前）
+            else
+            {
+                var h = new WindowInteropHelper(this).Handle;
+                if (h != IntPtr.Zero) Services.WindowActivator.ActivateHwnd(h);
+            }
         }
     }
 
