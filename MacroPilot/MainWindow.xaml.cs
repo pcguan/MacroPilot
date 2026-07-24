@@ -1220,9 +1220,21 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _backendClosing = System.Threading.Tasks.Task.Run(() => { try { b.Dispose(); } catch { } });
             if (serial) AddLog("Info", "已释放串口（已让给其它软件）。");
         }
+        // Interrupt 策略：本次是被定时打断的，结束后拉起待运行的定时方案（延后一拍，避开当前结束流程）。
+        bool restartingSchedule = _pendingScheduled != null;
+        if (_pendingScheduled is { } ps)
+        {
+            _pendingScheduled = null;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (ps.Steps.Count == 0) return;
+                AddLog("Info", $"⏰ 定时启动：{ps.Name}");
+                RunPlan(BuildRunPlan(ps), ps.Name);
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
         // 运行结束后按配置把本体激活到前台（默认开）。运行期最小化/下沉，结束才抬起。
         bool wasMin = _minimizedForRun; _minimizedForRun = false;
-        if (_doc.ActivateOnFinish)
+        if (_doc.ActivateOnFinish && !restartingSchedule)   // 马上要接着跑定时，不必先抬窗口再最小化
         {
             if (wasMin) RestoreFromTray();   // 曾为悬浮窗最小化/收托盘 → 完整恢复（Show+Normal+任务栏+置前）
             else

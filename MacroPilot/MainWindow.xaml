@@ -358,9 +358,9 @@
           </Grid.ColumnDefinitions>
           <Border Grid.Column="0" Style="{StaticResource Card}" Padding="14">
             <DockPanel>
-              <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8" LastChildFill="False">
-                <TextBlock DockPanel.Dock="Left" Text="方案" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                <TextBlock Text="方案" FontSize="18" FontWeight="Bold" Margin="0,0,0,6" />
+                <StackPanel Orientation="Horizontal">
                   <Button Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="新建方案" Click="NewPlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案" Click="RenamePlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="删除当前方案" Click="DeletePlanIcon_Click" />
@@ -370,7 +370,7 @@
                   <Button Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="导入方案（可多选文件，单方案 / 多方案自动识别）" Click="Import_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE898;" ToolTip="导出全部方案到一个文件" Click="ExportAll_Click" />
                 </StackPanel>
-              </DockPanel>
+              </StackPanel>
               <ListBox Name="PlansList" SelectionChanged="PlansList_SelectionChanged" KeyDown="PlansList_KeyDown" AllowDrop="True"
                        PreviewMouseRightButtonDown="PlansList_PreviewMouseRightButtonDown"
                        PreviewMouseLeftButtonDown="PlansList_PreviewMouseLeftButtonDown" PreviewMouseMove="PlansList_PreviewMouseMove"

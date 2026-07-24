@@ -81,12 +81,24 @@ public partial class MainWindow
         PersistSettings(); RefreshScheduleMark();
     }
 
+    private MacroPlan? _pendingScheduled;   // Interrupt 策略下：停止当前后待运行的定时方案
+
     private void FireSchedule()
     {
         var plan = _plans.FirstOrDefault(p => p.Name == _doc.ScheduledPlan);
         if (plan == null) { AddLog("Warning", $"⏰ 定时方案「{_doc.ScheduledPlan}」不存在，已跳过。"); return; }
-        if (_runner is { IsRunning: true } || _startingRun) { AddLog("Warning", $"⏰ 定时「{plan.Name}」到点但正在运行，已跳过。"); return; }
         if (plan.Steps.Count == 0) { AddLog("Warning", $"⏰ 定时方案「{plan.Name}」没有动作，已跳过。"); return; }
+        if (_runner is { IsRunning: true } || _startingRun)
+        {
+            if (_doc.ScheduleConflict == "Interrupt")
+            {
+                AddLog("Warning", $"⏰ 定时「{plan.Name}」到点，停止当前运行并改跑定时。");
+                _pendingScheduled = plan;
+                _runner?.Stop();   // 结束后由 OnRunFinished 拉起 _pendingScheduled
+            }
+            else AddLog("Warning", $"⏰ 定时「{plan.Name}」到点但正在运行，已忽略本次。");
+            return;
+        }
         AddLog("Info", $"⏰ 定时启动：{plan.Name}");
         RunPlan(BuildRunPlan(plan), plan.Name);
     }
@@ -183,6 +195,15 @@ public partial class MainWindow
         modeInner.Children.Add(rbOnce); modeInner.Children.Add(onceWrap);
         sp.Children.Add(GroupCard("方式", modeInner));
 
+        // ---- 到点冲突处理 ----
+        var conflictCombo = new ComboBox { Height = 32 };
+        conflictCombo.Items.Add("忽略本次定时");           // Ignore
+        conflictCombo.Items.Add("停止当前，改跑定时");     // Interrupt
+        conflictCombo.SelectedIndex = _doc.ScheduleConflict == "Interrupt" ? 1 : 0;
+        sp.Children.Add(GroupCard("到点时已有方案在运行",
+            new TextBlock { Text = "定时到点，但此刻正好有方案在跑时怎么办。", Foreground = Muted(), FontSize = 12, Margin = new Thickness(0, 0, 0, 8) },
+            conflictCombo));
+
         var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
         var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton") };
         var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -218,6 +239,7 @@ public partial class MainWindow
                     }
                     _doc.ScheduledPlan = planName;
                 }
+                _doc.ScheduleConflict = conflictCombo.SelectedIndex == 1 ? "Interrupt" : "Ignore";
                 PersistSettings();
                 RefreshScheduleMark();
                 win.DialogResult = true;

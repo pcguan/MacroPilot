@@ -33,6 +33,8 @@ public sealed class MacroDocument
     public int ScheduleSecondOfDay { get; set; }        // Daily：一天内的秒数 0..86399
     public int ScheduleDays { get; set; }               // Daily：星期位掩码，0=每天
     public string ScheduleOnceAt { get; set; } = "";    // Once：目标时刻 ISO 8601（yyyy-MM-ddTHH:mm:ss）
+    // 到点时已有方案在运行的处理：""/"Ignore"=忽略本次定时（默认）；"Interrupt"=停止当前、改跑定时。
+    public string ScheduleConflict { get; set; } = "Ignore";
 
     // 未知桥片：USB "VID:PID" -> 用户起的名
     public Dictionary<string, string> KnownBridges { get; set; } = new();
