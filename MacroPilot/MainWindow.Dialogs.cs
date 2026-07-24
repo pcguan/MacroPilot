@@ -522,6 +522,132 @@ public partial class MainWindow
         Services.WindowActivator.ActivateHwnd(dlgH);
     }
 
+    // 编辑限制区域：冻屏后在快照上显示一个【可拖动·可缩放】的矩形（body 拖动整体移动、四角拖动缩放），
+    // 「确定」返回新区域（虚拟像素），取消 / Esc 返回 null。用于「点击图片」限定搜索范围。
+    private (int vx, int vy, int w, int h)? EditRegion(Window dialog, int? curVx, int? curVy, int? curW, int? curH)
+    {
+        var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
+        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        System.Threading.Thread.Sleep(120);
+        var (ox, oy, vw, vh) = VirtualBounds();
+        var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
+
+        var accent = (Brush)FindResource("Accent");
+        var overlay = new Window
+        {
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Background = Brushes.Transparent,
+        };
+        var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
+        var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x66, 0, 0, 0)) };
+        var canvas = new Canvas();
+        var box = new System.Windows.Shapes.Rectangle { Stroke = accent, StrokeThickness = 2, Fill = new SolidColorBrush(Color.FromArgb(0x18, 0x8A, 0x78, 0x60)) };
+        var sizeLbl = new TextBlock { Foreground = Brushes.White, FontSize = 12, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3) };
+        // body：透明拖动块（整体移动）
+        var body = new System.Windows.Controls.Primitives.Thumb { Opacity = 0, Cursor = Cursors.SizeAll };
+        canvas.Children.Add(box); canvas.Children.Add(body); canvas.Children.Add(sizeLbl);
+        // 四角缩放手柄
+        var handles = new System.Windows.Controls.Primitives.Thumb[4];
+        var cursors = new[] { Cursors.SizeNWSE, Cursors.SizeNESW, Cursors.SizeNESW, Cursors.SizeNWSE }; // nw, ne, sw, se
+        for (int i = 0; i < 4; i++)
+        {
+            handles[i] = new System.Windows.Controls.Primitives.Thumb { Width = 12, Height = 12, Cursor = cursors[i], Background = Brushes.White, BorderBrush = accent, BorderThickness = new Thickness(2) };
+            handles[i].Template = HandleTemplate(accent);
+            canvas.Children.Add(handles[i]);
+        }
+        var hint = new TextBlock
+        {
+            Text = "拖动方框移动 · 拖四角缩放；回车确定，Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+        };
+        // 确定 / 取消 悬浮条
+        bool ok = false;
+        var okBtn = new Button { Content = "确定", Width = 76, Height = 32, Margin = new Thickness(0, 0, 8, 0), Style = (Style)FindResource("PrimaryButton") };
+        var cancelBtn = new Button { Content = "取消", Width = 76, Height = 32, Style = (Style)FindResource("GhostButton") };
+        var barStack = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 40) };
+        barStack.Children.Add(okBtn); barStack.Children.Add(cancelBtn);
+        var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); root.Children.Add(barStack); overlay.Content = root;
+        overlay.SourceInitialized += (_, _) =>
+        {
+            var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
+            SetWindowPos(h, HWND_TOPMOST, ox, oy, vw, vh, 0x0040);
+        };
+
+        // 区域在 DIP 空间维护；r = 虚拟像素/DIP（多屏/DPI 恒定）。
+        double rx = 0, ry = 0, rw = 0, rh = 0;
+        double R() => vw / Math.Max(1.0, snapImg.ActualWidth);
+        void Layout()
+        {
+            double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
+            rw = Math.Min(rw, cw); rh = Math.Min(rh, chh);
+            rx = Math.Clamp(rx, 0, Math.Max(0, cw - rw)); ry = Math.Clamp(ry, 0, Math.Max(0, chh - rh));
+            Canvas.SetLeft(box, rx); Canvas.SetTop(box, ry); box.Width = rw; box.Height = rh;
+            Canvas.SetLeft(body, rx); Canvas.SetTop(body, ry); body.Width = rw; body.Height = rh;
+            double[] hx = { rx, rx + rw, rx, rx + rw }, hy = { ry, ry, ry + rh, ry + rh };
+            for (int i = 0; i < 4; i++) { Canvas.SetLeft(handles[i], hx[i] - 6); Canvas.SetTop(handles[i], hy[i] - 6); }
+            double r = R();
+            int px = ox + (int)Math.Round(rx * r), py = oy + (int)Math.Round(ry * r);
+            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(rw * r)}×{(int)Math.Round(rh * r)}";
+            Canvas.SetLeft(sizeLbl, rx); Canvas.SetTop(sizeLbl, Math.Max(0, ry - 24));
+        }
+        overlay.Loaded += (_, _) =>
+        {
+            double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight, r = R();
+            if (curW is int cW && cW > 0 && curH is int cH && cH > 0)
+            { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }
+            else { rw = cw * 0.35; rh = chh * 0.35; rx = (cw - rw) / 2; ry = (chh - rh) / 2; }   // 默认居中 35%
+            Layout();
+            overlay.Activate(); overlay.Focus();
+        };
+        const double Min = 16;
+        body.DragDelta += (_, e) => { rx += e.HorizontalChange; ry += e.VerticalChange; Layout(); };
+        void Corner(int i, double dx, double dy)
+        {
+            double right = rx + rw, bottom = ry + rh, cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
+            bool left = i == 0 || i == 2, top = i == 0 || i == 1;
+            if (left) { double nx = Math.Clamp(rx + dx, 0, right - Min); rw = right - nx; rx = nx; }
+            else { double nr = Math.Clamp(right + dx, rx + Min, cw); rw = nr - rx; }
+            if (top) { double ny = Math.Clamp(ry + dy, 0, bottom - Min); rh = bottom - ny; ry = ny; }
+            else { double nb = Math.Clamp(bottom + dy, ry + Min, chh); rh = nb - ry; }
+            Layout();
+        }
+        for (int i = 0; i < 4; i++) { int idx = i; handles[i].DragDelta += (_, e) => Corner(idx, e.HorizontalChange, e.VerticalChange); }
+
+        void Confirm() { ok = true; overlay.Close(); }
+        okBtn.Click += (_, _) => Confirm();
+        cancelBtn.Click += (_, _) => { ok = false; overlay.Close(); };
+        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { ok = false; overlay.Close(); } else if (e.Key == Key.Enter) Confirm(); };
+        overlay.ShowDialog();
+
+        (int, int, int, int)? outv = null;
+        if (ok)
+        {
+            double r = R();
+            int wpx = (int)Math.Round(rw * r), hpx = (int)Math.Round(rh * r);
+            if (wpx >= 8 && hpx >= 8) outv = (ox + (int)Math.Round(rx * r), oy + (int)Math.Round(ry * r), wpx, hpx);
+        }
+        snapshot.Dispose();
+        Services.WindowActivator.ActivateHwnd(mainH);
+        Services.WindowActivator.ActivateHwnd(dlgH);
+        return outv;
+    }
+
+    // 缩放手柄外观：白底 + 强调色描边的小方块。
+    private static ControlTemplate HandleTemplate(Brush accent)
+    {
+        var t = new ControlTemplate(typeof(System.Windows.Controls.Primitives.Thumb));
+        var f = new FrameworkElementFactory(typeof(System.Windows.Shapes.Rectangle));
+        f.SetValue(System.Windows.Shapes.Shape.FillProperty, Brushes.White);
+        f.SetValue(System.Windows.Shapes.Shape.StrokeProperty, accent);
+        f.SetValue(System.Windows.Shapes.Shape.StrokeThicknessProperty, 2.0);
+        f.SetValue(System.Windows.FrameworkElement.WidthProperty, 12.0);
+        f.SetValue(System.Windows.FrameworkElement.HeightProperty, 12.0);
+        t.VisualTree = f;
+        return t;
+    }
+
     private FrameworkElement BuildHookRow(string label, Func<MacroStep?> get, Action<MacroStep?> set)
     {
         var row = new DockPanel { Margin = new Thickness(0, 4, 0, 4), LastChildFill = true };
@@ -793,7 +919,8 @@ public partial class MainWindow
         var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
-        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
+        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("点击坐标"); mouseActionCombo.Items.Add("点击图片");
+        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
         var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
@@ -821,6 +948,10 @@ public partial class MainWindow
         // 拖动终点：始终展开、无勾选框
         var dragEnd = new CoordBlock(this, win, "终点坐标", showCheck: false);
         var dragEndPanel = dragEnd.Panel;
+
+        // 点击图片编辑块（目标图 + 限制区域 + 相似度 + 匹配第几）。
+        var clickImage = new ClickImagePanel(this, win);
+        var clickImagePanel = clickImage.Panel;
 
         // 拟人化移动（动作级）：独立成块，排在最后；只在启用坐标时有意义。
         var humanizeMoveCheck = new CheckBox { Content = "拟人化移动（走缓入缓出的弧线轨迹，更像真人）" };
@@ -984,6 +1115,7 @@ public partial class MainWindow
         mousePanel.Children.Add(mouseButtonPanel);
         mousePanel.Children.Add(mouseMovePanel);
         mousePanel.Children.Add(dragEndPanel);
+        mousePanel.Children.Add(clickImagePanel);
         mousePanel.Children.Add(mouseHoldPanel);
         mousePanel.Children.Add(mouseRepeat.Panel);
         mousePanel.Children.Add(mouseWheelPanel);
@@ -1052,7 +1184,8 @@ public partial class MainWindow
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、带坐标的鼠标动作。只有一块屏时不自动标（没意义），手动「标识屏幕」按钮不受影响。
-            bool coordView = Act() is "移动" or "拖动" || (Act() == "点击" && coordCheck.IsChecked == true);
+            // 点击图片有自己的截图/区域编辑覆盖层，不在此自动标屏。
+            bool coordView = Act() is "移动" or "拖动" or "点击坐标";
             bool needScreens = (RunAct() == "激活窗口" || coordView) && ScreenInfo.All().Count > 1;
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
@@ -1068,27 +1201,29 @@ public partial class MainWindow
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
             windowPanel.Visibility = ra == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
             jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
-            bool isMove = a == "移动", isClick = a == "点击", isDrag = a == "拖动";
-            // 移动/拖动必须有坐标：强制勾上且不给取消；点击的坐标是可选项（勾了=先移动再点击）。
-            bool coordForced = isMove || isDrag;
+            // 点击=纯点击（无坐标）；点击坐标=先移动到坐标再点；点击图片=区域内搜图再点。移动/拖动/点击坐标必须有坐标。
+            bool isMove = a == "移动", isClick = a == "点击", isClickAt = a == "点击坐标", isClickImage = a == "点击图片", isDrag = a == "拖动", isWheel = a == "滚轮";
+            bool coordForced = isMove || isDrag || isClickAt;   // 这三种强制有坐标
             if (coordForced && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
-            coordCheck.IsEnabled = !coordForced;
+            coordCheck.IsEnabled = false;   // 坐标显隐完全由动作类型决定，勾选框不再交互
             coordCheck.Content = isMove ? "坐标（移动到该位置，必须设置）"
                                : isDrag ? "起点坐标（在此按下鼠标键）"
-                               : "设置坐标（先移动到该位置再点击）";
+                               : "坐标（移动到该位置再点击）";
             dragEndPanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;   // 拖动才有终点
 
-            mouseButtonPanel.Visibility = isClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
-            mouseMovePanel.Visibility = isMove || isClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
-            // 按住时间只对点击有意义；拖动的"按住"贯穿整个移动过程，无需时长。
-            mouseHoldPanel.Visibility = isClick ? Visibility.Visible : Visibility.Collapsed;
-            mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
-            // 拟人化只在会发生移动到坐标时才有意义（落点偏移已并入坐标块，随坐标一起显隐）。
-            humanizePanel.Visibility = coordForced || (isClick && coordCheck.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
+            // 任意点击变体（点击/点击坐标/点击图片）都要按钮 + 按住时间；滚轮/移动不要。
+            bool anyClick = isClick || isClickAt || isClickImage;
+            mouseButtonPanel.Visibility = anyClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
+            mouseMovePanel.Visibility = coordForced ? Visibility.Visible : Visibility.Collapsed;   // 纯点击/点击图片无坐标块
+            clickImagePanel.Visibility = isClickImage ? Visibility.Visible : Visibility.Collapsed;
+            mouseHoldPanel.Visibility = anyClick ? Visibility.Visible : Visibility.Collapsed;
+            mouseWheelPanel.Visibility = isWheel ? Visibility.Visible : Visibility.Collapsed;
+            // 拟人化在会发生移动到目标时有意义：点击坐标/移动/拖动/点击图片（落点偏移已并入坐标块，仅坐标块场景有）。
+            humanizePanel.Visibility = coordForced || isClickImage ? Visibility.Visible : Visibility.Collapsed;
 
-            bool hasRepeat = isClick || a == "滚轮";
+            bool hasRepeat = anyClick || isWheel;
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
-            mouseRepeat.CountLabel.Text = a == "滚轮" ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
+            mouseRepeat.CountLabel.Text = isWheel ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
             // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
             runRepeat.Panel.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
 
@@ -1146,10 +1281,16 @@ public partial class MainWindow
                         m.HoldMs = holdRow.GetMs();
                         m.HoldUnit = holdRow.UnitIndex;
                     }
-                    // 界面上是一个「点击/移动」，存储仍沿用三种既有类型，旧方案照常可读：
-                    //   仅移动          → MouseMove
-                    //   按钮 + 设坐标   → MouseClickAt
-                    //   按钮 + 不设坐标 → MouseClick
+                    // 动作类型 → 存储类型：点击=MouseClick(纯)、点击坐标=MouseClickAt、点击图片=MouseClickImage、
+                    //           移动=MouseMove、拖动=MouseDrag、滚轮=MouseWheel。旧方案照常可读。
+                    void ApplyHoldDefault()
+                    {
+                        if (holdRow.SetAsDefault)
+                        {
+                            var ms = holdRow.GetMs();
+                            if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
+                        }
+                    }
                     if (a == "滚轮")
                     {
                         result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) };
@@ -1170,18 +1311,29 @@ public partial class MainWindow
                         result.DragEndMonitor = devE; result.DragEndNormX = nxE; result.DragEndNormY = nyE;
                         result.LoopCount = 1;
                     }
-                    else if (a == "点击")
+                    else if (a == "点击")   // 纯点击，不涉及坐标
                     {
-                        bool withCoord = coordCheck.IsChecked == true;
-                        result = new MacroStep { Type = withCoord ? "MouseClickAt" : "MouseClick" };
-                        if (withCoord) FillMove(result);
+                        result = new MacroStep { Type = "MouseClick" };
                         FillButton(result);
                         mouseRepeat.Apply(result);
-                        if (holdRow.SetAsDefault)
-                        {
-                            var ms = holdRow.GetMs();
-                            if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
-                        }
+                        ApplyHoldDefault();
+                    }
+                    else if (a == "点击坐标")   // 必须设坐标：先移动再点击
+                    {
+                        result = new MacroStep { Type = "MouseClickAt" };
+                        FillMove(result);
+                        FillButton(result);
+                        mouseRepeat.Apply(result);
+                        ApplyHoldDefault();
+                    }
+                    else if (a == "点击图片")   // 区域内搜图 → 点第 N 个
+                    {
+                        result = new MacroStep { Type = "MouseClickImage" };
+                        clickImage.Apply(result);   // 校验缺图会抛异常，下面统一提示
+                        result.Humanize = humanizeMoveCheck.IsChecked == true;
+                        FillButton(result);
+                        mouseRepeat.Apply(result);
+                        ApplyHoldDefault();
                     }
                     else throw new InvalidOperationException("请选择鼠标动作。");
                 }
@@ -1256,9 +1408,10 @@ public partial class MainWindow
             }
             switch (source.Type)
             {
-                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; coordCheck.IsChecked = true; LoadMoveFields(); break;
-                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; coordCheck.IsChecked = false; LoadButtonFields(); break;
-                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; LoadMoveFields(); break;
+                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; LoadButtonFields(); break;
+                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击坐标"; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseClickImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; LoadButtonFields(); break;
                 case "MouseDrag":
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动";
                     coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields();
@@ -1478,6 +1631,176 @@ public partial class MainWindow
     /// 坐标块：显示器 + 屏内百分比 + 点选/预览。可复用——点击/移动各一个，拖动用两个（起点、终点）。
     /// showCheck=true 时带勾选框（勾选后才展开明细），false 则常驻展开。
     /// </summary>
+    // 「点击图片」编辑块：目标图（截图 / 导入 / 粘贴）+ 限制区域（编辑·预览）+ 相似度 + 匹配第几。
+    private sealed class ClickImagePanel
+    {
+        private readonly MainWindow _o;
+        private readonly Window _win;
+        public byte[]? Png;
+        public string Monitor = "";
+        public int RelX, RelY, W, H;                 // 限制区域屏内相对像素（W/H=0 表示全屏）
+        private readonly System.Windows.Controls.Image _thumb = new() { MaxWidth = 220, MaxHeight = 150, Stretch = System.Windows.Media.Stretch.Uniform };
+        private readonly Border _thumbBorder;
+        private readonly TextBlock _imgStatus, _regionText;
+        private readonly Slider _thr = new() { Minimum = 50, Maximum = 100, Value = 80, Width = 200, TickFrequency = 1, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _thrValue = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        private readonly TextBox _index = new() { Text = "1", Width = 70, Height = 32 };
+        private readonly Button _previewBtn;
+        public readonly Border Panel;
+
+        public double Threshold => Math.Round(_thr.Value) / 100.0;   // 50..100 → 0.5..1.0
+        public int Index => Math.Max(1, ParseInt(_index.Text, 1));
+        public bool HasImage => Png != null && Png.Length > 0;
+
+        public ClickImagePanel(MainWindow o, Window win)
+        {
+            _o = o; _win = win;
+            var inner = new StackPanel();
+
+            // —— 目标图片 ——
+            inner.Children.Add(new TextBlock { Text = "目标图片", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
+            Button MkBtn(string text, string tip) => new() { Content = text, Height = 30, MinWidth = 62, Margin = new Thickness(0, 0, 8, 0), ToolTip = tip };
+            var shotBtn = MkBtn("截图", "框选屏幕截取目标图（并自动把限制区域设为截图位置）");
+            var importBtn = MkBtn("导入", "从本地图片文件导入");
+            var pasteBtn = MkBtn("粘贴", "从剪贴板粘贴图片");
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal };
+            btnRow.Children.Add(shotBtn); btnRow.Children.Add(importBtn); btnRow.Children.Add(pasteBtn);
+            inner.Children.Add(btnRow);
+            _imgStatus = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, Margin = new Thickness(0, 6, 0, 0), Text = "未设置图片" };
+            inner.Children.Add(_imgStatus);
+            _thumbBorder = new Border { BorderBrush = (Brush)o.FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Child = _thumb, Visibility = Visibility.Collapsed };
+            inner.Children.Add(_thumbBorder);
+
+            // —— 限制区域 ——
+            inner.Children.Add(new TextBlock { Text = "限制区域（只在此范围内搜索）", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 16, 0, 6) });
+            _regionText = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap };
+            inner.Children.Add(_regionText);
+            var editBtn = MkBtn("编辑区域", "在屏幕上拖动·缩放调整搜索范围");
+            _previewBtn = MkBtn("预览", "在屏幕上白框回显当前区域");
+            var regionBtns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
+            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn);
+            inner.Children.Add(regionBtns);
+
+            // —— 相似度 ——
+            inner.Children.Add(new TextBlock { Text = "相似度", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 16, 0, 6) });
+            var thrRow = new StackPanel { Orientation = Orientation.Horizontal };
+            thrRow.Children.Add(_thr); thrRow.Children.Add(_thrValue);
+            inner.Children.Add(thrRow);
+            inner.Children.Add(new TextBlock { Text = "越高越严格（50–100）。默认 80。", Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) });
+
+            // —— 匹配第几 ——
+            inner.Children.Add(new TextBlock { Text = "匹配第几个", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 16, 0, 6) });
+            inner.Children.Add(_index);
+            inner.Children.Add(new TextBlock { Text = "区域内命中多个时点击第几个（按从上到下、从左到右排序；1 起）。", Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) });
+
+            Panel = o.SubGroup(null, inner);
+
+            _thr.ValueChanged += (_, _) => _thrValue.Text = ((int)Math.Round(_thr.Value)) + "%";
+            _thrValue.Text = ((int)Math.Round(_thr.Value)) + "%";
+
+            shotBtn.Click += (_, _) =>
+            {
+                var r = o.CaptureTargetImage(win);
+                if (r is { } c)
+                {
+                    var (dev, _, _) = ScreenInfo.FromPoint(c.vx, c.vy);
+                    var mon = ScreenInfo.ByDevice(dev);
+                    Png = c.png; Monitor = dev; RelX = c.vx - mon.Left; RelY = c.vy - mon.Top; W = c.w; H = c.h;   // 截图自动填充限制区域
+                    Refresh();
+                }
+            };
+            importBtn.Click += (_, _) =>
+            {
+                var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp|所有文件|*.*", Title = "导入目标图片" };
+                if (dlg.ShowDialog(win) == true)
+                {
+                    try { using var bmp = new System.Drawing.Bitmap(dlg.FileName); Png = Services.ScreenMatch.ToPng(bmp); Refresh(); }
+                    catch (Exception ex) { ThemedDialog.Show("无法读取该图片：" + ex.Message, "导入失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); }
+                }
+            };
+            pasteBtn.Click += (_, _) =>
+            {
+                var png = ClipboardPng();
+                if (png == null) { ThemedDialog.Show("剪贴板里没有图片。", "粘贴", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+                Png = png; Refresh();
+            };
+            editBtn.Click += (_, _) =>
+            {
+                int? cvx = null, cvy = null, cw = null, ch = null;
+                if (W > 0 && H > 0) { var m = ScreenInfo.ByDevice(Monitor); cvx = m.Left + RelX; cvy = m.Top + RelY; cw = W; ch = H; }
+                var r = o.EditRegion(win, cvx, cvy, cw, ch);
+                if (r is { } g)
+                {
+                    var (dev, _, _) = ScreenInfo.FromPoint(g.vx, g.vy);
+                    var mon = ScreenInfo.ByDevice(dev);
+                    Monitor = dev; RelX = g.vx - mon.Left; RelY = g.vy - mon.Top; W = g.w; H = g.h;
+                    Refresh();
+                }
+            };
+            _previewBtn.Click += (_, _) =>
+            {
+                if (W > 0 && H > 0) { var m = ScreenInfo.ByDevice(Monitor); o.PreviewRegion(m.Left + RelX, m.Top + RelY, W, H, win); }
+            };
+            Refresh();
+        }
+
+        private static byte[]? ClipboardPng()
+        {
+            try
+            {
+                if (!System.Windows.Clipboard.ContainsImage()) return null;
+                var src = System.Windows.Clipboard.GetImage();
+                if (src == null) return null;
+                var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(src));
+                using var ms = new System.IO.MemoryStream();
+                enc.Save(ms);
+                return ms.ToArray();
+            }
+            catch { return null; }
+        }
+
+        private void Refresh()
+        {
+            if (HasImage)
+            {
+                _imgStatus.Text = "已设置图片";
+                try
+                {
+                    var bi = new System.Windows.Media.Imaging.BitmapImage();
+                    using var ms = new System.IO.MemoryStream(Png!);
+                    bi.BeginInit(); bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad; bi.StreamSource = ms; bi.EndInit();
+                    _thumb.Source = bi; _thumbBorder.Visibility = Visibility.Visible;
+                }
+                catch { _thumbBorder.Visibility = Visibility.Collapsed; }
+            }
+            else { _imgStatus.Text = "未设置图片"; _thumbBorder.Visibility = Visibility.Collapsed; }
+
+            bool hasRegion = W > 0 && H > 0;
+            _regionText.Text = hasRegion
+                ? $"屏幕 {ScreenInfo.ByDevice(Monitor).Label}：屏内 ({RelX}, {RelY})  {W}×{H}"
+                : "未限制（搜索整块主屏）";
+            _previewBtn.IsEnabled = hasRegion;
+        }
+
+        public void Load(MacroStep s)
+        {
+            Png = ImageStore.Bytes(s.ClickImage);
+            Monitor = s.ClickImageMonitor; RelX = s.ClickImageRectX; RelY = s.ClickImageRectY; W = s.ClickImageRectW; H = s.ClickImageRectH;
+            _thr.Value = Math.Clamp(Math.Round(s.ClickImageThreshold * 100), 50, 100);
+            _index.Text = Math.Max(1, s.ClickImageIndex).ToString();
+            Refresh();
+        }
+
+        public void Apply(MacroStep s)
+        {
+            if (!HasImage) throw new InvalidOperationException("请先设置「点击图片」的目标图片（截图 / 导入 / 粘贴）。");
+            s.ClickImage = ImageStore.Ref(Png!);
+            s.ClickImageMonitor = Monitor; s.ClickImageRectX = RelX; s.ClickImageRectY = RelY; s.ClickImageRectW = W; s.ClickImageRectH = H;
+            s.ClickImageThreshold = Threshold; s.ClickImageIndex = Index;
+        }
+    }
+
     private sealed class CoordBlock
     {
         private readonly MainWindow _o;

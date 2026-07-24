@@ -44,6 +44,17 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     // 落点偏移（像素半径，0=精确命中）：在目标点周围该半径的圆盘内随机取落点。移动/点击坐标/拖动共用；
     // 与拟人化轨迹天然配套——轨迹拟人了、落点却每次分毫不差反而露馅。每次重复各自重新随机。
     public int ClickOffset { get; set; }
+
+    // 点击图片（MouseClickImage）：在限制区域内搜索模板图，点击匹配到的第 N 个。
+    // ClickImage 存储约定同 RunConditionImage：file:hash 引用 / 旧内联 base64（由 ImageStore 统一处理）。
+    public string ClickImage { get; set; } = "";
+    public string ClickImageMonitor { get; set; } = "";   // 限制区域绑定的屏幕设备名
+    public int ClickImageRectX { get; set; }              // 限制区域：屏内相对像素矩形
+    public int ClickImageRectY { get; set; }
+    public int ClickImageRectW { get; set; }
+    public int ClickImageRectH { get; set; }
+    public double ClickImageThreshold { get; set; } = 0.8;  // 相似度阈值 0.5~1.0
+    public int ClickImageIndex { get; set; } = 1;           // 命中多个时点击第几个（1 起，按从上到下、从左到右）
     // 禁用：true 则执行时整步跳过（组合/嵌套组合同理）。持久化；UI 用勾选框切换（绑 Enabled）。
     private bool _disabled;
     public bool Disabled { get => _disabled; set { if (_disabled != value) { _disabled = value; Raise(nameof(Disabled)); Raise(nameof(Enabled)); } } }
@@ -130,6 +141,9 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
             DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
+            ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
+            ClickImageRectX = ClickImageRectX, ClickImageRectY = ClickImageRectY, ClickImageRectW = ClickImageRectW, ClickImageRectH = ClickImageRectH,
+            ClickImageThreshold = ClickImageThreshold, ClickImageIndex = ClickImageIndex,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
             JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
@@ -178,6 +192,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         "MouseClick" => $"鼠标{ButtonCn(Button)}点击，按住 {FormatMs(HoldMs)}",
         "MouseMove" => MoveDisplay(),
         "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
+        "MouseClickImage" => ClickImageDisplay(),
         "MouseDrag" => DragDisplay(),
         "MouseWheel" => $"滚轮 {Wheel} 格",
         "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
@@ -227,6 +242,21 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             ? $"（{Pct(DragEndNormX, DragEndNormY)}）"
             : $"{Short(DragEndMonitor)}（{Pct(DragEndNormX, DragEndNormY)}）";
         return $"{ButtonCn(Button)}拖动 {from} → {to}" + MoveSuffix();
+    }
+
+    // 点击图片：点击「区域内第 N 个匹配」+ 按钮 + 相似度。
+    private string ClickImageDisplay()
+    {
+        string region;
+        if (ClickImageRectW > 0 && ClickImageRectH > 0)
+        {
+            int i = ClickImageMonitor.LastIndexOf('\\');
+            string mon = string.IsNullOrEmpty(ClickImageMonitor) ? "" : (i >= 0 ? ClickImageMonitor[(i + 1)..] : ClickImageMonitor);
+            region = string.IsNullOrEmpty(mon) ? $"区域 {ClickImageRectW}×{ClickImageRectH}" : $"{mon} 区域 {ClickImageRectW}×{ClickImageRectH}";
+        }
+        else region = "全屏";
+        string nth = ClickImageIndex > 1 ? $"第 {ClickImageIndex} 个" : "";
+        return $"{ButtonCn(Button)}点击图片（{region}内{nth}匹配，相似度 {ClickImageThreshold * 100:0}%）";
     }
 
     private string WindowTargetCn()

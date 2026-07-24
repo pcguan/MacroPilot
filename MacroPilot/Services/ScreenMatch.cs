@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -60,6 +61,79 @@ public static class ScreenMatch
             return MatchRatio(target, shot);
         }
         catch { return -1; }
+    }
+
+    /// <summary>
+    /// 在指定屏幕区域内滑窗搜索模板，返回所有相似度 ≥ threshold 的命中【中心点】（虚拟像素），
+    /// 经非极大值抑制去重、并按从上到下·从左到右排序（供「点击第几个」索引）。
+    /// 早退优化：某位置差异像素超过阈值允许的上限就立刻放弃，非命中位置很便宜。
+    /// </summary>
+    public static List<(int cx, int cy, double score)> FindMatches(
+        Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold, int step = 2)
+    {
+        var result = new List<(int, int, double)>();
+        if (template == null || template.Width <= 0 || template.Height <= 0) return result;
+        int tw = template.Width, th = template.Height;
+        if (regionW < tw || regionH < th) return result;
+
+        Bitmap shot;
+        try { shot = CaptureRegion(regionVx, regionVy, regionW, regionH); }
+        catch { return result; }
+
+        var rt = new Rectangle(0, 0, tw, th);
+        var rs = new Rectangle(0, 0, regionW, regionH);
+        var dt = template.LockBits(rt, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var ds = shot.LockBits(rs, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        int tStride = dt.Stride, sStride = ds.Stride;
+        var tbuf = new byte[tStride * th];
+        var sbuf = new byte[sStride * regionH];
+        Marshal.Copy(dt.Scan0, tbuf, 0, tbuf.Length);
+        Marshal.Copy(ds.Scan0, sbuf, 0, sbuf.Length);
+        template.UnlockBits(dt); shot.UnlockBits(ds); shot.Dispose();
+
+        var raw = new List<(int x, int y, double score)>();
+        long total = (long)tw * th;
+        long allowedMiss = (long)(total * (1.0 - threshold));   // 差异超过它即不可能达标
+        for (int oy = 0; oy + th <= regionH; oy += step)
+        {
+            for (int ox = 0; ox + tw <= regionW; ox += step)
+            {
+                long miss = 0;
+                bool ok = true;
+                for (int y = 0; y < th && ok; y++)
+                {
+                    int trow = y * tStride;
+                    int srow = (oy + y) * sStride + ox * 4;
+                    for (int x = 0; x < tw; x++)
+                    {
+                        int ti = trow + x * 4, si = srow + x * 4;
+                        if (Math.Abs(tbuf[ti] - sbuf[si]) > Tolerance ||
+                            Math.Abs(tbuf[ti + 1] - sbuf[si + 1]) > Tolerance ||
+                            Math.Abs(tbuf[ti + 2] - sbuf[si + 2]) > Tolerance)
+                        {
+                            if (++miss > allowedMiss) { ok = false; break; }
+                        }
+                    }
+                }
+                if (ok) raw.Add((ox, oy, 1.0 - (double)miss / total));
+            }
+        }
+
+        // 非极大值抑制：按分数降序贪心接受，抑制与已接受项中心距离在半个模板内的其它候选（同一目标的邻近位置）。
+        raw.Sort((p, q) => q.score.CompareTo(p.score));
+        var kept = new List<(int x, int y, double score)>();
+        foreach (var c in raw)
+        {
+            bool near = false;
+            foreach (var k in kept)
+                if (Math.Abs(c.x - k.x) < tw / 2 + 1 && Math.Abs(c.y - k.y) < th / 2 + 1) { near = true; break; }
+            if (!near) kept.Add(c);
+        }
+        // 阅读顺序（上→下、左→右）排序，供「第几个」稳定索引。
+        kept.Sort((p, q) => p.y != q.y ? p.y.CompareTo(q.y) : p.x.CompareTo(q.x));
+        foreach (var k in kept)
+            result.Add((regionVx + k.x + tw / 2, regionVy + k.y + th / 2, k.score));
+        return result;
     }
 
     private static double MatchRatio(Bitmap a, Bitmap b)

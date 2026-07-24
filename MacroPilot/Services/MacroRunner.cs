@@ -450,6 +450,8 @@ public sealed class MacroRunner
                 ct.ThrowIfCancellationRequested();
                 _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
                 break;
+            // 点击图片 = 在限制区域内搜模板 → 取第 N 个命中 → 移到其中心 → 点击。找不到/不足 N 个则本步失败（走失败监听、不中断方案）。
+            case "MouseClickImage": ClickImage(step, ct); break;
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
             // 跳转动作：上报给 RunTop，在当前顶层步骤结束后跳到目标序号（在组合内/监听里执行也生效）。
             case "Jump": _pendingJump = step; break;
@@ -476,6 +478,38 @@ public sealed class MacroRunner
         (vx, vy) = ApplyOffset(vx, vy, step.ClickOffset);               // 落点偏移（每次调用各自随机）
         if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
         else _backend.MouseMove(vx, vy);
+    }
+
+    // 点击图片：区域内搜模板 → 第 N 个命中 → 移到中心 → 点击。
+    private void ClickImage(MacroStep step, CancellationToken ct)
+    {
+        var bytes = ImageStore.Bytes(step.ClickImage);
+        if (bytes == null) throw new InvalidOperationException("点击图片：未设置模板图片。");
+
+        // 限制区域：屏内相对像素 → 按该屏当前位置还原绝对区域；未设区域则搜整块绑定屏（默认主屏）。
+        var mon = ScreenInfo.ByDevice(step.ClickImageMonitor);
+        int rx, ry, rw, rh;
+        if (step.ClickImageRectW > 0 && step.ClickImageRectH > 0)
+        { rx = mon.Left + step.ClickImageRectX; ry = mon.Top + step.ClickImageRectY; rw = step.ClickImageRectW; rh = step.ClickImageRectH; }
+        else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
+
+        double thr = Math.Clamp(step.ClickImageThreshold, 0.5, 1.0);
+        System.Collections.Generic.List<(int cx, int cy, double score)> hits;
+        using (var tpl = ScreenMatch.FromPng(bytes))
+            hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr);
+
+        if (hits.Count == 0)
+            throw new InvalidOperationException($"点击图片：区域内未找到匹配（相似度阈值 {thr:0.00}）。");
+        int idx = Math.Max(1, step.ClickImageIndex);
+        if (idx > hits.Count)
+            throw new InvalidOperationException($"点击图片：只找到 {hits.Count} 个匹配，不足第 {idx} 个。");
+
+        var (cx, cy, score) = hits[idx - 1];
+        Log?.Invoke("Info", $"点击图片：命中 {hits.Count} 个，点第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}。");
+        ct.ThrowIfCancellationRequested();
+        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
+        ct.ThrowIfCancellationRequested();
+        _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
     }
 
     // 落点偏移：在目标点周围半径 radius 像素的圆盘内均匀随机取一点（clamp 回目标所在屏），0=精确命中。

@@ -86,10 +86,30 @@ public static class ImageStore
         if (!string.IsNullOrEmpty(img) && IsRef(img)) into.Add(img[Prefix.Length..]);
     }
 
+    // ---- 动作自带的「点击图片」模板（MacroStep.ClickImage）：与运行条件图同套外置/内联/收集逻辑 ----
+    // 一条动作可同时带运行条件图和点击图片图（互不影响），故按步各处理一次。
+    private static void ExternalizeStep(MacroStep s)
+    {
+        ExternalizeCond(s);
+        var img = s.ClickImage;
+        if (!string.IsNullOrEmpty(img) && !IsRef(img)) { try { s.ClickImage = Ref(Convert.FromBase64String(img)); } catch { } }
+    }
+    private static void InlineStep(MacroStep s)
+    {
+        InlineCond(s);
+        if (!string.IsNullOrEmpty(s.ClickImage)) s.ClickImage = ToBase64(s.ClickImage);
+    }
+    private static void CollectStep(MacroStep s, HashSet<string> into)
+    {
+        CollectCond(s, into);
+        var img = s.ClickImage;
+        if (!string.IsNullOrEmpty(img) && IsRef(img)) into.Add(img[Prefix.Length..]);
+    }
+
     /// <summary>就地把内联 base64 图片外置成 "file:&lt;hash&gt;"（保存/导入时调用）。已是引用的跳过。</summary>
     public static void Externalize(IEnumerable<MacroStep> steps)
     {
-        foreach (var top in steps) ForEach(top, s => ExternalizeCond(s));
+        foreach (var top in steps) ForEach(top, ExternalizeStep);
     }
 
     /// <summary>整方案外置：方案级图片条件 + 全部动作（含子动作/监听动作）。</summary>
@@ -103,20 +123,20 @@ public static class ImageStore
     public static void Inline(MacroPlan plan)
     {
         InlineCond(plan);
-        foreach (var top in plan.Steps) ForEach(top, s => InlineCond(s));
+        foreach (var top in plan.Steps) ForEach(top, InlineStep);
     }
 
     /// <summary>收集一个方案（方案级条件 + 全部动作，递归）引用的图片 hash。</summary>
     public static void CollectHashes(MacroPlan plan, HashSet<string> into)
     {
         CollectCond(plan, into);
-        foreach (var top in plan.Steps) ForEach(top, s => CollectCond(s, into));
+        foreach (var top in plan.Steps) ForEach(top, s => CollectStep(s, into));
     }
 
     /// <summary>收集若干动作（递归）引用的图片 hash（动作剪贴板用）。</summary>
     public static void CollectHashes(IEnumerable<MacroStep> steps, HashSet<string> into)
     {
-        foreach (var top in steps) ForEach(top, s => CollectCond(s, into));
+        foreach (var top in steps) ForEach(top, s => CollectStep(s, into));
     }
 
     /// <summary>
