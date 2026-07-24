@@ -543,24 +543,20 @@ public partial class MainWindow
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x66, 0, 0, 0)) };
         var canvas = new Canvas();
-        var box = new System.Windows.Shapes.Rectangle { Stroke = accent, StrokeThickness = 2, Fill = new SolidColorBrush(Color.FromArgb(0x18, 0x8A, 0x78, 0x60)) };
-        var sizeLbl = new TextBlock { Foreground = Brushes.White, FontSize = 12, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3) };
-        // body：透明拖动块（整体移动）。必须给它一个【透明填充】的模板才可命中——Opacity=0 或默认模板不参与命中测试。
-        var body = new System.Windows.Controls.Primitives.Thumb { Cursor = Cursors.SizeAll, Template = TransparentThumbTemplate() };
-        canvas.Children.Add(box); canvas.Children.Add(body); canvas.Children.Add(sizeLbl);
-        // 四角缩放手柄
-        var handles = new System.Windows.Controls.Primitives.Thumb[4];
-        var cursors = new[] { Cursors.SizeNWSE, Cursors.SizeNESW, Cursors.SizeNESW, Cursors.SizeNWSE }; // nw, ne, sw, se
+        var box = new System.Windows.Shapes.Rectangle { Stroke = accent, StrokeThickness = 2, Fill = new SolidColorBrush(Color.FromArgb(0x18, 0x8A, 0x78, 0x60)), IsHitTestVisible = false };
+        var sizeLbl = new TextBlock { Foreground = Brushes.White, FontSize = 12, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3), IsHitTestVisible = false };
+        canvas.Children.Add(box); canvas.Children.Add(sizeLbl);
+        // 四角缩放手柄（纯视觉，命中判定由下方几何算，不依赖控件命中）
+        var handles = new System.Windows.Shapes.Rectangle[4];
         for (int i = 0; i < 4; i++)
         {
-            handles[i] = new System.Windows.Controls.Primitives.Thumb { Width = 12, Height = 12, Cursor = cursors[i], Background = Brushes.White, BorderBrush = accent, BorderThickness = new Thickness(2) };
-            handles[i].Template = HandleTemplate(accent);
+            handles[i] = new System.Windows.Shapes.Rectangle { Width = 12, Height = 12, Fill = Brushes.White, Stroke = accent, StrokeThickness = 2, IsHitTestVisible = false };
             canvas.Children.Add(handles[i]);
         }
         var hint = new TextBlock
         {
-            Text = "拖动方框移动 · 拖四角缩放；回车确定，Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
-            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+            Text = "拖动方框移动 · 拖四角缩放 · 空白处拖拽重画；回车确定，Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6), IsHitTestVisible = false,
         };
         // 确定 / 取消 悬浮条
         var okBtn = new Button { Content = "确定", Width = 76, Height = 32, Margin = new Thickness(0, 0, 8, 0), Style = (Style)FindResource("PrimaryButton") };
@@ -580,10 +576,9 @@ public partial class MainWindow
         void Layout()
         {
             double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
-            rw = Math.Min(rw, cw); rh = Math.Min(rh, chh);
+            rw = Math.Clamp(rw, 0, cw); rh = Math.Clamp(rh, 0, chh);
             rx = Math.Clamp(rx, 0, Math.Max(0, cw - rw)); ry = Math.Clamp(ry, 0, Math.Max(0, chh - rh));
             Canvas.SetLeft(box, rx); Canvas.SetTop(box, ry); box.Width = rw; box.Height = rh;
-            Canvas.SetLeft(body, rx); Canvas.SetTop(body, ry); body.Width = rw; body.Height = rh;
             double[] hx = { rx, rx + rw, rx, rx + rw }, hy = { ry, ry, ry + rh, ry + rh };
             for (int i = 0; i < 4; i++) { Canvas.SetLeft(handles[i], hx[i] - 6); Canvas.SetTop(handles[i], hy[i] - 6); }
             double r = R();
@@ -600,19 +595,46 @@ public partial class MainWindow
             Layout();
             overlay.Activate(); overlay.Focus();
         };
-        const double Min = 16;
-        body.DragDelta += (_, e) => { rx += e.HorizontalChange; ry += e.VerticalChange; Layout(); };
-        void Corner(int i, double dx, double dy)
+
+        // 直接鼠标交互（镜像 CaptureTargetImage 那套可靠做法）：Thumb 在无边框透明置顶窗里命中不稳，
+        // 之前"编辑区域后不生效"就是拖动根本没被 Thumb 接住。改由 overlay 级鼠标事件 + 几何命中判定。
+        string? grab = null; System.Windows.Point down = default; double gx = 0, gy = 0, gw = 0, gh = 0;
+        string HitTest(System.Windows.Point p)
         {
-            double right = rx + rw, bottom = ry + rh, cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
-            bool left = i == 0 || i == 2, top = i == 0 || i == 1;
-            if (left) { double nx = Math.Clamp(rx + dx, 0, right - Min); rw = right - nx; rx = nx; }
-            else { double nr = Math.Clamp(right + dx, rx + Min, cw); rw = nr - rx; }
-            if (top) { double ny = Math.Clamp(ry + dy, 0, bottom - Min); rh = bottom - ny; ry = ny; }
-            else { double nb = Math.Clamp(bottom + dy, ry + Min, chh); rh = nb - ry; }
-            Layout();
+            (double x, double y, string m)[] cs = { (rx, ry, "nw"), (rx + rw, ry, "ne"), (rx, ry + rh, "sw"), (rx + rw, ry + rh, "se") };
+            foreach (var c in cs) if (Math.Abs(p.X - c.x) <= 10 && Math.Abs(p.Y - c.y) <= 10) return c.m;
+            if (p.X >= rx && p.X <= rx + rw && p.Y >= ry && p.Y <= ry + rh) return "move";
+            return "new";
         }
-        for (int i = 0; i < 4; i++) { int idx = i; handles[i].DragDelta += (_, e) => Corner(idx, e.HorizontalChange, e.VerticalChange); }
+        overlay.MouseLeftButtonDown += (_, e) =>
+        {
+            var p = e.GetPosition(snapImg);
+            grab = HitTest(p); down = p; gx = rx; gy = ry; gw = rw; gh = rh;
+            if (grab == "new") { rx = p.X; ry = p.Y; rw = 0; rh = 0; gx = rx; gy = ry; gw = 0; gh = 0; grab = "se"; }   // 空白拖拽=从起点重画
+            overlay.CaptureMouse(); e.Handled = true;
+        };
+        overlay.MouseMove += (_, e) =>
+        {
+            var p = e.GetPosition(snapImg);
+            if (grab == null)
+            {
+                overlay.Cursor = HitTest(p) switch { "nw" or "se" => Cursors.SizeNWSE, "ne" or "sw" => Cursors.SizeNESW, "move" => Cursors.SizeAll, _ => Cursors.Cross };
+                return;
+            }
+            double dx = p.X - down.X, dy = p.Y - down.Y;
+            if (grab == "move") { rx = gx + dx; ry = gy + dy; }
+            else
+            {
+                double L = gx, T = gy, Rr = gx + gw, B = gy + gh;
+                if (grab.Contains('w')) L = gx + dx;
+                if (grab.Contains('e')) Rr = gx + gw + dx;
+                if (grab.Contains('n')) T = gy + dy;
+                if (grab.Contains('s')) B = gy + gh + dy;
+                rx = Math.Min(L, Rr); ry = Math.Min(T, B); rw = Math.Abs(Rr - L); rh = Math.Abs(B - T);
+            }
+            Layout();
+        };
+        overlay.MouseLeftButtonUp += (_, _) => { if (grab != null) { grab = null; overlay.ReleaseMouseCapture(); } };
 
         // 结果在【窗口仍显示时】就地算好并存起来——关窗后 snapImg.ActualWidth 会变 0、R() 失真，
         // 那正是"编辑后回来区域没变/不对"的根因。
@@ -633,30 +655,6 @@ public partial class MainWindow
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
         return outv;
-    }
-
-    // 缩放手柄外观：白底 + 强调色描边的小方块。
-    private static ControlTemplate HandleTemplate(Brush accent)
-    {
-        var t = new ControlTemplate(typeof(System.Windows.Controls.Primitives.Thumb));
-        var f = new FrameworkElementFactory(typeof(System.Windows.Shapes.Rectangle));
-        f.SetValue(System.Windows.Shapes.Shape.FillProperty, Brushes.White);
-        f.SetValue(System.Windows.Shapes.Shape.StrokeProperty, accent);
-        f.SetValue(System.Windows.Shapes.Shape.StrokeThicknessProperty, 2.0);
-        f.SetValue(System.Windows.FrameworkElement.WidthProperty, 12.0);
-        f.SetValue(System.Windows.FrameworkElement.HeightProperty, 12.0);
-        t.VisualTree = f;
-        return t;
-    }
-
-    // body 拖动块模板：透明填充的矩形（`Transparent` 会参与命中测试，`null`/默认模板不会）。
-    private static ControlTemplate TransparentThumbTemplate()
-    {
-        var t = new ControlTemplate(typeof(System.Windows.Controls.Primitives.Thumb));
-        var f = new FrameworkElementFactory(typeof(System.Windows.Shapes.Rectangle));
-        f.SetValue(System.Windows.Shapes.Shape.FillProperty, Brushes.Transparent);
-        t.VisualTree = f;
-        return t;
     }
 
     private FrameworkElement BuildHookRow(string label, Func<MacroStep?> get, Action<MacroStep?> set)
@@ -1701,13 +1699,16 @@ public partial class MainWindow
             DockPanel.SetDock(regionBtns, Dock.Right); regionHeader.Children.Add(regionBtns);
             inner.Children.Add(regionHeader);
 
-            // 四边行：左 [ ] 上 [ ] 右 [ ] 下 [ ]（屏内相对像素）
-            StackPanel EdgeField(string cap, TextBox box)
+            // 四边行：[左][上][右][下]（值=该屏内百分比）。标签作为占位文字放进框内当背景，框空时才显示。
+            FrameworkElement EdgeField(string ph, TextBox box)
             {
-                var s = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
-                s.Children.Add(new TextBlock { Text = cap, VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)o.FindResource("Muted"), Margin = new Thickness(0, 0, 4, 0) });
-                s.Children.Add(box);
-                return s;
+                box.Width = 76;
+                var wm = new TextBlock { Text = ph, Foreground = (Brush)o.FindResource("Muted"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0), IsHitTestVisible = false };
+                void Upd() => wm.Visibility = string.IsNullOrEmpty(box.Text) ? Visibility.Visible : Visibility.Collapsed;
+                box.TextChanged += (_, _) => Upd(); Upd();
+                var g = new Grid { Margin = new Thickness(0, 0, 10, 0) };
+                g.Children.Add(box); g.Children.Add(wm);
+                return g;
             }
             var edgeRow = new StackPanel { Orientation = Orientation.Horizontal };
             edgeRow.Children.Add(EdgeField("左", _left)); edgeRow.Children.Add(EdgeField("上", _top));
@@ -1816,29 +1817,37 @@ public partial class MainWindow
             bool hasRegion = W > 0 && H > 0;
             RegionToEdges();
             _regionHint.Text = hasRegion
-                ? $"屏幕 {ScreenInfo.ByDevice(Monitor).Label}：{W}×{H}（四边为屏内相对像素，可直接改）"
-                : "未限制（搜索整块主屏）。可手动填四边，或用截图 / 编辑区域设定。";
+                ? $"屏幕 {ScreenInfo.ByDevice(Monitor).Label}：{W}×{H}px（四边为该屏内百分比，可直接改）"
+                : "未限制（搜索整块主屏）。可手动填四边百分比，或用截图 / 编辑区域设定。";
             _previewBtn.IsEnabled = hasRegion;
         }
 
-        // 区域 → 四边框（屏内相对像素：左=RelX 上=RelY 右=RelX+W 下=RelY+H）。
+        private ScreenInfo.Monitor RegionMon() => ScreenInfo.ByDevice(string.IsNullOrEmpty(Monitor) ? ScreenInfo.Primary().Device : Monitor);
+        private static string Pct(int v, int total) => (Math.Clamp(v / (double)Math.Max(1, total), 0, 1) * 100).ToString("0.#");
+
+        // 区域 → 四边框（该屏内百分比：左=RelX/W 上=RelY/H 右=(RelX+W)/W 下=(RelY+H)/H）。空区域→清空框（露出占位）。
         private void RegionToEdges()
         {
             _syncing = true;
-            if (W > 0 && H > 0) { _left.Text = RelX.ToString(); _top.Text = RelY.ToString(); _right.Text = (RelX + W).ToString(); _bottom.Text = (RelY + H).ToString(); }
+            if (W > 0 && H > 0)
+            {
+                var m = RegionMon();
+                _left.Text = Pct(RelX, m.Width); _top.Text = Pct(RelY, m.Height);
+                _right.Text = Pct(RelX + W, m.Width); _bottom.Text = Pct(RelY + H, m.Height);
+            }
+            else { _left.Text = _top.Text = _right.Text = _bottom.Text = ""; }
             _syncing = false;
         }
 
-        // 四边框 → 区域（失焦时）：无效（右≤左或下≤上）则不动。手填且未绑屏时默认绑主屏。
+        // 四边框 → 区域（失焦时）：百分比 → 屏内像素；无效（右≤左或下≤上）则不动。手填且未绑屏时默认绑主屏。
         private void EdgesToRegion()
         {
             if (_syncing) return;
-            int l = ParseInt(_left.Text, 0), t = ParseInt(_top.Text, 0), r = ParseInt(_right.Text, 0), b = ParseInt(_bottom.Text, 0);
-            if (r - l >= 4 && b - t >= 4)
-            {
-                if (string.IsNullOrEmpty(Monitor)) Monitor = ScreenInfo.Primary().Device;
-                RelX = Math.Max(0, l); RelY = Math.Max(0, t); W = r - RelX; H = b - RelY;
-            }
+            var m = RegionMon();
+            double l = ParseDouble(_left.Text, 0), t = ParseDouble(_top.Text, 0), r = ParseDouble(_right.Text, 0), b = ParseDouble(_bottom.Text, 0);
+            int lx = (int)Math.Round(Math.Clamp(l, 0, 100) / 100.0 * m.Width), tx = (int)Math.Round(Math.Clamp(t, 0, 100) / 100.0 * m.Height);
+            int rx = (int)Math.Round(Math.Clamp(r, 0, 100) / 100.0 * m.Width), bx = (int)Math.Round(Math.Clamp(b, 0, 100) / 100.0 * m.Height);
+            if (rx - lx >= 4 && bx - tx >= 4) { Monitor = m.Device; RelX = lx; RelY = tx; W = rx - lx; H = bx - tx; }
             Refresh();
         }
 
