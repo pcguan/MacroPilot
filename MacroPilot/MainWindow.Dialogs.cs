@@ -656,7 +656,13 @@ public partial class MainWindow
         }
         okBtn.Click += (_, _) => Confirm();
         cancelBtn.Click += (_, _) => { outv = null; overlay.Close(); };
-        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { outv = null; overlay.Close(); } else if (e.Key == Key.Enter) Confirm(); };
+        // e.Handled=true 必须要：否则 Enter 会继续传到父「编辑动作」对话框触发它的 IsDefault「确定」按钮、
+        // Esc 触发 IsCancel「取消」——把整个编辑动作窗口一起关掉（区域自然也没生效）。同文件其它覆盖层都这么做。
+        overlay.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { e.Handled = true; outv = null; overlay.Close(); }
+            else if (e.Key == Key.Enter) { e.Handled = true; Confirm(); }
+        };
         overlay.ShowDialog();
 
         snapshot.Dispose();
