@@ -586,15 +586,23 @@ public partial class MainWindow
             sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(rw * r)}×{(int)Math.Round(rh * r)}";
             Canvas.SetLeft(sizeLbl, rx); Canvas.SetTop(sizeLbl, Math.Max(0, ry - 24));
         }
-        overlay.Loaded += (_, _) =>
+        // 初始区域必须等 snapImg 真正排好版（ActualWidth>0）再算——窗口是在 SourceInitialized 里用 SetWindowPos
+        // 撑到 vw×vh 的，Loaded 触发时 ActualWidth 常还是 0，那会把初始区域算成近 0（除以 r=vw），
+        // 于是"编辑后区域没变/框里没数据"。改由 snapImg.SizeChanged 在尺寸到位后只初始化一次。
+        bool inited = false;
+        void InitRegion()
         {
-            double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight, r = R();
+            double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
+            if (inited || cw < 1 || chh < 1) return;
+            inited = true;
+            double r = R();
             if (curW is int cW && cW > 0 && curH is int cH && cH > 0)
             { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }
             else { rw = cw * 0.35; rh = chh * 0.35; rx = (cw - rw) / 2; ry = (chh - rh) / 2; }   // 默认居中 35%
             Layout();
-            overlay.Activate(); overlay.Focus();
-        };
+        }
+        snapImg.SizeChanged += (_, _) => InitRegion();
+        overlay.Loaded += (_, _) => { InitRegion(); overlay.Activate(); overlay.Focus(); };
 
         // 直接鼠标交互（镜像 CaptureTargetImage 那套可靠做法）：Thumb 在无边框透明置顶窗里命中不稳，
         // 之前"编辑区域后不生效"就是拖动根本没被 Thumb 接住。改由 overlay 级鼠标事件 + 几何命中判定。
@@ -1675,47 +1683,45 @@ public partial class MainWindow
             // 动作按钮统一：图标 + 悬停中文 tooltip（IconButton 样式），不用文字按钮。
             Button MkIcon(string glyph, string tip) => new() { Style = (Style)o.FindResource("IconButton"), FontSize = 16, Content = glyph, ToolTip = tip, Margin = new Thickness(0, 0, 4, 0) };
 
-            // —— 目标图片 ——
-            inner.Children.Add(new TextBlock { Text = "目标图片", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
+            // —— 图片（截图 / 导入 / 粘贴，对齐自动精灵的图标行）——
+            var imgHeader = new DockPanel { LastChildFill = false };
+            imgHeader.Children.Add(new TextBlock { Text = "图片", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Width = 64 });
             var shotBtn = MkIcon("", "截图：框选屏幕截取目标图（并自动把限制区域设为截图位置）");
             var importBtn = MkIcon("", "导入：从本地图片文件导入");
             var pasteBtn = MkIcon("", "粘贴：从剪贴板粘贴图片");
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal };
-            btnRow.Children.Add(shotBtn); btnRow.Children.Add(importBtn); btnRow.Children.Add(pasteBtn);
-            inner.Children.Add(btnRow);
+            var imgBtns = new StackPanel { Orientation = Orientation.Horizontal };
+            imgBtns.Children.Add(shotBtn); imgBtns.Children.Add(importBtn); imgBtns.Children.Add(pasteBtn);
+            imgHeader.Children.Add(imgBtns);
+            inner.Children.Add(imgHeader);
             _imgStatus = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, Margin = new Thickness(0, 6, 0, 0), Text = "未设置图片" };
             inner.Children.Add(_imgStatus);
             _thumbBorder = new Border { BorderBrush = (Brush)o.FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Child = _thumb, Visibility = Visibility.Collapsed };
             inner.Children.Add(_thumbBorder);
 
-            // —— 限制区域（左/上/右/下四边可手动改；也可截图/编辑覆盖层设定）——
-            var regionHeader = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 16, 0, 6) };
-            var regionTitle = new TextBlock { Text = "限制区域（只在此范围内搜索）", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
-            DockPanel.SetDock(regionTitle, Dock.Left); regionHeader.Children.Add(regionTitle);
+            // —— 限制区域（对齐自动精灵：标签 + 四个 [左 _ %][右 _ %][上 _ %][下 _ %] 单元 + 编辑/预览/清除 图标）——
             var editBtn = MkIcon("", "编辑区域：在屏幕上拖动·缩放调整搜索范围");
             _previewBtn = MkIcon("", "预览：在屏幕上白框回显当前区域");
-            var regionBtns = new StackPanel { Orientation = Orientation.Horizontal };
-            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn);
-            DockPanel.SetDock(regionBtns, Dock.Right); regionHeader.Children.Add(regionBtns);
-            inner.Children.Add(regionHeader);
-
-            // 四边行：[左][上][右][下]（值=该屏内百分比）。标签作为占位文字放进框内当背景，框空时才显示。
-            FrameworkElement EdgeField(string ph, TextBox box)
+            var clearBtn = MkIcon("", "清除限制区域（改为搜索整块主屏）");
+            // 每边＝带边框的一个单元：框内左侧标签(左/右/上/下) + 无边框输入 + 框内右侧 %。
+            FrameworkElement EdgeBox(string cap, TextBox box)
             {
-                box.Width = 76;
-                var wm = new TextBlock { Text = ph, Foreground = (Brush)o.FindResource("Muted"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0), IsHitTestVisible = false };
-                void Upd() => wm.Visibility = string.IsNullOrEmpty(box.Text) ? Visibility.Visible : Visibility.Collapsed;
-                box.TextChanged += (_, _) => Upd(); Upd();
-                var g = new Grid { Margin = new Thickness(0, 0, 10, 0) };
-                g.Children.Add(box); g.Children.Add(wm);
-                return g;
+                box.BorderThickness = new Thickness(0); box.Background = Brushes.Transparent; box.Padding = new Thickness(0);
+                box.Width = 34; box.Height = 26; box.VerticalContentAlignment = VerticalAlignment.Center;
+                var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                sp.Children.Add(new TextBlock { Text = cap, Foreground = (Brush)o.FindResource("Muted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 2, 0) });
+                sp.Children.Add(box);
+                sp.Children.Add(new TextBlock { Text = "%", Foreground = (Brush)o.FindResource("Muted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(1, 0, 8, 0) });
+                return new Border { BorderBrush = (Brush)o.FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, Child = sp };
             }
-            var edgeRow = new StackPanel { Orientation = Orientation.Horizontal };
-            edgeRow.Children.Add(EdgeField("左", _left)); edgeRow.Children.Add(EdgeField("上", _top));
-            edgeRow.Children.Add(EdgeField("右", _right)); edgeRow.Children.Add(EdgeField("下", _bottom));
-            inner.Children.Add(edgeRow);
+            var regionRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
+            regionRow.Children.Add(new TextBlock { Text = "限制区域", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+            regionRow.Children.Add(EdgeBox("左", _left)); regionRow.Children.Add(EdgeBox("右", _right));
+            regionRow.Children.Add(EdgeBox("上", _top)); regionRow.Children.Add(EdgeBox("下", _bottom));
+            regionRow.Children.Add(editBtn); regionRow.Children.Add(_previewBtn); regionRow.Children.Add(clearBtn);
+            inner.Children.Add(regionRow);
             _regionHint = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
             inner.Children.Add(_regionHint);
+            clearBtn.Click += (_, _) => { Monitor = ""; RelX = RelY = W = H = 0; Refresh(); };
 
             // —— 相似度阈值（复用运行条件风格：百分比文本框）——
             var thrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
