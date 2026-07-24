@@ -13,11 +13,11 @@
 
 | 目录 / 文件 | 内容 |
 | --- | --- |
-| `Models/` | `MacroStep`（动作，含子动作与监听动作，递归）、`MacroPlan`、`MacroDocument`、`LogEntry` |
-| `Input/` | `IInputBackend` 抽象；`Ch9329Device`（串口硬件）、`NativeInputDevice`（SendInput）、`Ch9329Scanner`（按 USB VID:PID 过滤后探测串口）、`KeyMap`、`ScreenInfo`（多屏拓扑） |
-| `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`ScreenMatch` 图片条件匹配、`ImageStore` 图片外置、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`WindowActivator`、`PreciseTimer` |
-| `App.xaml(.cs)` | 单实例 + 按需提权 + 显式建窗口（不依赖 `StartupUri`） |
-| `MainWindow.xaml(.cs)` | 主界面；`MainWindow.Dialogs.cs` 放各类编辑对话框 |
+| `Models/` | `MacroStep`（动作，含子动作与监听动作，递归；点击/移动/拖动/滚轮/键盘/等待/激活窗口/跳转/组合）、`MacroPlan`、`MacroDocument`、`IRunCondition`（方案级与动作级运行条件的公共契约）、`LogEntry` |
+| `Input/` | `IInputBackend` 抽象（含 `MouseDown/MouseUp` 供拖动）；`Ch9329Device`（串口硬件）、`NativeInputDevice`（SendInput）、`Ch9329Scanner`（按 USB VID:PID 过滤后探测串口）、`KeyMap`、`ScreenInfo`（多屏拓扑） |
+| `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片条件匹配、`ImageStore` 图片外置+孤儿清理、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
+| `App.xaml(.cs)` | 单实例（唤起已有窗口后静默退出，**不弹模态**）+ 按需提权 + 显式建窗口 + 全局统一 ToolTip 延迟 |
+| `MainWindow.xaml(.cs)` | 主界面；partial 拆分：`.Dialogs`（编辑对话框，内含 `CoordBlock`/`RepeatBlock`/`TimeInputRow` 可复用块）、`.RunCondition`（运行条件编辑器 + 方案设置对话框）、`.Hud`（运行悬浮窗）、`.Tray`（系统托盘）、`.Schedule`（定时启动）、`.Update`（更新进度窗） |
 
 ## 几个容易踩的设计点
 
@@ -51,6 +51,32 @@
 
 **热键**
 - F9 / F10 / F11 **仅方案执行期间**注册（`RegisterHotKey` + 低级键盘钩子兜底全屏游戏），结束即注销，平时把按键还给系统。
+
+**暂停 / 等待（`MacroRunner.Wait`）**
+- 暂停期间必须 `sw.Stop()`、恢复时 `sw.Start()`——否则秒表照走，恢复后剩余时间算成负、等待被"跳过"。
+
+**次数 / 间隔（`RepeatBlock`）**
+- 点击/滚动/按键/执行次数 + 重复间隔是同一套 `RepeatBlock`；存 `LoopCount`/`LoopDelayMs`/`LoopDelayUnit`。间隔仅在次数 != 1 时显示与生效；重复时必填校验。
+
+**坐标（`CoordBlock`）**
+- 显示器 + 屏内百分比（`MoveMonitor`/`MoveNormX/Y`，换分辨率仍可用）+ 点选/预览。点击/移动一个，拖动两个（起点复用 Move* 字段，终点用 `DragEnd*`）。默认选主屏；单屏时不自动弹屏幕编号。
+
+**运行悬浮窗（`RunHud`）**
+- **不设 `Window.Owner`**（否则主窗口最小化会连带隐藏 HUD），只存引用取主题画刷；`WS_EX_NOACTIVATE|TOOLWINDOW` 不抢焦点；700ms 定时重申 `HWND_TOPMOST` 防被压下。开启 HUD 时运行会把本体最小化。
+
+**系统托盘（`.Tray`）** — `Shell_NotifyIcon` P/Invoke + 常驻 HwndSource 钩子；菜单用 WPF `ContextMenu`（弹前 `SetForegroundWindow` 才能正常关闭）。
+
+**定时启动（`.Schedule`）** — **全局单一**（`MacroDocument.ScheduledPlan` + `ScheduleMode` Daily/Once）；0.5s 轮询精确到秒，Daily 命中秒当天一次、Once 触发/错过后自清；到点撞运行按 `ScheduleConflict` 忽略或停当前改跑（`_pendingScheduled` + `OnRunFinished` 拉起）。重命名跟随、删除清除。
+
+**图片外置 / 孤儿清理（`ImageStore`）**
+- 存储（plans.json）用 `file:<sha256>` 引用 + `images\<hash>.png` 外置；导出用 `Inline` 内联成 base64 自包含，导入用 `Externalize` 落地转引用（**方案级与动作级条件都要处理**）。保存成功后 `Sweep` 删掉不再被任何方案/剪贴板引用的孤儿图（运行期跳过）。
+
+**单实例 / 窗口拾取（易踩）**
+- 单实例撞锁**不能弹模态框**——更新助手会重启本体，模态框会常驻占住安装目录、任务管理器也杀不掉；改为唤起已有窗口后静默退出。
+- 窗口拾取器选中项 `Pick` 里**别同步调用会 `SetForegroundWindow` 的操作**（会泵消息、重入导致选错窗口）；FlashPick 延后到 `Dispatcher.BeginInvoke`，选中项取 `e.AddedItems`。
+
+**生成给 Windows 跑的 PowerShell**
+- 无 BOM 写出的 `.ps1` 会被 Windows PowerShell 按 ANSI/GBK 读，中文（含注释）会破坏解析。要么脚本体**纯 ASCII**，要么**带 UTF-8 BOM** 写出（见 `UpdateService.ApplyZipUpdateAndExit` 与 `shot-pcguan.sh`）。
 
 ## 构建
 
