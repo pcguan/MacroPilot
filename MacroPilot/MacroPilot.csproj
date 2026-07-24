@@ -9,7 +9,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.2.4</Version>
+    <Version>0.2.5</Version>
     <AssemblyTitle>MacroPilot</AssemblyTitle>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>

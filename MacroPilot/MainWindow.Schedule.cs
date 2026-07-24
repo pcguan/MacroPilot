@@ -184,7 +184,6 @@ public partial class MainWindow
         {
             dailyWrap.Visibility = rbDaily.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
             onceWrap.Visibility = rbOnce.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-            planCombo.IsEnabled = rbOff.IsChecked != true;
         }
         rbOff.Checked += (_, _) => Refresh(); rbDaily.Checked += (_, _) => Refresh(); rbOnce.Checked += (_, _) => Refresh();
         (_doc.ScheduleMode switch { "Daily" => rbDaily, "Once" => rbOnce, _ => rbOff }).IsChecked = true;
