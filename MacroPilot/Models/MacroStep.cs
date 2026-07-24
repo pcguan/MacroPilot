@@ -41,6 +41,9 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public double DragEndNormY { get; set; }
     // 拟人化移动（动作级）：true 则该"鼠标移动"走缓入缓出的弧线轨迹分多步逼近，而非瞬间跳到目标。
     public bool Humanize { get; set; }
+    // 落点偏移（像素半径，0=精确命中）：在目标点周围该半径的圆盘内随机取落点。移动/点击坐标/拖动共用；
+    // 与拟人化轨迹天然配套——轨迹拟人了、落点却每次分毫不差反而露馅。每次重复各自重新随机。
+    public int ClickOffset { get; set; }
     // 禁用：true 则执行时整步跳过（组合/嵌套组合同理）。持久化；UI 用勾选框切换（绑 Enabled）。
     private bool _disabled;
     public bool Disabled { get => _disabled; set { if (_disabled != value) { _disabled = value; Raise(nameof(Disabled)); Raise(nameof(Enabled)); } } }
@@ -125,7 +128,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         {
             Type = Type, Button = Button, Key = Key, Modifier = Modifier,
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
-            MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, Disabled = Disabled,
+            MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
             DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
@@ -191,10 +194,19 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         return $"{ms} 毫秒";
     }
 
+    // 拟人 / 落点偏移后缀（移动·点击坐标·拖动共用）。
+    private string MoveSuffix()
+    {
+        var p = new System.Collections.Generic.List<string>();
+        if (Humanize) p.Add("拟人");
+        if (ClickOffset > 0) p.Add($"偏移±{ClickOffset}px");
+        return p.Count == 0 ? "" : " · " + string.Join(" · ", p);
+    }
+
     // verb：移动类动作说"移动到"，点击坐标说"点击"。
     private string MoveDisplay(string verb = "移动")
     {
-        string suffix = Humanize ? " · 拟人" : "";
+        string suffix = MoveSuffix();
         if (string.IsNullOrEmpty(MoveMonitor)) return $"鼠标{verb}到 ({X}, {Y}){suffix}"; // 旧数据
         int i = MoveMonitor.LastIndexOf('\\');
         string mon = i >= 0 ? MoveMonitor[(i + 1)..] : MoveMonitor;
@@ -214,7 +226,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         string to = string.IsNullOrEmpty(DragEndMonitor) || DragEndMonitor == MoveMonitor
             ? $"（{Pct(DragEndNormX, DragEndNormY)}）"
             : $"{Short(DragEndMonitor)}（{Pct(DragEndNormX, DragEndNormY)}）";
-        return $"{ButtonCn(Button)}拖动 {from} → {to}" + (Humanize ? " · 拟人" : "");
+        return $"{ButtonCn(Button)}拖动 {from} → {to}" + MoveSuffix();
     }
 
     private string WindowTargetCn()

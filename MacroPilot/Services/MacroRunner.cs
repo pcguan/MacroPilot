@@ -437,6 +437,7 @@ public sealed class MacroRunner
                 {
                     Wait(60, ct);
                     var (ex, ey) = ScreenInfo.Resolve(step.DragEndMonitor, step.DragEndNormX, step.DragEndNormY);
+                    (ex, ey) = ApplyOffset(ex, ey, step.ClickOffset);   // 终点同样带偏移（起点在 MoveToStepTarget 里已偏）
                     if (step.Humanize) MoveHumanized(ex, ey, ct);
                     else _backend.MouseMove(ex, ey);
                     Wait(60, ct);
@@ -472,8 +473,22 @@ public sealed class MacroRunner
         var (vx, vy) = string.IsNullOrEmpty(step.MoveMonitor)
             ? (step.X, step.Y)                                            // 旧数据：主屏像素
             : ScreenInfo.Resolve(step.MoveMonitor, step.MoveNormX, step.MoveNormY);
+        (vx, vy) = ApplyOffset(vx, vy, step.ClickOffset);               // 落点偏移（每次调用各自随机）
         if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
         else _backend.MouseMove(vx, vy);
+    }
+
+    // 落点偏移：在目标点周围半径 radius 像素的圆盘内均匀随机取一点（clamp 回目标所在屏），0=精确命中。
+    // 与拟人化轨迹配套：轨迹拟人了、落点却每次分毫不差反而露馅。
+    private (int x, int y) ApplyOffset(int x, int y, int radius)
+    {
+        if (radius <= 0) return (x, y);
+        double ang = _rng.NextDouble() * Math.PI * 2;
+        double r = radius * Math.Sqrt(_rng.NextDouble());               // sqrt：使落点在圆盘内面积均匀（否则堆在圆心）
+        int nx = (int)Math.Round(x + Math.Cos(ang) * r);
+        int ny = (int)Math.Round(y + Math.Sin(ang) * r);
+        var m = ScreenInfo.ByDevice(ScreenInfo.FromPoint(x, y).device); // 落点所在屏，clamp 防偏出屏
+        return (Math.Clamp(nx, m.Left, m.Right - 1), Math.Clamp(ny, m.Top, m.Bottom - 1));
     }
 
     // 拟人化移动。同屏：直接 HumanizeWithin。跨屏按后端能力分流：

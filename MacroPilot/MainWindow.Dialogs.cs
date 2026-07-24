@@ -831,6 +831,18 @@ public partial class MainWindow
         };
         var humanizePanel = SubGroup(null, humanizeMoveCheck, humanizeNote);
 
+        // 落点偏移（动作级）：在目标点周围 ±N 像素随机落点；只在会发生移动/点击到坐标时有意义。
+        var offsetText = new TextBox { Text = "0", Width = 90, Height = 32 };
+        var offsetRow = new StackPanel { Orientation = Orientation.Horizontal };
+        offsetRow.Children.Add(offsetText);
+        offsetRow.Children.Add(new TextBlock { Text = "像素", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
+        var offsetNote = new TextBlock
+        {
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+            Text = "在目标点周围该半径的圆内随机落点，配合拟人化移动更像真人；0 = 每次精确命中同一像素。多次点击时每次各自随机。",
+        };
+        var offsetPanel = SubGroup("落点偏移（半径）", offsetRow, offsetNote);
+
         var mouseWheelPanel = new StackPanel { Visibility = Visibility.Collapsed };
         mouseWheelPanel.Children.Add(FieldLabel("滚轮格数（正 = 向上，负 = 向下）"));
         var wheelText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 6), Height = 32 };
@@ -987,6 +999,7 @@ public partial class MainWindow
         mousePanel.Children.Add(mouseHoldPanel);
         mousePanel.Children.Add(mouseRepeat.Panel);
         mousePanel.Children.Add(mouseWheelPanel);
+        mousePanel.Children.Add(offsetPanel);
         mousePanel.Children.Add(humanizePanel);
 
         // 跳转面板（运行 → 跳转）：原先挂在每个动作上的「执行后跳转到」已剥离成这个独立动作。
@@ -1083,8 +1096,10 @@ public partial class MainWindow
             // 按住时间只对点击有意义；拖动的"按住"贯穿整个移动过程，无需时长。
             mouseHoldPanel.Visibility = isClick ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = a == "滚轮" ? Visibility.Visible : Visibility.Collapsed;
-            // 拟人化只在会发生移动时才有意义。
-            humanizePanel.Visibility = coordForced || (isClick && coordCheck.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
+            // 拟人化 / 落点偏移只在会发生移动到坐标时才有意义。
+            bool coordActive = coordForced || (isClick && coordCheck.IsChecked == true);
+            humanizePanel.Visibility = coordActive ? Visibility.Visible : Visibility.Collapsed;
+            offsetPanel.Visibility = coordActive ? Visibility.Visible : Visibility.Collapsed;
 
             bool hasRepeat = isClick || a == "滚轮";
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
@@ -1138,6 +1153,7 @@ public partial class MainWindow
                         var (dev0, nx0, ny0) = coord.Read();
                         m.MoveMonitor = dev0; m.MoveNormX = nx0; m.MoveNormY = ny0;
                         m.Humanize = humanizeMoveCheck.IsChecked == true;
+                        m.ClickOffset = Math.Max(0, ParseInt(offsetText.Text, 0));
                     }
                     void FillButton(MacroStep m)
                     {
@@ -1245,6 +1261,7 @@ public partial class MainWindow
                     coord.Write(pm.Device, source.X / (double)pm.Width, source.Y / (double)pm.Height);
                 }
                 humanizeMoveCheck.IsChecked = source.Humanize;
+                offsetText.Text = source.ClickOffset.ToString();
             }
             // 回填按钮/按住（点击 / 点击坐标共用）
             void LoadButtonFields()
