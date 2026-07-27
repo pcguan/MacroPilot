@@ -41,6 +41,13 @@ public partial class MainWindow
         else if (_runner is { IsRunning: true }) ShowHud(_runDisplayName);
     }
 
+    private void MinimizeOnRun_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _doc.MinimizeOnRun = MinimizeOnRunCheck.IsChecked == true;
+        PersistSettings();
+    }
+
     private void HudOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;

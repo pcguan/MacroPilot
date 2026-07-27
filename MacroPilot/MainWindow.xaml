@@ -266,7 +266,15 @@
                   <CheckBox Name="ShowHudCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
                             Checked="ShowHud_Changed" Unchecked="ShowHud_Changed" />
                 </DockPanel>
-                <TextBlock Style="{StaticResource SettingDesc}" Text="方案运行时在屏幕上显示一个置顶浮条：当前动作、进度、循环与热键提示，并可就地暂停 / 停止。开启后，运行时会把本体窗口最小化，靠浮条随时看到状态（鼠标悬停浮条会临时变清晰）。" />
+                <TextBlock Style="{StaticResource SettingDesc}" Text="方案运行时在屏幕上显示一个置顶浮条：当前动作、进度、循环与热键提示，并可就地暂停 / 停止（鼠标悬停浮条会临时变清晰）。" />
+                <Border Style="{StaticResource SubSetting}">
+                  <DockPanel LastChildFill="False">
+                    <TextBlock DockPanel.Dock="Left" Text="运行时最小化本体窗口" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                    <CheckBox Name="MinimizeOnRunCheck" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}"
+                              Checked="MinimizeOnRun_Changed" Unchecked="MinimizeOnRun_Changed" />
+                  </DockPanel>
+                </Border>
+                <TextBlock Style="{StaticResource SettingDesc}" Text="关闭后运行时主窗口留在原处，可以直接看运行页的实时高亮与日志（与「最小化到托盘」是两回事：那个只管你手动点最小化时收去哪里）。" />
                 <Border Style="{StaticResource SubSetting}">
                   <DockPanel LastChildFill="True">
                     <TextBlock DockPanel.Dock="Left" Text="不透明度" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,0,10,0" />

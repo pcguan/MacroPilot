@@ -224,6 +224,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         AutoUpdateCheck.IsChecked = _doc.AutoUpdate;
         ActivateOnFinishCheck.IsChecked = _doc.ActivateOnFinish;
         ShowHudCheck.IsChecked = _doc.ShowRunHud;
+        MinimizeOnRunCheck.IsChecked = _doc.MinimizeOnRun;
         HudOpacitySlider.Value = Math.Clamp((int)Math.Round(_doc.HudOpacity * 100), 10, 100);
         HudOpacityValue.Text = $"{(int)Math.Round(_doc.HudOpacity * 100)}%";
         TrayCheck.IsChecked = _doc.MinimizeToTray;
@@ -1034,7 +1035,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         PauseButton.IsEnabled = true; ResumeButton.IsEnabled = false; StopButton.IsEnabled = true;
         SetRunStatus("Running", $"运行中 · {displayName}");
         ShowHud(displayName);   // 运行悬浮窗（配置开则显示）
-        if (_doc.ShowRunHud) { _minimizedForRun = true; WindowState = WindowState.Minimized; }   // 有悬浮窗就把本体最小化收起
+        // 最小化由独立开关决定（不再"开了悬浮窗就一定最小化"）；没有悬浮窗时最小化会看不到任何状态，故要求两者都开。
+        if (_doc.MinimizeOnRun && _doc.ShowRunHud) { _minimizedForRun = true; WindowState = WindowState.Minimized; }
         else SendWindowToBottom();   // 无悬浮窗：下沉到最底层、不抢焦点，方便切到目标程序窗口
         StartRunUiTimer();
         EnableHotkeys();        // 仅在方案执行期间独占 F9/F10/F11 + 挂低级键盘钩子；OnRunFinished 里注销
@@ -1074,6 +1076,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private readonly record struct LogMsg(LogOp Op, string Time, string A, string B, string C); // Row:A=level,B=msg；Begin:B=body；End:A=status,B=kind
     private readonly System.Collections.Concurrent.ConcurrentQueue<LogMsg> _logQueue = new();
     private readonly System.Collections.Concurrent.ConcurrentQueue<(MacroStep step, bool on)> _stepQueue = new();
+    private MacroStep? _highlighted;   // 运行页当前高亮的顶层动作（保持到下一个动作开始，运行结束时清）
     // 运行页扁平列表只有顶层行；把每个运行克隆（含嵌套子动作、监听动作）映射到它的【顶层祖先行】，供自动滚动定位。
     // （组合子动作不在列表里、且 DisplayIndex=0 → 执行子动作时滚到所属组合行，否则整段组合期间列表不滚、当前行漂出视口。）
     private readonly Dictionary<MacroStep, MacroStep> _runTopAncestor = new();
@@ -1191,15 +1194,24 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         // 当前动作高亮 + 自动滚动：滚动目标映射到顶层祖先行（组合子动作/监听动作不在扁平列表里），
         // 这样执行组合内部时也会滚到并保持该组合行可见（诊断日志证实：不映射时子动作 inList=False → 整段不滚）。
-        MacroStep? scrollTo = null;
-        while (_stepQueue.TryDequeue(out var s)) { s.step.IsExecuting = s.on; if (s.on) scrollTo = s.step; }
-        if (scrollTo != null)
+        // 高亮取本轮最后一个"开始执行"的动作，并【保持】到下一个动作开始——
+        // 否则点击/按键这类瞬时动作的 开始→结束 会落在同一个刷新周期里互相抵消，界面上根本看不到高亮。
+        MacroStep? latestOn = null;
+        while (_stepQueue.TryDequeue(out var s)) if (s.on) latestOn = s.step;
+        if (latestOn != null)
         {
-            var top = _runTopAncestor.TryGetValue(scrollTo, out var t) ? t : scrollTo;
-            if (RunStepsList.Items.Contains(top))
+            // 映射到顶层祖先：组合子动作/监听动作不在扁平列表里，高亮与滚动都应落在其所属的顶层行上。
+            var top = _runTopAncestor.TryGetValue(latestOn, out var t) ? t : latestOn;
+            if (!ReferenceEquals(top, _highlighted))
             {
-                RunStepsList.ScrollIntoView(top);
-                (RunStepsList.ItemContainerGenerator.ContainerFromItem(top) as FrameworkElement)?.BringIntoView();
+                if (_highlighted != null) _highlighted.IsExecuting = false;
+                top.IsExecuting = true;
+                _highlighted = top;
+                if (RunStepsList.Items.Contains(top))
+                {
+                    RunStepsList.ScrollIntoView(top);
+                    (RunStepsList.ItemContainerGenerator.ContainerFromItem(top) as FrameworkElement)?.BringIntoView();
+                }
             }
         }
         // 进度 / 状态栏
@@ -1236,6 +1248,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         HideHud();              // 收起运行悬浮窗
         DisableHotkeys();       // 运行结束（完成/停止/出错）即释放 F9/F10/F11 与键盘钩子
         _uiFlush?.Stop();
+        if (_highlighted != null) { _highlighted.IsExecuting = false; _highlighted = null; }   // 收掉最后停留的高亮
         PauseButton.IsEnabled = ResumeButton.IsEnabled = StopButton.IsEnabled = false;
         _progActive = false;
         _planLoopText = ""; RunPlanLoopText.Text = "";
