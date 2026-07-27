@@ -507,6 +507,13 @@ public sealed class MacroRunner
     {
         var text = step.Text ?? "";
         if (text.Length == 0) throw new InvalidOperationException("文本输入：内容为空。");
+        if (step.TextRandom)   // 正则随机：每次执行都重新生成，循环 N 次即得 N 个不同结果
+        {
+            try { text = RandomText.Generate(text); }
+            catch (Exception ex) { throw new InvalidOperationException($"文本输入：随机模式不合法（{ex.Message}）。"); }
+            if (text.Length == 0) throw new InvalidOperationException("文本输入：按该模式生成的内容为空。");
+            Log?.Invoke("Info", $"文本输入：随机生成「{text}」。");
+        }
 
         bool canInject = _backend.SupportsUnicodeText;
         string mode = step.TextMode switch

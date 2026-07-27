@@ -51,6 +51,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public string Text { get; set; } = "";
     public string TextMode { get; set; } = "";
     public int TextCharDelayMs { get; set; }   // 逐字符间隔（仅 Unicode 注入有意义），0=不等待
+    // 正则随机：true 则把 Text 当作【生成模式】，每次执行按它随机生成一串（如 [0-9a-z]{10}）。
+    public bool TextRandom { get; set; }
 
     // 点击图片（MouseClickImage）：在限制区域内搜索模板图，点击匹配到的第 N 个。
     // ClickImage 存储约定同 RunConditionImage：file:hash 引用 / 旧内联 base64（由 ImageStore 统一处理）。
@@ -148,7 +150,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
             DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
-            Text = Text, TextMode = TextMode, TextCharDelayMs = TextCharDelayMs,
+            Text = Text, TextMode = TextMode, TextCharDelayMs = TextCharDelayMs, TextRandom = TextRandom,
             ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
             ClickImageRectX = ClickImageRectX, ClickImageRectY = ClickImageRectY, ClickImageRectW = ClickImageRectW, ClickImageRectH = ClickImageRectH,
             ClickImageThreshold = ClickImageThreshold, ClickImageIndex = ClickImageIndex,
@@ -259,7 +261,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         string t = (Text ?? "").Replace("\r", "").Replace("\n", "⏎");
         if (t.Length > 24) t = t[..24] + "…";
         string mode = TextMode switch { "Unicode" => "注入", "Clipboard" => "剪贴板", _ => "自动" };
-        return string.IsNullOrEmpty(t) ? $"输入文本（未设置内容）" : $"输入文本「{t}」（{mode}）";
+        if (TextRandom) return string.IsNullOrEmpty(t) ? "输入随机文本（未设置模式）" : $"输入随机文本「{t}」（{mode}）";
+        return string.IsNullOrEmpty(t) ? "输入文本（未设置内容）" : $"输入文本「{t}」（{mode}）";
     }
 
     // 点击图片：点击「区域内第 N 个匹配」+ 按钮 + 相似度。

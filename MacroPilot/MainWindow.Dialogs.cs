@@ -1130,8 +1130,48 @@ public partial class MainWindow
             AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90, MaxHeight = 180,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top, Padding = new Thickness(6, 4, 6, 4),
         };
-        textPanel.Children.Add(SubGroup("文本内容", textBox,
-            new TextBlock { Text = "支持中文、换行等任意字符。执行时会输入到【当前焦点窗口】，通常需要先用「运行 → 激活窗口」把目标窗口切到前台。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) }));
+        var textHintNormal = new TextBlock { Text = "支持中文、换行等任意字符。执行时会输入到【当前焦点窗口】，通常需要先用「运行 → 激活窗口」把目标窗口切到前台。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
+        // 正则随机：把上面的内容当【生成模式】，每次执行随机生成一串（不是用来匹配的）。
+        var randomCheck = new CheckBox { Content = "正则随机生成", VerticalAlignment = VerticalAlignment.Center };
+        var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "\uE890", ToolTip = "预览：按当前模式随机生成一个示例" };
+        var randomRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 10, 0, 0) };
+        DockPanel.SetDock(randomCheck, Dock.Left); randomRow.Children.Add(randomCheck);
+        DockPanel.SetDock(previewBtn, Dock.Right); randomRow.Children.Add(previewBtn);
+        var randomHint = new TextBlock
+        {
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+            Text = "把上面的内容当作正则【生成模式】，每次执行随机生成一串（重复多次即每次不同）。\n" +
+                   "例：[0-9a-z]{10} → 10 位随机小写字母数字；\\d{6} → 6 位数字；1[3-9]\\d{9} → 手机号；(abc|xyz)-\\w{4} → 二选一加 4 位。\n" +
+                   "支持 [字符类] \\d \\w \\s (分组) | 交替 {n} {n,m} ? * + 与转义；不支持断言/反向引用。",
+        };
+        var previewText = new TextBlock { FontFamily = new FontFamily("Consolas, Cascadia Mono, Microsoft YaHei UI"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
+        previewBtn.Click += (_, _) =>
+        {
+            previewText.Visibility = Visibility.Visible;
+            try
+            {
+                var sample = Services.RandomText.Generate(textBox.Text ?? "");
+                previewText.Foreground = (Brush)FindResource("Ink");
+                previewText.Text = "示例：" + (sample.Length == 0 ? "（生成为空）" : sample);
+            }
+            catch (Exception ex)
+            {
+                previewText.Foreground = (Brush)FindResource("Danger");
+                previewText.Text = "模式不合法：" + ex.Message;
+            }
+        };
+        void RefreshRandom()
+        {
+            bool on = randomCheck.IsChecked == true;
+            randomHint.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            previewBtn.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (!on) previewText.Visibility = Visibility.Collapsed;
+            textHintNormal.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        }
+        randomCheck.Checked += (_, _) => RefreshRandom();
+        randomCheck.Unchecked += (_, _) => RefreshRandom();
+        RefreshRandom();
+        textPanel.Children.Add(SubGroup("文本内容", textBox, textHintNormal, randomRow, randomHint, previewText));
 
         var textModeCombo = new ComboBox { Height = 32 };
         var itAuto = new ComboBoxItem { Content = "自动（推荐）", Tag = "" };
@@ -1540,7 +1580,13 @@ public partial class MainWindow
                         Text = txt,
                         TextMode = (textModeCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                         TextCharDelayMs = Math.Max(0, ParseInt(charDelayText.Text, 0)),
+                        TextRandom = randomCheck.IsChecked == true,
                     };
+                    if (result.TextRandom)   // 存之前先校验模式，别让非法模式留到运行时才炸
+                    {
+                        try { Services.RandomText.Generate(txt); }
+                        catch (Exception ex) { throw new InvalidOperationException("随机模式不合法：" + ex.Message); }
+                    }
                     textRepeat.Apply(result);
                 }
                 else if (dev == "键盘")
@@ -1628,6 +1674,7 @@ public partial class MainWindow
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; keyActionCombo.SelectedItem = "文本";
                     textBox.Text = source.Text;
                     charDelayText.Text = Math.Max(0, source.TextCharDelayMs).ToString();
+                    randomCheck.IsChecked = source.TextRandom;
                     if (!hwBackend)   // 硬件后端已锁定剪贴板，不用回填模式
                         foreach (var it in textModeCombo.Items)
                             if (it is ComboBoxItem c && (c.Tag as string ?? "") == (source.TextMode ?? "")) { textModeCombo.SelectedItem = it; break; }
