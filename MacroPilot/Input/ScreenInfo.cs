@@ -85,6 +85,9 @@ public static class ScreenInfo
 
     public static (int vx, int vy) CursorPos() => GetCursorPos(out var p) ? (p.X, p.Y) : (0, 0);
 
+    /// <summary>把光标移到虚拟像素点（点选覆盖层的方向键微调用；不是宏执行路径）。</summary>
+    public static void MoveCursor(int vx, int vy) => SetCursorPos(vx, vy);
+
     private static double Clamp01(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);
 
     // ---- P/Invoke ----
@@ -105,5 +108,6 @@ public static class ScreenInfo
     [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr rect, MonitorEnumProc cb, IntPtr data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfo(IntPtr hMon, ref MONITORINFOEX mi);
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
 }

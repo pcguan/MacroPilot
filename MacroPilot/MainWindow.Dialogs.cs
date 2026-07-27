@@ -128,21 +128,17 @@ public partial class MainWindow
     // 在指定显示器上盖一个透明全屏覆盖层，用户点击选位（带十字准星 + 实时坐标）。
     // 返回 (设备名, nx, ny)；Esc/无选择返回 null。用物理像素精确覆盖，避开 DPI 换算。
     // 跨屏点选：【每块屏一个独立覆盖窗】（复用标识屏幕的多窗模式），任意屏直接点，返回 设备名+屏内百分比。
-    // 两条关键性能约束（都踩过）：
-    //  ① 别用一个铺满虚拟桌面的大窗——按整窗面积合成，几千像素宽时十字线跟不上鼠标；
-    //  ② 别用 AllowsTransparency=true——WPF 分层窗走【软件渲染】(UpdateLayeredWindow 整面 CPU 拷贝，
-    //     单屏 2560×1440 每帧十几 MB)，即使每屏一窗，每帧挪十字线仍会有"凝滞感"。
-    //     故改为【冻结截图作背景的不透明窗】：走 GPU 硬件加速，每帧只是几个 transform，丝滑。
-    //     冻屏与截图框选/编辑区域的交互一致（点选的是位置，背景静止不影响）。
+    // 为什么不用一个铺满虚拟桌面的大窗：AllowsTransparency 的分层窗按整窗面积合成，几千像素宽的大窗
+    // 每次挪十字线都要重合成超大表面——十字线肉眼可见地跟不上鼠标。拆成每屏一窗后各窗只有单屏大小，
+    // 十字线只在光标所在屏渲染（离开即隐藏），恢复到旧单屏点选的流畅度。
     private (string dev, double nx, double ny)? PickAnywhere(Window dialog)
     {
         (string dev, double nx, double ny)? result = null;
         var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
-        // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用清晰可见（并留时间重绘，别被拍进冻屏）。
+        // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用透过透明覆盖层清晰可见。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);  // SWP_NOSIZE|NOMOVE|NOACTIVATE
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
-        System.Threading.Thread.Sleep(150);
 
         var accent = (Brush)FindResource("Accent");
         var overlays = new List<Window>();
@@ -162,18 +158,13 @@ public partial class MainWindow
             var m = mon;
             var overlay = new Window
             {
-                // AllowsTransparency=false → 不透明窗，走 GPU 硬件加速（见函数头说明）。
-                WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
+                WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
                 // 藏掉系统光标：软件绘制永远落后硬件光标 1-2 帧，两者同屏可比就永远"追着跑"——
                 // 十字线+中心点自己就是光标（截图工具的通行做法），没有参照物就没有可感知延迟。
                 ShowInTaskbar = false, Topmost = true, Cursor = Cursors.None,
-                Background = Brushes.Black,   // 被下面的冻屏图铺满，仅作兜底
+                Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
             };
             var root = new Grid();
-            // 本屏冻结画面 + 轻压暗（原来的半透明遮罩效果，现在在窗内合成，GPU 处理）。
-            using (var shot = Services.ScreenMatch.CaptureRegion(m.Left, m.Top, m.Width, m.Height))
-                root.Children.Add(new System.Windows.Controls.Image { Source = ToBitmapSource(shot), Stretch = System.Windows.Media.Stretch.Fill });
-            root.Children.Add(new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)) });
             var canvas = new Canvas { Visibility = Visibility.Collapsed };   // 光标在本屏才显示
             // 虚线十字贯穿本屏 + 外圈光环 + 白描边中心点（与"预览位置"同一族视觉）。
             // 全部用 RenderTransform 移动：不触发布局（measure/arrange），每帧只重渲染。
@@ -195,7 +186,7 @@ public partial class MainWindow
             if (m.Primary)   // 提示条只放主屏，别每块屏都糊一条
                 root.Children.Add(new TextBlock
                 {
-                    Text = "在目标位置点击选择（可跨屏，自动识别屏幕；Esc 取消）",
+                    Text = "点击选择位置（可跨屏，自动识别屏幕）· 方向键微调（Shift 加速）· 回车确认 · Esc 取消",
                     HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
                     Margin = new Thickness(0, 28, 0, 0),
                     Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold,
@@ -214,7 +205,32 @@ public partial class MainWindow
                 result = ScreenInfo.FromPoint(cx, cy);
                 Done();
             };
-            overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; Done(); } };
+            overlay.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Escape) { e.Handled = true; Done(); return; }
+                if (e.Key == Key.Enter || e.Key == Key.Space)   // 微调后用键盘确认，避免点击时手抖挪位
+                {
+                    e.Handled = true;
+                    var (cx, cy) = ScreenInfo.CursorPos();
+                    result = ScreenInfo.FromPoint(cx, cy);
+                    Done();
+                    return;
+                }
+                // 方向键微调：直接挪【物理光标】1px（Shift 10px）——十字线每帧读光标位置，自然跟着走。
+                int dx = 0, dy = 0;
+                switch (e.Key)
+                {
+                    case Key.Left: dx = -1; break;
+                    case Key.Right: dx = 1; break;
+                    case Key.Up: dy = -1; break;
+                    case Key.Down: dy = 1; break;
+                    default: return;
+                }
+                e.Handled = true;
+                int stepPx = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1;
+                var (px, py) = ScreenInfo.CursorPos();
+                ScreenInfo.MoveCursor(px + dx * stepPx, py + dy * stepPx);
+            };
             overlays.Add(overlay);
             parts.Add((m, canvas, (dipX, dipY) =>
             {
@@ -469,9 +485,8 @@ public partial class MainWindow
         var accent = (Brush)FindResource("Accent");
         var overlay = new Window
         {
-            // 有冻屏截图铺底，无需分层窗：AllowsTransparency=false 才走 GPU 硬件加速（框选拖拽更跟手）。
-            WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross, Background = Brushes.Black,
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross, Background = Brushes.Transparent,
         };
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };  // 轻微压暗，突出选框
@@ -481,7 +496,7 @@ public partial class MainWindow
         canvas.Children.Add(rubber); canvas.Children.Add(sizeLbl);
         var hint = new TextBlock
         {
-            Text = "拖拽框选目标图片（Esc 取消）", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Text = "拖拽框选目标图片 · 松开后可用方向键微调 · 回车确认 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
             Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
         };
         var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); overlay.Content = root;
@@ -494,36 +509,68 @@ public partial class MainWindow
         // 快照像素/DIP 比例：图片铺满窗口，其像素宽=vw；无论多屏/DPI，映射恒定。
         double PixPerDip() => vw / Math.Max(1.0, snapImg.ActualWidth);
         System.Windows.Point? downDip = null;
-        void UpdateSel(System.Windows.Point cur)
+        // 选区在 DIP 空间维护（拖拽与方向键微调共用同一份状态），确认时才换算成虚拟像素。
+        double bx = 0, by = 0, bw = 0, bh = 0;
+        bool hasSel = false;
+        void LayoutSel()
         {
-            var d = downDip!.Value;
-            double x = Math.Min(cur.X, d.X), y = Math.Min(cur.Y, d.Y), w = Math.Abs(cur.X - d.X), h = Math.Abs(cur.Y - d.Y);
-            Canvas.SetLeft(rubber, x); Canvas.SetTop(rubber, y); rubber.Width = w; rubber.Height = h;
+            Canvas.SetLeft(rubber, bx); Canvas.SetTop(rubber, by); rubber.Width = bw; rubber.Height = bh;
             double r = PixPerDip();
-            int px = ox + (int)Math.Round(x * r), py = oy + (int)Math.Round(y * r);
-            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(w * r)}×{(int)Math.Round(h * r)}";
-            Canvas.SetLeft(sizeLbl, x); Canvas.SetTop(sizeLbl, Math.Max(0, y - 24));
+            int px = ox + (int)Math.Round(bx * r), py = oy + (int)Math.Round(by * r);
+            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(bw * r)}×{(int)Math.Round(bh * r)}";
+            Canvas.SetLeft(sizeLbl, bx); Canvas.SetTop(sizeLbl, Math.Max(0, by - 24));
+        }
+        void CommitSel()
+        {
+            double r = PixPerDip();
+            sel = (ox + (int)Math.Round(bx * r), oy + (int)Math.Round(by * r),
+                   (int)Math.Round(bw * r), (int)Math.Round(bh * r));
         }
         overlay.MouseLeftButtonDown += (_, e) =>
         {
             downDip = e.GetPosition(snapImg);
+            bx = downDip.Value.X; by = downDip.Value.Y; bw = 0; bh = 0; hasSel = true;
             rubber.Visibility = Visibility.Visible; sizeLbl.Visibility = Visibility.Visible;
-            UpdateSel(downDip.Value);
+            LayoutSel();
         };
-        overlay.MouseMove += (_, e) => { if (downDip != null) UpdateSel(e.GetPosition(snapImg)); };
-        overlay.MouseLeftButtonUp += (_, e) =>
+        overlay.MouseMove += (_, e) =>
         {
-            if (downDip is { } d)
-            {
-                var up = e.GetPosition(snapImg);
-                double r = PixPerDip();
-                int px = (int)Math.Round(Math.Min(d.X, up.X) * r), py = (int)Math.Round(Math.Min(d.Y, up.Y) * r);
-                int pw = (int)Math.Round(Math.Abs(up.X - d.X) * r), ph = (int)Math.Round(Math.Abs(up.Y - d.Y) * r);
-                sel = (ox + px, oy + py, pw, ph);
-            }
-            overlay.Close();
+            if (downDip is not { } d) return;
+            var cur = e.GetPosition(snapImg);
+            bx = Math.Min(cur.X, d.X); by = Math.Min(cur.Y, d.Y);
+            bw = Math.Abs(cur.X - d.X); bh = Math.Abs(cur.Y - d.Y);
+            LayoutSel();
         };
-        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; sel = null; overlay.Close(); } };
+        // 松手【不立即结束】：进入微调阶段（方向键调整、回车确认、也可重新拖拽重画）。
+        overlay.MouseLeftButtonUp += (_, _) =>
+        {
+            if (downDip == null) return;
+            downDip = null;
+            if (bw >= 2 && bh >= 2)
+                hint.Text = "方向键移动 · Ctrl+方向键 调大小 · Shift 加速 · 回车确认 · 可重新拖拽重画 · Esc 取消";
+        };
+        overlay.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { e.Handled = true; sel = null; overlay.Close(); return; }
+            if (e.Key == Key.Enter) { e.Handled = true; if (hasSel && bw >= 2 && bh >= 2) CommitSel(); overlay.Close(); return; }
+            int dx = 0, dy = 0;
+            switch (e.Key)
+            {
+                case Key.Left: dx = -1; break;
+                case Key.Right: dx = 1; break;
+                case Key.Up: dy = -1; break;
+                case Key.Down: dy = 1; break;
+                default: return;
+            }
+            e.Handled = true;
+            if (!hasSel || downDip != null) return;
+            // 步进按【物理像素】算（Shift 10px），再换成 DIP，混合 DPI 下手感一致。
+            double stepDip = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, PixPerDip());
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            { bw = Math.Max(2, bw + dx * stepDip); bh = Math.Max(2, bh + dy * stepDip); }
+            else { bx += dx * stepDip; by += dy * stepDip; }
+            LayoutSel();
+        };
         overlay.ShowDialog();
 
         byte[]? png = null; int rx = 0, ry = 0, rw = 0, rh = 0;
@@ -557,9 +604,8 @@ public partial class MainWindow
         var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
         var overlay = new Window
         {
-            // 同上：有冻屏截图铺底，用不透明窗走 GPU。
-            WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Arrow, Background = Brushes.Black,
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Arrow, Background = Brushes.Transparent,
         };
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };
@@ -612,9 +658,8 @@ public partial class MainWindow
         var accent = (Brush)FindResource("Accent");
         var overlay = new Window
         {
-            // 同上：有冻屏截图铺底，用不透明窗走 GPU（区域拖动/缩放更跟手）。
-            WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Background = Brushes.Black,
+            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Background = Brushes.Transparent,
         };
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x66, 0, 0, 0)) };
@@ -631,7 +676,7 @@ public partial class MainWindow
         }
         var hint = new TextBlock
         {
-            Text = "拖动方框移动 · 拖四角缩放 · 空白处拖拽重画；回车确定，Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Text = "拖动方框移动 · 拖四角缩放 · 空白处拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车确定 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
             Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6), IsHitTestVisible = false,
         };
         // 确定 / 取消 悬浮条
@@ -736,8 +781,26 @@ public partial class MainWindow
         // Esc 触发 IsCancel「取消」——把整个编辑动作窗口一起关掉（区域自然也没生效）。同文件其它覆盖层都这么做。
         overlay.KeyDown += (_, e) =>
         {
-            if (e.Key == Key.Escape) { e.Handled = true; outv = null; overlay.Close(); }
-            else if (e.Key == Key.Enter) { e.Handled = true; Confirm(); }
+            if (e.Key == Key.Escape) { e.Handled = true; outv = null; overlay.Close(); return; }
+            if (e.Key == Key.Enter) { e.Handled = true; Confirm(); return; }
+            int dx = 0, dy = 0;
+            switch (e.Key)
+            {
+                case Key.Left: dx = -1; break;
+                case Key.Right: dx = 1; break;
+                case Key.Up: dy = -1; break;
+                case Key.Down: dy = 1; break;
+                default: return;
+            }
+            e.Handled = true;
+            if (rw < 1 || rh < 1) return;
+            touched = true;   // 键盘微调也算上手，停止跟随布局重算
+            // 步进按【物理像素】算（Shift 10px）再换 DIP；Ctrl+方向键 调大小，否则整体移动。
+            double stepDip = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, R());
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            { rw = Math.Max(16, rw + dx * stepDip); rh = Math.Max(16, rh + dy * stepDip); }
+            else { rx += dx * stepDip; ry += dy * stepDip; }
+            Layout();
         };
         overlay.ShowDialog();
 
