@@ -22,7 +22,7 @@ public partial class MainWindow
         public readonly CheckBox Invert = new();
         public readonly ComboBox StartHour = new(), StartMinute = new(), EndHour = new(), EndMinute = new();
         public readonly ComboBox TypeCombo = new();   // 时间段 / 图片出现
-        public readonly ImageCond Img = new();
+        public ClickImagePanel Img = null!;           // 图片出现＝与「点击图片」共用同一编辑器（无「匹配第几」、不套卡片底）
         public StackPanel Panel = null!;
     }
 
@@ -30,6 +30,8 @@ public partial class MainWindow
     private RunConditionEditor BuildRunConditionEditor(IRunCondition? source)
     {
         var ed = new RunConditionEditor();
+        // 宿主窗口懒解析（win=null）：本编辑器在对话框组装前构建；notchBg 用 Hover——条件明细区的底色。
+        ed.Img = new ClickImagePanel(this, null, withIndex: false, boxed: false, notchBgKey: "Hover");
         ed.Panel = BuildRunConditionPanel(ed.Enabled, ed.Invert, ed.StartHour, ed.StartMinute,
                                           ed.EndHour, ed.EndMinute, ed.TypeCombo, ed.Img);
         if (source != null) LoadRunCondition(ed, source);
@@ -44,12 +46,8 @@ public partial class MainWindow
         SetTimeSelection(ed.EndHour, ed.EndMinute, src.RunConditionEndMinute);
         if (src.RunConditionType == "ImageMatch")
         {
-            ed.Img.Png = ImageStore.Bytes(src.RunConditionImage);   // 引用(file:hash)/旧内联 base64 都能解析
-            ed.Img.Monitor = src.RunConditionMonitor;
-            ed.Img.RelX = src.RunConditionRectX; ed.Img.RelY = src.RunConditionRectY;
-            ed.Img.W = src.RunConditionRectW; ed.Img.H = src.RunConditionRectH;
-            ed.Img.Threshold = src.RunConditionThreshold > 0 ? src.RunConditionThreshold : 0.9;
-            ed.TypeCombo.SelectedIndex = 1;   // 放最后：触发切到图片视图并回显缩略图
+            ed.Img.LoadCond(src);             // 引用(file:hash)/旧内联 base64 都能解析；面板自行回显缩略图与区域
+            ed.TypeCombo.SelectedIndex = 1;   // 触发切到图片视图
         }
         else ed.TypeCombo.SelectedIndex = 0;
     }
@@ -61,15 +59,10 @@ public partial class MainWindow
 
         if (ed.TypeCombo.SelectedIndex == 1)   // 图片出现
         {
-            if (!ed.Img.Has) throw new InvalidOperationException("请先截取目标图片。");
             RunCondition.Clear(dst);
             dst.RunConditionType = "ImageMatch";
             dst.RunConditionInvert = ed.Invert.IsChecked == true;
-            dst.RunConditionImage = ImageStore.Ref(ed.Img.Png!);   // 立即外置成 file:hash 引用
-            dst.RunConditionMonitor = ed.Img.Monitor;
-            dst.RunConditionRectX = ed.Img.RelX; dst.RunConditionRectY = ed.Img.RelY;
-            dst.RunConditionRectW = ed.Img.W; dst.RunConditionRectH = ed.Img.H;
-            dst.RunConditionThreshold = ed.Img.Threshold;
+            ed.Img.ApplyCond(dst);   // 图片/锚定屏/限制区域/阈值（缺图会抛异常，由调用方统一提示）
             return;
         }
 

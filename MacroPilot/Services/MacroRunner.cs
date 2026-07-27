@@ -364,14 +364,29 @@ public sealed class MacroRunner
         if (!RunCondition.Has(step)) return true;
         if (step.RunConditionType == "ImageMatch")
         {
-            // 屏内相对坐标 → 按该屏当前位置还原绝对区域（挪动显示器后区域跟着屏走）。
+            // 与「点击图片」同一套搜索：限制区域内结构加权滑窗（v0.2.20 起不再要求图片出现在截取时的
+            // 原位置——区域内任意处出现即算满足）。旧数据的区域＝当年截图的原位置，恰好退化为只检查该处。
+            var tpl = TemplateFor(step);
+            if (tpl == null) { conditionText = "目标图片未出现（无模板）"; return step.RunConditionInvert; }
             var mon = ScreenInfo.ByDevice(step.RunConditionMonitor);
-            int ax = mon.Left + step.RunConditionRectX, ay = mon.Top + step.RunConditionRectY;
-            double score = ScreenMatch.MatchScore(TemplateFor(step), ax, ay);
-            bool found = score >= step.RunConditionThreshold;
-            // conditionText 只在【跳过】时打日志，报【实际观测状态 + 匹配度】——便于判断是"没匹配上"还是"阈值太严"。
-            string pct = score < 0 ? "无模板" : $"匹配度 {score:0.00}/阈值 {step.RunConditionThreshold:0.00}";
-            conditionText = (found ? "目标图片已出现" : "目标图片未出现") + $"（{pct}）";
+            int rx, ry, rw, rh;
+            if (step.RunConditionRectW > 0 && step.RunConditionRectH > 0)
+            {
+                rx = mon.Left + step.RunConditionRectX; ry = mon.Top + step.RunConditionRectY;
+                int right = Math.Min(rx + step.RunConditionRectW, mon.Right), bottom = Math.Min(ry + step.RunConditionRectH, mon.Bottom);
+                rx = Math.Max(rx, mon.Left); ry = Math.Max(ry, mon.Top);
+                rw = right - rx; rh = bottom - ry;   // 与当前屏求交集（跨主机导入/换分辨率防越界）
+                if (rw <= 0 || rh <= 0) { conditionText = "限制区域不在当前屏幕范围内"; return step.RunConditionInvert; }
+            }
+            else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
+            double thr = Math.Clamp(step.RunConditionThreshold, 0.5, 1.0);
+            var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr);
+            bool found = hits.Count > 0;
+            double best = 0; foreach (var h in hits) if (h.score > best) best = h.score;
+            // conditionText 只在【跳过】时打日志，报实际观测状态——便于判断是"没出现"还是"阈值太严"。
+            conditionText = found
+                ? $"目标图片已出现（命中 {hits.Count} 个，相似度 {best:0.00}）"
+                : $"目标图片未出现（相似度阈值 {thr:0.00}）";
             return step.RunConditionInvert ? !found : found;
         }
         if (step.RunConditionType != "TimeRange") return true;

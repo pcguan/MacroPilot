@@ -702,16 +702,6 @@ public partial class MainWindow
         return row;
     }
 
-    // ImageMatch 编辑态：目标图 PNG + 绑定的虚拟像素区域 + 相似度阈值。
-    private sealed class ImageCond
-    {
-        public byte[]? Png;
-        public string Monitor = "";     // 绑定的屏幕设备名
-        public int RelX, RelY, W, H;    // 屏内相对像素矩形
-        public double Threshold = 0.9;
-        public bool Has => Png != null && Png.Length > 0 && W > 0 && H > 0;
-    }
-
     // 运行条件面板：启用勾选后才展开明细。typeCombo+img 非空时（仅动作级）提供“时间段/图片出现”两类，
     // 否则仅时间段（方案级/组合级复用）。
     private StackPanel BuildRunConditionPanel(
@@ -722,7 +712,7 @@ public partial class MainWindow
         ComboBox endHour,
         ComboBox endMinute,
         ComboBox? typeCombo = null,
-        ImageCond? img = null)
+        ClickImagePanel? img = null)
     {
         bool withImage = typeCombo != null && img != null;
 
@@ -759,66 +749,10 @@ public partial class MainWindow
             typeCombo.Height = 32; typeCombo.Margin = new Thickness(0, 0, 0, 10);
             if (typeCombo.SelectedIndex < 0) typeCombo.SelectedIndex = 0;
 
+            // 图片出现＝与「点击图片」共用同一编辑器（图片来源/限制区域/锚定屏/相似度），只是不带「匹配第几」。
             var imageSub = new StackPanel();
-            var capBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "截取目标图片" };
-            var previewImgBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "预览截取区域（白框标示）", IsEnabled = false };
-            var capStatus = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
-            var capRow = new StackPanel { Orientation = Orientation.Horizontal };
-            capRow.Children.Add(capBtn); capRow.Children.Add(previewImgBtn); capRow.Children.Add(capStatus);
-            imageSub.Children.Add(capRow);
-            var posText = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
-            imageSub.Children.Add(posText);
-            var thumb = new System.Windows.Controls.Image { MaxWidth = 220, MaxHeight = 150, Stretch = System.Windows.Media.Stretch.Uniform };
-            var thumbBorder = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Child = thumb, Visibility = Visibility.Collapsed };
-            imageSub.Children.Add(thumbBorder);
-            var thrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
-            thrRow.Children.Add(new TextBlock { Text = "相似度阈值(%)", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
-            var thrText = new TextBox { Width = 64, Height = 30, Text = ((int)Math.Round(img!.Threshold * 100)).ToString() };
-            thrRow.Children.Add(thrText);
-            thrRow.Children.Add(new TextBlock { Text = "（越高越严格，默认 90）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), FontSize = 12, Margin = new Thickness(8, 0, 0, 0) });
-            imageSub.Children.Add(thrRow);
-            imageSub.Children.Add(new TextBlock { Text = "图片需出现在截取时的同一屏幕位置。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
-
-            void RefreshThumb()
-            {
-                if (img.Has)
-                {
-                    capStatus.Text = $"已截取（{img.W}×{img.H}）";
-                    capBtn.ToolTip = "重新截取目标图片";
-                    posText.Text = $"屏幕 {ScreenInfo.ByDevice(img.Monitor).Label}：屏内 ({img.RelX}, {img.RelY})  尺寸 {img.W}×{img.H}";
-                    posText.Visibility = Visibility.Visible;
-                    previewImgBtn.IsEnabled = true;
-                    try
-                    {
-                        var bi = new System.Windows.Media.Imaging.BitmapImage();
-                        using var ms = new System.IO.MemoryStream(img.Png!);
-                        bi.BeginInit(); bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad; bi.StreamSource = ms; bi.EndInit();
-                        thumb.Source = bi; thumbBorder.Visibility = Visibility.Visible;
-                    }
-                    catch { thumbBorder.Visibility = Visibility.Collapsed; }
-                }
-                else { capStatus.Text = "未截取"; capBtn.ToolTip = "截取目标图片"; posText.Visibility = Visibility.Collapsed; previewImgBtn.IsEnabled = false; thumbBorder.Visibility = Visibility.Collapsed; }
-            }
-            capBtn.Click += (_, _) =>
-            {
-                var w = Window.GetWindow(capBtn);
-                if (w == null) return;
-                var r = CaptureTargetImage(w);
-                if (r is { } c)
-                {
-                    var (dev, _, _) = ScreenInfo.FromPoint(c.vx, c.vy);
-                    var mon = ScreenInfo.ByDevice(dev);
-                    img.Png = c.png; img.Monitor = dev; img.RelX = c.vx - mon.Left; img.RelY = c.vy - mon.Top; img.W = c.w; img.H = c.h;
-                    RefreshThumb();
-                }
-            };
-            previewImgBtn.Click += (_, _) =>
-            {
-                var w = Window.GetWindow(previewImgBtn);
-                if (w != null && img.Has) { var mon = ScreenInfo.ByDevice(img.Monitor); PreviewRegion(mon.Left + img.RelX, mon.Top + img.RelY, img.W, img.H, w); }
-            };
-            thrText.TextChanged += (_, _) => { if (double.TryParse(thrText.Text, out var v)) img.Threshold = Math.Clamp(v / 100.0, 0.1, 1.0); };
-            RefreshThumb();
+            imageSub.Children.Add(img!.Panel);
+            imageSub.Children.Add(new TextBlock { Text = "在限制区域内搜索目标图片，找到即视为条件满足（未设区域则搜整块锚定屏）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
 
             detail.Children.Add(typeCombo);
             detail.Children.Add(timeSub);
@@ -830,13 +764,6 @@ public partial class MainWindow
                 bool image = typeCombo.SelectedIndex == 1;
                 timeSub.Visibility = image ? Visibility.Collapsed : Visibility.Visible;
                 imageSub.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
-                if (image)
-                {
-                    // 阈值框在建面板时按默认值(90)初始化，回填既有条件是在那之后才还原 img.Threshold 的——
-                    // 切到图片视图时把阈值框同步到实际值，否则一直显示 90（改了保存后再打开还显示 90）。
-                    thrText.Text = ((int)Math.Round(img.Threshold * 100)).ToString();
-                    RefreshThumb();   // 编辑既有图片条件时，切到图片视图即回显缩略图
-                }
             }
             typeCombo.SelectionChanged += (_, _) => RefreshType();
             RefreshType();
@@ -1663,7 +1590,7 @@ public partial class MainWindow
     // 右侧单位可点击在 % / DP(屏内像素) 间切换并自动换算。值对外统一以「屏内像素」读写。
     private sealed class EdgeCell
     {
-        private readonly MainWindow _o;
+        private readonly Brush _notchBg;
         private readonly TextBox _box;
         private readonly TextBlock _lbl, _unit;
         private readonly Border _lblBg;
@@ -1672,9 +1599,9 @@ public partial class MainWindow
         public readonly Border Root;
         public event Action? Committed;      // 失焦提交（→ 面板 EdgesToRegion）
 
-        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first)
+        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first, string notchBgKey = "Bg")
         {
-            _o = o; _dim = dim;
+            _dim = dim; _notchBg = (Brush)o.FindResource(notchBgKey);
             Brush B(string k) => (Brush)o.FindResource(k);
             _box = new TextBox { BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Width = 30, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 0, 0, 0), VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink") };
             _unit = new TextBlock { Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 8, 0), ToolTip = "点击切换 % / DP（屏内像素）" };
@@ -1699,7 +1626,7 @@ public partial class MainWindow
             _lblBg.VerticalAlignment = active ? VerticalAlignment.Top : VerticalAlignment.Center;
             _lblBg.Margin = active ? new Thickness(6, -8, 0, 0) : new Thickness(10, 0, 0, 0);
             _lblBg.Padding = active ? new Thickness(3, 0, 3, 0) : new Thickness(0);
-            _lblBg.Background = active ? (Brush)_o.FindResource("Bg") : Brushes.Transparent;   // 浮起时遮住上边框做缺口
+            _lblBg.Background = active ? _notchBg : Brushes.Transparent;   // 浮起时遮住上边框做缺口（底色跟宿主容器一致）
         }
 
         public int? GetPx()
@@ -1719,8 +1646,6 @@ public partial class MainWindow
     // 「点击图片」编辑块：目标图（截图 / 导入 / 复制 / 粘贴）+ 限制区域 + 相似度 + 匹配第几。
     private sealed class ClickImagePanel
     {
-        private readonly MainWindow _o;
-        private readonly Window _win;
         public byte[]? Png;
         public string Monitor = "";
         public int RelX, RelY, W, H;                 // 限制区域屏内相对像素（W/H=0 表示全屏）
@@ -1742,9 +1667,10 @@ public partial class MainWindow
         public int Index => Math.Max(1, ParseInt(_index.Text, 1));
         public bool HasImage => Png != null && Png.Length > 0;
 
-        public ClickImagePanel(MainWindow o, Window win)
+        public ClickImagePanel(MainWindow o, Window? win = null, bool withIndex = true, bool boxed = true, string notchBgKey = "Bg")
         {
-            _o = o; _win = win;
+            // 宿主窗口懒解析：运行条件编辑器在对话框组装前就要构建本面板，点击时再从可视树取。
+            Window Win() => win ?? Window.GetWindow(Panel)!;
             var inner = new StackPanel();
 
             // 动作按钮统一：图标 + 悬停中文 tooltip（IconButton 样式），不用文字按钮。
@@ -1771,7 +1697,7 @@ public partial class MainWindow
             _previewBtn = MkIcon("", "预览：在屏幕上白框回显当前区域");
             var clearBtn = MkIcon("", "清除限制区域（改为搜索整块主屏）");
             var idBtn = MkIcon("", "标识屏幕（在各屏显示编号，帮你分清下拉对应哪块屏）");
-            idBtn.Click += (_, _) => o.ShowIdScreens(win);
+            idBtn.Click += (_, _) => o.ShowIdScreens(Win());
             var regionHeader = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 16, 0, 0) };
             var regionTitle = new TextBlock { Text = "限制区域（只在此范围内搜索）", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
             DockPanel.SetDock(regionTitle, Dock.Left); regionHeader.Children.Add(regionTitle);
@@ -1797,10 +1723,10 @@ public partial class MainWindow
                 SyncEdges();
             };
             // 区域值行：四个尖角浮标格（贴合一体）。
-            _left = new EdgeCell(o, "左", () => RegionMon().Width, true);
-            _right = new EdgeCell(o, "右", () => RegionMon().Width, false);
-            _top = new EdgeCell(o, "上", () => RegionMon().Height, false);
-            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false);
+            _left = new EdgeCell(o, "左", () => RegionMon().Width, true, notchBgKey);
+            _right = new EdgeCell(o, "右", () => RegionMon().Width, false, notchBgKey);
+            _top = new EdgeCell(o, "上", () => RegionMon().Height, false, notchBgKey);
+            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false, notchBgKey);
             foreach (var c in new[] { _left, _right, _top, _bottom }) c.Committed += EdgesToRegion;
             var cellsRow = new DockPanel { LastChildFill = false };
             cellsRow.Children.Add(RLabel("区域值"));
@@ -1842,16 +1768,19 @@ public partial class MainWindow
             var idxRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
             idxRow.Children.Add(new TextBlock { Text = "匹配第几个", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
             idxRow.Children.Add(_index);
-            inner.Children.Add(idxRow);
-            inner.Children.Add(new TextBlock { Text = "区域内命中多个时点击第几个（按从上到下、从左到右排序；1 起）。", Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) });
+            if (withIndex)
+            {
+                inner.Children.Add(idxRow);
+                inner.Children.Add(new TextBlock { Text = "区域内命中多个时点击第几个（按从上到下、从左到右排序；1 起）。", Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) });
+            }
 
-            Panel = o.SubGroup(null, inner);
+            Panel = boxed ? o.SubGroup(null, inner) : new Border { Child = inner };
 
             // 四边格提交（失焦）→ 回写区域，已在上面 c.Committed += EdgesToRegion 里挂好。
 
             shotBtn.Click += (_, _) =>
             {
-                var r = o.CaptureTargetImage(win);
+                var r = o.CaptureTargetImage(Win());
                 if (r is { } c)
                 {
                     var (dev, _, _) = ScreenInfo.FromPoint(c.vx, c.vy);
@@ -1863,7 +1792,7 @@ public partial class MainWindow
             importBtn.Click += (_, _) =>
             {
                 var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp|所有文件|*.*", Title = "导入目标图片" };
-                if (dlg.ShowDialog(win) == true)
+                if (dlg.ShowDialog(Win()) == true)
                 {
                     try { using var bmp = new System.Drawing.Bitmap(dlg.FileName); Png = Services.ScreenMatch.ToPng(bmp); Refresh(); }
                     catch (Exception ex) { ThemedDialog.Show("无法读取该图片：" + ex.Message, "导入失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); }
@@ -1879,7 +1808,7 @@ public partial class MainWindow
             {
                 int? cvx = null, cvy = null, cw = null, ch = null;
                 if (W > 0 && H > 0) { var m = ScreenInfo.ByDevice(Monitor); cvx = m.Left + RelX; cvy = m.Top + RelY; cw = W; ch = H; }
-                var r = o.EditRegion(win, cvx, cvy, cw, ch);
+                var r = o.EditRegion(Win(), cvx, cvy, cw, ch);
                 if (r is { } g)
                 {
                     var (dev, _, _) = ScreenInfo.FromPoint(g.vx, g.vy);
@@ -1890,7 +1819,7 @@ public partial class MainWindow
             };
             _previewBtn.Click += (_, _) =>
             {
-                if (W > 0 && H > 0) { var m = ScreenInfo.ByDevice(Monitor); o.PreviewRegion(m.Left + RelX, m.Top + RelY, W, H, win); }
+                if (W > 0 && H > 0) { var m = ScreenInfo.ByDevice(Monitor); o.PreviewRegion(m.Left + RelX, m.Top + RelY, W, H, Win()); }
             };
             Refresh(); SyncEdges();   // SyncEdges 初始化锚定屏下拉（默认主屏）
         }
@@ -1973,6 +1902,25 @@ public partial class MainWindow
             _thrText.Text = ((int)Math.Round(Math.Clamp(s.ClickImageThreshold, 0.1, 1.0) * 100)).ToString();
             _index.Text = Math.Max(1, s.ClickImageIndex).ToString();
             Refresh(); SyncEdges();
+        }
+
+        // 运行条件「图片出现」共用本编辑器：读写 IRunCondition 的 RunConditionXxx 字段（与 MacroStep 的 ClickImage* 平行）。
+        public void LoadCond(IRunCondition src)
+        {
+            Png = ImageStore.Bytes(src.RunConditionImage);
+            Monitor = src.RunConditionMonitor; RelX = src.RunConditionRectX; RelY = src.RunConditionRectY; W = src.RunConditionRectW; H = src.RunConditionRectH;
+            _thrText.Text = ((int)Math.Round(Math.Clamp(src.RunConditionThreshold > 0 ? src.RunConditionThreshold : 0.9, 0.1, 1.0) * 100)).ToString();
+            _index.Text = "1";
+            Refresh(); SyncEdges();
+        }
+
+        public void ApplyCond(IRunCondition dst)
+        {
+            if (!HasImage) throw new InvalidOperationException("请先设置目标图片（截图 / 导入 / 粘贴）。");
+            dst.RunConditionImage = ImageStore.Ref(Png!);   // 立即外置成 file:hash 引用
+            dst.RunConditionMonitor = Monitor; dst.RunConditionRectX = RelX; dst.RunConditionRectY = RelY;
+            dst.RunConditionRectW = W; dst.RunConditionRectH = H;
+            dst.RunConditionThreshold = Threshold;
         }
 
         public void Apply(MacroStep s)
