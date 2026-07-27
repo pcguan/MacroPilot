@@ -293,6 +293,7 @@ public partial class MainWindow
         // 与点选一致：预览期间把编辑窗口与本体下沉，露出目标屏内容。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var (ox, oy, vw, vh) = VirtualBounds();
         var overlay = new Window
         {
             WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
@@ -325,22 +326,29 @@ public partial class MainWindow
         root.Children.Add(canvas); root.Children.Add(hint);
         overlay.Content = root;
 
+        // 覆盖【所有屏幕】（与点选/截图一致的"全屏锁定"）：这样在任意一块屏点击都能退出，
+        // 而不是只有目标屏那一块有效。标记按虚拟像素→DIP 换算落到目标屏上，十字线贯穿目标屏。
         void PlaceMarker()
         {
-            double px = nx * mon.Width, py = ny * mon.Height;
-            vLine.X1 = vLine.X2 = px; vLine.Y1 = 0; vLine.Y2 = mon.Height;
-            hLine.Y1 = hLine.Y2 = py; hLine.X1 = 0; hLine.X2 = mon.Width;
+            double cw = canvas.ActualWidth, chh = canvas.ActualHeight;
+            if (cw < 1 || chh < 1) return;   // 尺寸未就绪（SetWindowPos 撑大在布局之前），等 SizeChanged 再来
+            double r = vw / cw;              // 虚拟像素 / DIP
+            double px = (mon.Left + nx * mon.Width - ox) / r, py = (mon.Top + ny * mon.Height - oy) / r;
+            double mx = (mon.Left - ox) / r, my = (mon.Top - oy) / r, mw = mon.Width / r, mh = mon.Height / r;
+            vLine.X1 = vLine.X2 = px; vLine.Y1 = my; vLine.Y2 = my + mh;
+            hLine.Y1 = hLine.Y2 = py; hLine.X1 = mx; hLine.X2 = mx + mw;
             Canvas.SetLeft(ring, px - ring.Width / 2); Canvas.SetTop(ring, py - ring.Height / 2);
             Canvas.SetLeft(dot, px - dot.Width / 2); Canvas.SetTop(dot, py - dot.Height / 2);
-            Canvas.SetLeft(coord, Math.Min(px + 26, Math.Max(0, mon.Width - 160)));
-            Canvas.SetTop(coord, Math.Min(py + 14, Math.Max(0, mon.Height - 26)));
+            Canvas.SetLeft(coord, Math.Min(px + 26, Math.Max(0, cw - 160)));
+            Canvas.SetTop(coord, Math.Min(py + 14, Math.Max(0, chh - 26)));
         }
 
         overlay.SourceInitialized += (_, _) =>
         {
             var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
-            SetWindowPos(h, HWND_TOPMOST, mon.Left, mon.Top, mon.Width, mon.Height, 0x0040);
+            SetWindowPos(h, HWND_TOPMOST, ox, oy, vw, vh, 0x0040);   // 铺满虚拟桌面
         };
+        canvas.SizeChanged += (_, _) => PlaceMarker();
         overlay.Loaded += (_, _) => { PlaceMarker(); overlay.Activate(); overlay.Focus(); };
         overlay.MouseLeftButtonDown += (_, _) => overlay.Close();
         // e.Handled=true：吞掉这次 Esc，否则会继续传到编辑窗口触发 IsCancel 按钮把编辑窗口也关掉。
@@ -687,16 +695,19 @@ public partial class MainWindow
             var hh = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
             SetWindowPos(hh, HWND_TOPMOST, ox, oy, vw, vh, 0x0040);
         };
-        overlay.Loaded += (_, _) =>
+        // 尺寸未就绪时（SetWindowPos 撑大发生在布局之前）算出的位置是错的，交给 SizeChanged 重算。
+        void PlaceBox()
         {
+            if (snapImg.ActualWidth < 1) return;
             // DIP = 像素 / 比例；比例 = 快照像素宽 / 图片 DIP 宽（多屏/DPI 恒定）。
-            double r = vw / Math.Max(1.0, snapImg.ActualWidth);
+            double r = vw / snapImg.ActualWidth;
             double lx = (vx - ox) / r, ly = (vy - oy) / r, lw = w / r, lh = h / r;
             Canvas.SetLeft(box, lx); Canvas.SetTop(box, ly); box.Width = lw; box.Height = lh;
             Canvas.SetLeft(glow, lx - 1); Canvas.SetTop(glow, ly - 1); glow.Width = lw + 2; glow.Height = lh + 2;
             Canvas.SetLeft(label, lx); Canvas.SetTop(label, Math.Max(0, ly - 24));
-            overlay.Activate(); overlay.Focus();
-        };
+        }
+        snapImg.SizeChanged += (_, _) => PlaceBox();
+        overlay.Loaded += (_, _) => { PlaceBox(); overlay.Activate(); overlay.Focus(); };
         overlay.MouseLeftButtonDown += (_, _) => overlay.Close();
         overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; overlay.Close(); } };
         overlay.ShowDialog();
