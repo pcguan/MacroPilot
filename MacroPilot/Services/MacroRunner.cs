@@ -491,11 +491,20 @@ public sealed class MacroRunner
         var bytes = ImageStore.Bytes(step.ClickImage);
         if (bytes == null) throw new InvalidOperationException("点击图片：未设置模板图片。");
 
-        // 限制区域：屏内相对像素 → 按该屏当前位置还原绝对区域；未设区域则搜整块绑定屏（默认主屏）。
+        // 限制区域：屏内相对像素 → 按该屏当前位置还原绝对区域；未设区域则搜整块绑定屏（默认主屏；
+        // 绑定屏在本机不存在时 ByDevice 已回退主屏——常见于方案导入自别的主机）。
         var mon = ScreenInfo.ByDevice(step.ClickImageMonitor);
         int rx, ry, rw, rh;
         if (step.ClickImageRectW > 0 && step.ClickImageRectH > 0)
-        { rx = mon.Left + step.ClickImageRectX; ry = mon.Top + step.ClickImageRectY; rw = step.ClickImageRectW; rh = step.ClickImageRectH; }
+        {
+            rx = mon.Left + step.ClickImageRectX; ry = mon.Top + step.ClickImageRectY; rw = step.ClickImageRectW; rh = step.ClickImageRectH;
+            // 与当前屏求交集：区域可能来自分辨率不同的主机（导入）或换过分辨率，越界部分抓屏是未定义内容。
+            int right = Math.Min(rx + rw, mon.Right), bottom = Math.Min(ry + rh, mon.Bottom);
+            rx = Math.Max(rx, mon.Left); ry = Math.Max(ry, mon.Top);
+            rw = right - rx; rh = bottom - ry;
+            if (rw <= 0 || rh <= 0)
+                throw new InvalidOperationException("点击图片：限制区域不在当前屏幕范围内（方案可能导入自分辨率不同的主机），请重新设置限制区域。");
+        }
         else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
 
         double thr = Math.Clamp(step.ClickImageThreshold, 0.5, 1.0);
