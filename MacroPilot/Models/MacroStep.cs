@@ -167,7 +167,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
 
     public MacroStep Clone()
     {
-        return new MacroStep
+        var clone = new MacroStep
         {
             Type = Type, Button = Button, Key = Key, Modifier = Modifier,
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
@@ -181,15 +181,6 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
             JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
             DisplayIndex = DisplayIndex,   // 运行页跑的是克隆副本，带上序号否则运行列表全显 0.（编辑页会 RefreshIndices 重算，不受影响）
-            RunConditionType = RunConditionType,
-            RunConditionInvert = RunConditionInvert,
-            RunConditionStartMinute = RunConditionStartMinute,
-            RunConditionEndMinute = RunConditionEndMinute,
-            RunConditionImage = RunConditionImage,
-            RunConditionMonitor = RunConditionMonitor,
-            RunConditionRectX = RunConditionRectX, RunConditionRectY = RunConditionRectY,
-            RunConditionRectW = RunConditionRectW, RunConditionRectH = RunConditionRectH,
-            RunConditionThreshold = RunConditionThreshold,
             PreCondAction = PreCondAction?.Clone(), CondSuccessAction = CondSuccessAction?.Clone(),
             CondFailAction = CondFailAction?.Clone(), PreRunAction = PreRunAction?.Clone(),
             SuccessAction = SuccessAction?.Clone(),
@@ -197,6 +188,10 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             FailAction = FailAction?.Clone(),
             Children = new ObservableCollection<MacroStep>(System.Linq.Enumerable.Select(Children, c => c.Clone())),
         };
+        // 运行条件走统一入口拷贝，别在这里手写字段列表——历史上漏过"重复检查"三项，
+        // 导致动作级重试配置在运行副本里丢失（跑的是克隆件）。新增条件字段只需改 RunCondition.Copy。
+        RunCondition.Copy(this, clone);
+        return clone;
     }
 
     /// <summary>简易描述：有备注用备注，否则用动作本身的简述（不带循环/监听等后缀）。跳转目标下拉等紧凑场景用。</summary>
