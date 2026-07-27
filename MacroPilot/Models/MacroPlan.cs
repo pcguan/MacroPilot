@@ -16,6 +16,11 @@ public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
 
     // 方案级运行条件（对整个方案生效）。字段与动作级完全一致（见 IRunCondition），
     // 因此时间段 / 图片出现两类条件两级通用，编辑界面与执行判定也是同一份代码。
+    // 多条件（v0.4）：条件列表 + 与/或。历史存档的单条字段（下方 RunConditionXxx）由
+    // RunCondition.Normalize 并入本列表后清空，因此新存档里只会出现这两个属性。
+    public System.Collections.Generic.List<ConditionItem> RunConditions { get; set; } = new();
+    public string RunConditionLogic { get; set; } = "And";
+
     public string RunConditionType { get; set; } = "";
     public bool RunConditionInvert { get; set; }
     public int? RunConditionStartMinute { get; set; }

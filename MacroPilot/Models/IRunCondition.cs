@@ -8,6 +8,12 @@ namespace MacroPilot.Models;
 /// </summary>
 public interface IRunCondition
 {
+    /// <summary>条件列表（v0.4 起的正式表示）。多条之间按 <see cref="RunConditionLogic"/> 组合。</summary>
+    System.Collections.Generic.List<ConditionItem> RunConditions { get; set; }
+    /// <summary>"And"=全部满足（默认）；"Or"=任一满足。</summary>
+    string RunConditionLogic { get; set; }
+
+    // ↓↓ 以下单条字段仅用于读取历史 plans.json：Normalize 会把它们并入 RunConditions 后清空。
     /// <summary>""=无条件；"TimeRange"=时间段；"ImageMatch"=图片出现。</summary>
     string RunConditionType { get; set; }
     /// <summary>true 表示条件不满足时才执行。</summary>
@@ -36,15 +42,60 @@ public interface IRunCondition
 
 public static class RunCondition
 {
-    /// <summary>是否配置了有效的运行条件（两级共用同一判定，避免一边认为有、一边认为无）。</summary>
-    public static bool Has(IRunCondition c) =>
-        (c.RunConditionType == "TimeRange" && (c.RunConditionStartMinute.HasValue || c.RunConditionEndMinute.HasValue))
-        || (c.RunConditionType == "ImageMatch" && !string.IsNullOrEmpty(c.RunConditionImage)
-            && c.RunConditionRectW > 0 && c.RunConditionRectH > 0);
+    /// <summary>
+    /// 把历史存档里的单条字段并入 <see cref="IRunCondition.RunConditions"/>，并清空旧字段。
+    /// 幂等：已经是列表表示的直接返回。执行判定与编辑入口都会先调它，因此即便某条加载路径漏调也不会出错。
+    /// </summary>
+    public static void Normalize(IRunCondition c)
+    {
+        c.RunConditions ??= new System.Collections.Generic.List<ConditionItem>();
+        if (c.RunConditions.Count > 0 || string.IsNullOrEmpty(c.RunConditionType)) { ClearLegacy(c); return; }
+        var it = new ConditionItem
+        {
+            Type = c.RunConditionType,
+            Invert = c.RunConditionInvert,
+            StartMinute = c.RunConditionStartMinute,
+            EndMinute = c.RunConditionEndMinute,
+            Image = c.RunConditionImage,
+            Monitor = c.RunConditionMonitor,
+            RectX = c.RunConditionRectX, RectY = c.RunConditionRectY,
+            RectW = c.RunConditionRectW, RectH = c.RunConditionRectH,
+            Threshold = c.RunConditionThreshold,
+        };
+        if (it.IsValid) c.RunConditions.Add(it);
+        ClearLegacy(c);
+    }
+
+    private static void ClearLegacy(IRunCondition c)
+    {
+        c.RunConditionType = "";
+        c.RunConditionInvert = false;
+        c.RunConditionStartMinute = null;
+        c.RunConditionEndMinute = null;
+        c.RunConditionImage = "";
+        c.RunConditionMonitor = "";
+        c.RunConditionRectX = c.RunConditionRectY = c.RunConditionRectW = c.RunConditionRectH = 0;
+        c.RunConditionThreshold = 0.9;
+    }
+
+    /// <summary>是否配置了有效的运行条件（三级共用同一判定，避免一边认为有、一边认为无）。</summary>
+    public static bool Has(IRunCondition c)
+    {
+        if (c.RunConditions != null)
+            foreach (var it in c.RunConditions) if (it.IsValid) return true;
+        // 尚未 Normalize 的历史数据也要认（保险：任何入口漏调 Normalize 都不至于把条件当成没有）
+        return (c.RunConditionType == "TimeRange" && (c.RunConditionStartMinute.HasValue || c.RunConditionEndMinute.HasValue))
+            || (c.RunConditionType == "ImageMatch" && !string.IsNullOrEmpty(c.RunConditionImage)
+                && c.RunConditionRectW > 0 && c.RunConditionRectH > 0);
+    }
 
     /// <summary>把 src 的运行条件整体拷到 dst（跨级别通用）。</summary>
     public static void Copy(IRunCondition src, IRunCondition dst)
     {
+        dst.RunConditions = new System.Collections.Generic.List<ConditionItem>();
+        if (src.RunConditions != null)
+            foreach (var it in src.RunConditions) dst.RunConditions.Add(it.Clone());   // 深拷贝，别让两份共享同一条
+        dst.RunConditionLogic = src.RunConditionLogic;
         dst.RunConditionType = src.RunConditionType;
         dst.RunConditionInvert = src.RunConditionInvert;
         dst.RunConditionStartMinute = src.RunConditionStartMinute;
@@ -61,9 +112,33 @@ public static class RunCondition
         dst.RunConditionRetryMax = src.RunConditionRetryMax;
     }
 
+    /// <summary>
+    /// 运行条件的内容指纹：用于"有没有改过"的比较。整体序列化，天然覆盖以后新增的字段，
+    /// 不必再维护一份手写的逐字段比较（那种写法漏一个字段就会导致改动不落盘）。
+    /// </summary>
+    public static string Snapshot(IRunCondition c)
+    {
+        Normalize(c);
+        var sb = new System.Text.StringBuilder();
+        sb.Append(c.RunConditionLogic).Append('|')
+          .Append(c.RunConditionRetry).Append('|')
+          .Append(c.RunConditionRetryIntervalMs).Append('|')
+          .Append(c.RunConditionRetryMax).Append('|');
+        foreach (var it in c.RunConditions)
+            sb.Append(it.Type).Append(',').Append(it.Invert).Append(',')
+              .Append(it.StartMinute).Append(',').Append(it.EndMinute).Append(',')
+              .Append(it.Image).Append(',').Append(it.Monitor).Append(',')
+              .Append(it.RectX).Append(',').Append(it.RectY).Append(',')
+              .Append(it.RectW).Append(',').Append(it.RectH).Append(',')
+              .Append(it.Threshold.ToString("0.####")).Append(';');
+        return sb.ToString();
+    }
+
     /// <summary>清空运行条件。</summary>
     public static void Clear(IRunCondition c)
     {
+        c.RunConditions = new System.Collections.Generic.List<ConditionItem>();
+        c.RunConditionLogic = "And";
         c.RunConditionType = "";
         c.RunConditionInvert = false;
         c.RunConditionStartMinute = null;

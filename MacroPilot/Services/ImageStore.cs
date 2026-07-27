@@ -66,22 +66,28 @@ public static class ImageStore
     }
 
     // ---- 对单条运行条件（方案级/动作级通用）的三种就地处理 ----
+    // 运行条件现在是【一组】条件（ConditionItem 列表），每条都可能带图片，需逐条处理。
+    // 先 Normalize 把历史存档的单条字段并入列表，之后只认列表——否则旧数据的图片会被漏收集而误删。
     private static void ExternalizeCond(IRunCondition c)
     {
-        var img = c.RunConditionImage;
-        if (!string.IsNullOrEmpty(img) && !IsRef(img))
-        {
-            try { c.RunConditionImage = Ref(Convert.FromBase64String(img)); } catch { }
-        }
+        RunCondition.Normalize(c);
+        foreach (var it in c.RunConditions)
+            if (!string.IsNullOrEmpty(it.Image) && !IsRef(it.Image))
+            {
+                try { it.Image = Ref(Convert.FromBase64String(it.Image)); } catch { }
+            }
     }
     private static void InlineCond(IRunCondition c)
     {
-        if (!string.IsNullOrEmpty(c.RunConditionImage)) c.RunConditionImage = ToBase64(c.RunConditionImage);
+        RunCondition.Normalize(c);
+        foreach (var it in c.RunConditions)
+            if (!string.IsNullOrEmpty(it.Image)) it.Image = ToBase64(it.Image);
     }
     private static void CollectCond(IRunCondition c, HashSet<string> into)
     {
-        var img = c.RunConditionImage;
-        if (!string.IsNullOrEmpty(img) && IsRef(img)) into.Add(img[Prefix.Length..]);
+        RunCondition.Normalize(c);
+        foreach (var it in c.RunConditions)
+            if (!string.IsNullOrEmpty(it.Image) && IsRef(it.Image)) into.Add(it.Image[Prefix.Length..]);
     }
 
     // ---- 动作自带的「点击图片」模板（MacroStep.ClickImage）：与运行条件图同套外置/内联/收集逻辑 ----

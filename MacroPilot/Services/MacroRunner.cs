@@ -346,19 +346,19 @@ public sealed class MacroRunner
     }
 
     // 图片条件模板缓存：base64+PNG 解码一次即缓存 Bitmap（键=图片内容，内容变了自动失效）；一次运行结束在 finally 里释放。
-    private readonly System.Collections.Generic.Dictionary<IRunCondition, (string key, System.Drawing.Bitmap bmp)> _tplCache = new();
-    private System.Drawing.Bitmap? TemplateFor(IRunCondition step)
+    private readonly System.Collections.Generic.Dictionary<ConditionItem, (string key, System.Drawing.Bitmap bmp)> _tplCache = new();
+    private System.Drawing.Bitmap? TemplateFor(ConditionItem item)
     {
-        var img = step.RunConditionImage;
+        var img = item.Image;
         if (string.IsNullOrEmpty(img)) return null;
-        if (_tplCache.TryGetValue(step, out var c))
+        if (_tplCache.TryGetValue(item, out var c))
         {
             if (c.key == img) return c.bmp;
-            c.bmp.Dispose(); _tplCache.Remove(step);   // 图片被换过 → 旧缓存作废
+            c.bmp.Dispose(); _tplCache.Remove(item);   // 图片被换过 → 旧缓存作废
         }
         var bytes = ImageStore.Bytes(img);   // 引用(file:hash)读文件 / 旧内联 base64 都支持
         if (bytes == null) return null;
-        try { var bmp = ScreenMatch.FromPng(bytes); _tplCache[step] = (img, bmp); return bmp; }
+        try { var bmp = ScreenMatch.FromPng(bytes); _tplCache[item] = (img, bmp); return bmp; }
         catch { return null; }
     }
     private void DisposeTemplateCache()
@@ -396,44 +396,67 @@ public sealed class MacroRunner
     }
 
     /// <summary>判定一条运行条件是否放行。方案级与动作级共用，conditionText 仅在【跳过】时用于打日志。</summary>
+    /// <summary>
+    /// 判定整组运行条件：多条按 And（全部满足）/ Or（任一满足）组合。
+    /// conditionText 汇总各条的实际观测结果，仅在【跳过】时打日志，便于分辨是"没出现"还是"阈值太严"。
+    /// </summary>
     private bool Evaluate(IRunCondition step, out string conditionText)
     {
         conditionText = "";
+        RunCondition.Normalize(step);            // 幂等：历史存档的单条字段在这里并入列表
         if (!RunCondition.Has(step)) return true;
-        if (step.RunConditionType == "ImageMatch")
+
+        bool or = string.Equals(step.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase);
+        bool acc = !or;                          // And 从 true 起累积；Or 从 false 起累积
+        var parts = new System.Collections.Generic.List<string>();
+        foreach (var item in step.RunConditions)
+        {
+            if (!item.IsValid) continue;         // 半成品条目不参与判定，避免误判为不满足
+            bool one = EvaluateOne(item, out var text);
+            parts.Add(text);
+            acc = or ? (acc || one) : (acc && one);
+            // 短路：And 遇假、Or 遇真即可停——图片条件要抓屏搜索，能省一次是一次。
+            if (or ? acc : !acc) break;
+        }
+        conditionText = string.Join(or ? " 或 " : " 且 ", parts);
+        return acc;
+    }
+
+    /// <summary>判定单条条件。</summary>
+    private bool EvaluateOne(ConditionItem c, out string text)
+    {
+        if (c.Type == "ImageMatch")
         {
             // 与「点击图片」同一套搜索：限制区域内结构加权滑窗（v0.2.20 起不再要求图片出现在截取时的
             // 原位置——区域内任意处出现即算满足）。旧数据的区域＝当年截图的原位置，恰好退化为只检查该处。
-            var tpl = TemplateFor(step);
-            if (tpl == null) { conditionText = "目标图片未出现（无模板）"; return step.RunConditionInvert; }
-            var mon = ScreenInfo.ByDevice(step.RunConditionMonitor);
+            var tpl = TemplateFor(c);
+            if (tpl == null) { text = "目标图片未出现（无模板）"; return c.Invert; }
+            var mon = ScreenInfo.ByDevice(c.Monitor);
             int rx, ry, rw, rh;
-            if (step.RunConditionRectW > 0 && step.RunConditionRectH > 0)
+            if (c.RectW > 0 && c.RectH > 0)
             {
-                rx = mon.Left + step.RunConditionRectX; ry = mon.Top + step.RunConditionRectY;
-                int right = Math.Min(rx + step.RunConditionRectW, mon.Right), bottom = Math.Min(ry + step.RunConditionRectH, mon.Bottom);
+                rx = mon.Left + c.RectX; ry = mon.Top + c.RectY;
+                int right = Math.Min(rx + c.RectW, mon.Right), bottom = Math.Min(ry + c.RectH, mon.Bottom);
                 rx = Math.Max(rx, mon.Left); ry = Math.Max(ry, mon.Top);
                 rw = right - rx; rh = bottom - ry;   // 与当前屏求交集（跨主机导入/换分辨率防越界）
-                if (rw <= 0 || rh <= 0) { conditionText = "限制区域不在当前屏幕范围内"; return step.RunConditionInvert; }
+                if (rw <= 0 || rh <= 0) { text = "限制区域不在当前屏幕范围内"; return c.Invert; }
             }
             else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
-            double thr = Math.Clamp(step.RunConditionThreshold, 0.5, 1.0);
+            double thr = Math.Clamp(c.Threshold, 0.5, 1.0);
             var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr);
             bool found = hits.Count > 0;
             double best = 0; foreach (var h in hits) if (h.score > best) best = h.score;
-            // conditionText 只在【跳过】时打日志，报实际观测状态——便于判断是"没出现"还是"阈值太严"。
-            conditionText = found
+            text = found
                 ? $"目标图片已出现（命中 {hits.Count} 个，相似度 {best:0.00}）"
                 : $"目标图片未出现（相似度阈值 {thr:0.00}）";
-            return step.RunConditionInvert ? !found : found;
+            return c.Invert ? !found : found;
         }
-        if (step.RunConditionType != "TimeRange") return true;
+        if (c.Type != "TimeRange") { text = ""; return true; }
 
         int now = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
-        bool match = IsInTimeRange(now, step.RunConditionStartMinute, step.RunConditionEndMinute);
-        bool result = step.RunConditionInvert ? !match : match;
-        conditionText = FormatCondition(step, match);   // 同理：报当前"在/不在"时段的实际结果
-        return result;
+        bool match = IsInTimeRange(now, c.StartMinute, c.EndMinute);
+        text = FormatCondition(c, match);
+        return c.Invert ? !match : match;
     }
 
     private static bool IsInTimeRange(int now, int? start, int? end)
@@ -449,9 +472,9 @@ public sealed class MacroRunner
         return true;
     }
 
-    private static string FormatCondition(IRunCondition step, bool inRange)
+    private static string FormatCondition(ConditionItem c, bool inRange)
     {
-        string range = (step.RunConditionStartMinute, step.RunConditionEndMinute) switch
+        string range = (c.StartMinute, c.EndMinute) switch
         {
             (int s, int e) => $"{FormatMinute(s)}-{FormatMinute(e)}",
             (int s, null) => $"{FormatMinute(s)}之后",

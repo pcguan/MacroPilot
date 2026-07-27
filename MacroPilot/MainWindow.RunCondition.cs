@@ -19,11 +19,9 @@ public partial class MainWindow
     private sealed class RunConditionEditor
     {
         public readonly CheckBox Enabled = new();
-        public readonly CheckBox Invert = new();
-        public readonly ComboBox StartHour = new(), StartMinute = new(), EndHour = new(), EndMinute = new();
-        public readonly ComboBox TypeCombo = new();   // 时间段 / 图片出现
-        public ClickImagePanel Img = null!;           // 图片出现＝与「点击图片」共用同一编辑器（无「匹配第几」、不套卡片底）
-        public readonly CheckBox Retry = new();       // 条件不满足时重复检查
+        public readonly ComboBox LogicCombo = new();                       // 与 / 或
+        public readonly System.Collections.Generic.List<ConditionItem> Items = new();   // 条件列表（编辑期副本）
+        public readonly CheckBox Retry = new();                            // 条件不满足时重复检查
         public readonly System.Windows.Controls.TextBox RetryInterval = new(), RetryMax = new();
         public StackPanel Panel = null!;
     }
@@ -32,56 +30,37 @@ public partial class MainWindow
     private RunConditionEditor BuildRunConditionEditor(IRunCondition? source)
     {
         var ed = new RunConditionEditor();
-        // 宿主窗口懒解析（win=null）：本编辑器在对话框组装前构建；notchBg 用 Hover——条件明细区的底色。
-        ed.Img = new ClickImagePanel(this, null, withIndex: false, boxed: false, notchBgKey: "Hover");
-        ed.Panel = BuildRunConditionPanel(ed.Enabled, ed.Invert, ed.StartHour, ed.StartMinute,
-                                          ed.EndHour, ed.EndMinute, ed.TypeCombo, ed.Img,
-                                          ed.Retry, ed.RetryInterval, ed.RetryMax);
+        // 先把源对象上的条件读进编辑期副本，再建面板——面板要按条数决定"与/或"是否显示。
+        if (source != null)
+        {
+            RunCondition.Normalize(source);                                // 历史存档的单条字段并入列表
+            foreach (var it in source.RunConditions) ed.Items.Add(it.Clone());   // 副本：取消时不影响原对象
+        }
+        ed.Panel = BuildRunConditionPanel(ed.Enabled, ed.Items, ed.LogicCombo, ed.Retry, ed.RetryInterval, ed.RetryMax);
         if (source != null) LoadRunCondition(ed, source);
         return ed;
     }
 
     private static void LoadRunCondition(RunConditionEditor ed, IRunCondition src)
     {
+        RunCondition.Normalize(src);
         ed.Enabled.IsChecked = RunCondition.Has(src);
-        ed.Invert.IsChecked = src.RunConditionInvert;
-        SetTimeSelection(ed.StartHour, ed.StartMinute, src.RunConditionStartMinute);
-        SetTimeSelection(ed.EndHour, ed.EndMinute, src.RunConditionEndMinute);
+        ed.LogicCombo.SelectedIndex = string.Equals(src.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         ed.Retry.IsChecked = src.RunConditionRetry;
         ed.RetryInterval.Text = (src.RunConditionRetryIntervalMs <= 0 ? 1000 : src.RunConditionRetryIntervalMs).ToString();
         ed.RetryMax.Text = Math.Max(0, src.RunConditionRetryMax).ToString();
-        if (src.RunConditionType == "ImageMatch")
-        {
-            ed.Img.LoadCond(src);             // 引用(file:hash)/旧内联 base64 都能解析；面板自行回显缩略图与区域
-            ed.TypeCombo.SelectedIndex = 1;   // 触发切到图片视图
-        }
-        else ed.TypeCombo.SelectedIndex = 0;
     }
 
     /// <summary>把编辑结果写回 dst。输入不合法时抛 InvalidOperationException，由调用方统一提示。</summary>
     private static void ApplyRunCondition(RunConditionEditor ed, IRunCondition dst)
     {
-        if (ed.Enabled.IsChecked != true) { RunCondition.Clear(dst); return; }
-
-        if (ed.TypeCombo.SelectedIndex == 1)   // 图片出现
-        {
-            RunCondition.Clear(dst);
-            dst.RunConditionType = "ImageMatch";
-            dst.RunConditionInvert = ed.Invert.IsChecked == true;
-            ed.Img.ApplyCond(dst);   // 图片/锚定屏/限制区域/阈值（缺图会抛异常，由调用方统一提示）
-            ApplyRetry(ed, dst);
-            return;
-        }
-
-        var start = SelectedMinute(ed.StartHour, ed.StartMinute);
-        var end = SelectedMinute(ed.EndHour, ed.EndMinute);
-        if (!start.HasValue && !end.HasValue)
-            throw new InvalidOperationException("运行条件启用后，请至少选择开始时间或结束时间。");
         RunCondition.Clear(dst);
-        dst.RunConditionType = "TimeRange";
-        dst.RunConditionInvert = ed.Invert.IsChecked == true;
-        dst.RunConditionStartMinute = start;
-        dst.RunConditionEndMinute = end;
+        if (ed.Enabled.IsChecked != true) return;
+
+        var valid = ed.Items.FindAll(i => i.IsValid);
+        if (valid.Count == 0) throw new InvalidOperationException("运行条件已启用，请至少添加一条有效的条件。");
+        foreach (var it in valid) dst.RunConditions.Add(it.Clone());
+        dst.RunConditionLogic = (ed.LogicCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "And";
         ApplyRetry(ed, dst);
     }
 
@@ -152,21 +131,10 @@ public partial class MainWindow
                 var probe = new MacroPlan();
                 ApplyRunCondition(ed, probe);
 
+                // 条件是否有变：整体序列化后比较，别再手写字段列表——历史上每加一个字段都得记得补一行，
+                // 漏了就"改了不标脏、不落盘"。条件已升级成列表，逐字段比更不现实。
                 changed = loops != plan.LoopCount || delayMs != plan.LoopDelayMs || u != plan.LoopDelayUnit
-                          || probe.RunConditionType != plan.RunConditionType
-                          || probe.RunConditionInvert != plan.RunConditionInvert
-                          || probe.RunConditionStartMinute != plan.RunConditionStartMinute
-                          || probe.RunConditionEndMinute != plan.RunConditionEndMinute
-                          || probe.RunConditionImage != plan.RunConditionImage
-                          || probe.RunConditionMonitor != plan.RunConditionMonitor
-                          || probe.RunConditionRectX != plan.RunConditionRectX
-                          || probe.RunConditionRectY != plan.RunConditionRectY
-                          || probe.RunConditionRectW != plan.RunConditionRectW
-                          || probe.RunConditionRectH != plan.RunConditionRectH
-                          || Math.Abs(probe.RunConditionThreshold - plan.RunConditionThreshold) > 1e-9
-                          || probe.RunConditionRetry != plan.RunConditionRetry
-                          || probe.RunConditionRetryIntervalMs != plan.RunConditionRetryIntervalMs
-                          || probe.RunConditionRetryMax != plan.RunConditionRetryMax;
+                          || RunCondition.Snapshot(probe) != RunCondition.Snapshot(plan);
 
                 plan.LoopCount = loops; plan.LoopDelayMs = delayMs; plan.LoopDelayUnit = u;
                 RunCondition.Copy(probe, plan);

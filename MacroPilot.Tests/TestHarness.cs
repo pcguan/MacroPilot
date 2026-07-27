@@ -108,26 +108,27 @@ public static class Harness
         return p;
     }
 
-    /// <summary>给动作/方案挂一个"当前一定满足"的时间段条件（全天 00:00-23:59）。</summary>
-    public static T CondAlways<T>(this T c) where T : IRunCondition
+    /// <summary>一条"当前一定满足"的时间段条件（全天 00:00-23:59）。</summary>
+    public static ConditionItem Always() => new() { Type = "TimeRange", StartMinute = 0, EndMinute = 1439, Invert = false };
+
+    /// <summary>一条"当前一定不满足"的条件（全天区间取反）。</summary>
+    public static ConditionItem Never() => new() { Type = "TimeRange", StartMinute = 0, EndMinute = 1439, Invert = true };
+
+    /// <summary>给动作/方案挂若干条件；logic 为 "And"（默认）或 "Or"。</summary>
+    public static T Cond<T>(this T c, string logic, params ConditionItem[] items) where T : IRunCondition
     {
-        c.RunConditionType = "TimeRange";
-        c.RunConditionStartMinute = 0;
-        c.RunConditionEndMinute = 1439;
-        c.RunConditionInvert = false;
+        c.RunConditions.Clear();
+        foreach (var i in items) c.RunConditions.Add(i);
+        c.RunConditionLogic = logic;
         return c;
     }
 
-    /// <summary>给动作/方案挂一个"当前一定不满足"的时间段条件（把全天区间取反）。</summary>
-    public static T CondNever<T>(this T c) where T : IRunCondition
-    {
-        c.RunConditionType = "TimeRange";
-        c.RunConditionStartMinute = 0;
-        c.RunConditionEndMinute = 1439;
-        c.RunConditionInvert = true;   // 全天区间取反 = 永不满足
-        return c;
-    }
+    public static T CondAlways<T>(this T c) where T : IRunCondition => c.Cond("And", Always());
+    public static T CondNever<T>(this T c) where T : IRunCondition => c.Cond("And", Never());
 
     /// <summary>把"永不满足"就地改成"总是满足"（配合 onLog 测试重复检查中途转为满足）。</summary>
-    public static void MakeSatisfied(IRunCondition c) => c.RunConditionInvert = false;
+    public static void MakeSatisfied(IRunCondition c)
+    {
+        foreach (var it in c.RunConditions) it.Invert = false;
+    }
 }

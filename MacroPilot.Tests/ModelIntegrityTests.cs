@@ -86,9 +86,9 @@ public class ModelIntegrityTests
     }
 
     [Fact]
-    public void 运行条件整体拷贝覆盖接口的每个属性()
+    public void 运行条件整体拷贝覆盖接口的每个标量属性()
     {
-        // RunCondition.Copy 是方案级/动作级共用的唯一拷贝入口，必须覆盖 IRunCondition 全部属性。
+        // RunCondition.Copy 是三级共用的唯一拷贝入口，必须覆盖 IRunCondition 全部属性。
         var src = new MacroStep();
         foreach (var p in typeof(IRunCondition).GetProperties())
         {
@@ -102,43 +102,144 @@ public class ModelIntegrityTests
         var dst = new MacroPlan();
         RunCondition.Copy(src, dst);
         foreach (var p in typeof(IRunCondition).GetProperties())
+        {
+            if (p.PropertyType == typeof(List<ConditionItem>)) continue;   // 列表单独验深拷贝
             Assert.True(Equals(p.GetValue(src), p.GetValue(dst)),
                 $"RunCondition.Copy 漏了属性 {p.Name}——新增运行条件字段后要同步 Copy/Clear。");
+        }
+    }
+
+    [Fact]
+    public void 运行条件拷贝对条件列表是深拷贝()
+    {
+        var src = new MacroStep();
+        src.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 60, EndMinute = 120 });
+        var dst = new MacroPlan();
+        RunCondition.Copy(src, dst);
+
+        Assert.Single(dst.RunConditions);
+        Assert.NotSame(src.RunConditions[0], dst.RunConditions[0]);   // 共享同一条会导致改一处影响两处
+        dst.RunConditions[0].StartMinute = 999;
+        Assert.Equal(60, src.RunConditions[0].StartMinute);
+    }
+
+    [Fact]
+    public void 条件项克隆覆盖全部字段()
+    {
+        var it = new ConditionItem();
+        FillDistinct(it, 5);
+        it.Type = "ImageMatch";
+        var c = it.Clone();
+        AssertSameProps(it, c, new HashSet<string> { "IsValid" }, "ConditionItem.Clone");
+    }
+
+    [Fact]
+    public void 历史存档的单条字段会被归一到条件列表()
+    {
+        // 模拟从旧 plans.json 反序列化出来的对象：只有单条字段
+        var s = new MacroStep();
+        s.RunConditionType = "TimeRange";
+        s.RunConditionStartMinute = 480;
+        s.RunConditionEndMinute = 1080;
+        s.RunConditionInvert = true;
+
+        RunCondition.Normalize(s);
+
+        Assert.Single(s.RunConditions);
+        Assert.Equal("TimeRange", s.RunConditions[0].Type);
+        Assert.Equal(480, s.RunConditions[0].StartMinute);
+        Assert.Equal(1080, s.RunConditions[0].EndMinute);
+        Assert.True(s.RunConditions[0].Invert);
+        Assert.Equal("", s.RunConditionType);        // 旧字段已清空，新存档只写列表
+        Assert.True(RunCondition.Has(s));
+    }
+
+    [Fact]
+    public void 归一是幂等的不会重复追加()
+    {
+        var s = new MacroStep();
+        s.RunConditionType = "TimeRange";
+        s.RunConditionStartMinute = 10;
+        RunCondition.Normalize(s);
+        RunCondition.Normalize(s);
+        RunCondition.Normalize(s);
+        Assert.Single(s.RunConditions);
+    }
+
+    [Fact]
+    public void 历史存档里无效的单条条件归一后不产生空条目()
+    {
+        var s = new MacroStep();
+        s.RunConditionType = "TimeRange";   // 有类型但两侧时间都为空 = 无效
+        RunCondition.Normalize(s);
+        Assert.Empty(s.RunConditions);
+        Assert.False(RunCondition.Has(s));
+    }
+
+    [Fact]
+    public void 条件指纹能反映任意字段变化()
+    {
+        var a = new MacroStep();
+        a.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 60, EndMinute = 120 });
+        var b = new MacroStep();
+        b.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 60, EndMinute = 120 });
+        Assert.Equal(RunCondition.Snapshot(a), RunCondition.Snapshot(b));
+
+        b.RunConditions[0].EndMinute = 121;
+        Assert.NotEqual(RunCondition.Snapshot(a), RunCondition.Snapshot(b));   // 改一条内容
+
+        b.RunConditions[0].EndMinute = 120;
+        b.RunConditionLogic = "Or";
+        Assert.NotEqual(RunCondition.Snapshot(a), RunCondition.Snapshot(b));   // 改与/或
+
+        b.RunConditionLogic = "And";
+        b.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 5 });
+        Assert.NotEqual(RunCondition.Snapshot(a), RunCondition.Snapshot(b));   // 加一条
     }
 
     [Fact]
     public void 清空运行条件后判定为未设条件()
     {
         var s = new MacroStep();
-        s.RunConditionType = "TimeRange";
-        s.RunConditionStartMinute = 100;
+        s.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 100 });
+        s.RunConditionLogic = "Or";
         s.RunConditionRetry = true;
         s.RunConditionRetryMax = 9;
         RunCondition.Clear(s);
         Assert.False(RunCondition.Has(s));
+        Assert.Empty(s.RunConditions);
+        Assert.Equal("And", s.RunConditionLogic);
         Assert.False(s.RunConditionRetry);
         Assert.Equal(1000, s.RunConditionRetryIntervalMs);   // 回到默认间隔
         Assert.Equal(0, s.RunConditionRetryMax);
     }
 
     [Fact]
-    public void 运行条件有效性判定的边界()
+    public void 单条条件有效性判定的边界()
+    {
+        var it = new ConditionItem();
+        Assert.False(it.IsValid);                                           // 空
+
+        it.Type = "TimeRange";
+        Assert.False(it.IsValid);                                           // 有类型无时间
+
+        it.StartMinute = 60;
+        Assert.True(it.IsValid);                                            // 单侧即有效
+
+        it = new ConditionItem { Type = "ImageMatch", Image = "file:abc" };
+        Assert.False(it.IsValid);                                           // 有图无区域
+
+        it.RectW = 10; it.RectH = 10;
+        Assert.True(it.IsValid);
+    }
+
+    [Fact]
+    public void 含无效条目时整组仍按有效条目判定为有条件()
     {
         var s = new MacroStep();
-        Assert.False(RunCondition.Has(s));                                  // 空
-
-        s.RunConditionType = "TimeRange";
-        Assert.False(RunCondition.Has(s));                                  // 有类型无时间
-
-        s.RunConditionStartMinute = 60;
-        Assert.True(RunCondition.Has(s));                                   // 单侧即有效
-
-        RunCondition.Clear(s);
-        s.RunConditionType = "ImageMatch";
-        s.RunConditionImage = "file:abc";
-        Assert.False(RunCondition.Has(s));                                  // 有图无区域
-
-        s.RunConditionRectW = 10; s.RunConditionRectH = 10;
+        s.RunConditions.Add(new ConditionItem());                                        // 半成品
+        Assert.False(RunCondition.Has(s));
+        s.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 1 });  // 一条有效
         Assert.True(RunCondition.Has(s));
     }
 

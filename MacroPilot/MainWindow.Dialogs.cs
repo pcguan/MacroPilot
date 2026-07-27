@@ -868,101 +868,111 @@ public partial class MainWindow
 
     // 运行条件面板：启用勾选后才展开明细。typeCombo+img 非空时（仅动作级）提供“时间段/图片出现”两类，
     // 否则仅时间段（方案级/组合级复用）。
+    /// <summary>
+    /// 运行条件面板（v0.4 起支持多条件）：启用开关 → 满足方式（与/或）→ 条件列表 → 重复检查。
+    /// 每条条件的具体内容在子对话框里编辑（<see cref="ShowConditionItemDialog"/>），
+    /// 列表这里只展示摘要 + 编辑/删除，避免多条时把面板撑成一大坨。
+    /// </summary>
     private StackPanel BuildRunConditionPanel(
         CheckBox enabled,
-        CheckBox invert,
-        ComboBox startHour,
-        ComboBox startMinute,
-        ComboBox endHour,
-        ComboBox endMinute,
-        ComboBox? typeCombo = null,
-        ClickImagePanel? img = null,
-        CheckBox? retry = null,
-        TextBox? retryInterval = null,
-        TextBox? retryMax = null)
+        System.Collections.Generic.List<ConditionItem> items,
+        ComboBox logicCombo,
+        CheckBox retry,
+        TextBox retryInterval,
+        TextBox retryMax)
     {
-        bool withImage = typeCombo != null && img != null;
-
-        var timeRow = new StackPanel { Orientation = Orientation.Horizontal };
-        timeRow.Children.Add(BuildTimeField("从", startHour, startMinute));
-        timeRow.Children.Add(new Border { Width = 22 });
-        timeRow.Children.Add(BuildTimeField("到", endHour, endMinute));
-        var timeSub = new StackPanel();
-        timeSub.Children.Add(timeRow);
-        timeSub.Children.Add(new TextBlock
-        {
-            Text = "某侧选“不限”表示开放边界（例：只设“到 18:00”即 18:00 前均执行）。",
-            Foreground = (Brush)FindResource("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0),
-        });
-
         var detail = new StackPanel();
+        enabled.Content = "启用运行条件";
 
-        if (!withImage)
+        // ---- 满足方式：多条时才有意义，单条时藏起来 ----
+        logicCombo.Items.Clear();
+        logicCombo.Items.Add(new ComboBoxItem { Content = "全部满足（与）", Tag = "And" });
+        logicCombo.Items.Add(new ComboBoxItem { Content = "任一满足（或）", Tag = "Or" });
+        logicCombo.Height = 30; logicCombo.Width = 150;
+        if (logicCombo.SelectedIndex < 0) logicCombo.SelectedIndex = 0;
+        var logicRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+        logicRow.Children.Add(new TextBlock { Text = "满足方式", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+        logicRow.Children.Add(logicCombo);
+        detail.Children.Add(logicRow);
+
+        // ---- 条件列表 ----
+        var listPanel = new StackPanel();
+        detail.Children.Add(listPanel);
+        var addBtn = new Button { Content = "添加条件", Height = 30, MinWidth = 88, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 0) };
+        detail.Children.Add(addBtn);
+        var emptyNote = new TextBlock
         {
-            enabled.Content = "仅在时间段内执行";
-            invert.Content = "取反（不在该时间段内执行）";
-            invert.Margin = new Thickness(0, 12, 0, 0);
-            detail.Children.Add(timeSub);
-            detail.Children.Add(invert);
-        }
-        else
+            Text = "还没有条件：点「添加条件」新增一条（时间段或图片出现）。",
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+        };
+
+        void RefreshList()
         {
-            enabled.Content = "启用运行条件";
-            invert.Content = "取反（条件不满足时才执行）";
-            invert.Margin = new Thickness(0, 12, 0, 0);
-
-            typeCombo!.Items.Clear();
-            typeCombo.Items.Add("时间段"); typeCombo.Items.Add("图片出现");
-            typeCombo.Height = 32; typeCombo.Margin = new Thickness(0, 0, 0, 10);
-            if (typeCombo.SelectedIndex < 0) typeCombo.SelectedIndex = 0;
-
-            // 图片出现＝与「点击图片」共用同一编辑器（图片来源/限制区域/锚定屏/相似度），只是不带「匹配第几」。
-            var imageSub = new StackPanel();
-            imageSub.Children.Add(img!.Panel);
-            imageSub.Children.Add(new TextBlock { Text = "在限制区域内搜索目标图片，找到即视为条件满足（未设区域则搜整块锚定屏）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
-
-            detail.Children.Add(typeCombo);
-            detail.Children.Add(timeSub);
-            detail.Children.Add(imageSub);
-            detail.Children.Add(invert);
-
-            void RefreshType()
+            listPanel.Children.Clear();
+            logicRow.Visibility = items.Count > 1 ? Visibility.Visible : Visibility.Collapsed;   // 只有一条时"与/或"没意义
+            if (items.Count == 0) { listPanel.Children.Add(emptyNote); return; }
+            for (int i = 0; i < items.Count; i++)
             {
-                bool image = typeCombo.SelectedIndex == 1;
-                timeSub.Visibility = image ? Visibility.Collapsed : Visibility.Visible;
-                imageSub.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
+                int idx = i;
+                var it = items[i];
+                var row = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 6) };
+                var ops = new StackPanel { Orientation = Orientation.Horizontal };
+                var edit = new Button { Style = (Style)FindResource("IconButton"), FontSize = 15, Content = "", ToolTip = "编辑该条件" };
+                var del = new Button { Style = (Style)FindResource("IconButton"), FontSize = 15, Content = "", ToolTip = "删除该条件" };
+                edit.Click += (_, _) =>
+                {
+                    var r = ShowConditionItemDialog(items[idx]);
+                    if (r != null) { items[idx] = r; RefreshList(); }
+                };
+                del.Click += (_, _) => { items.RemoveAt(idx); RefreshList(); };
+                ops.Children.Add(edit); ops.Children.Add(del);
+                DockPanel.SetDock(ops, Dock.Right); row.Children.Add(ops);
+                // 多条时前面标个序号，配合"与/或"看得清是第几条
+                var label = new TextBlock
+                {
+                    Text = (items.Count > 1 ? $"{idx + 1}. " : "") + it.ToString(),
+                    VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+                    Foreground = it.IsValid ? (Brush)FindResource("Ink") : (Brush)FindResource("Danger"),
+                };
+                row.Children.Add(label);
+                listPanel.Children.Add(new Border
+                {
+                    Background = (Brush)FindResource("Bg"), CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(10, 4, 6, 4), Margin = new Thickness(0, 0, 0, 4), Child = row,
+                });
             }
-            typeCombo.SelectionChanged += (_, _) => RefreshType();
-            RefreshType();
         }
-
-        // ---- 重复检查（条件不满足时轮询等待）----
-        if (retry != null && retryInterval != null && retryMax != null)
+        addBtn.Click += (_, _) =>
         {
-            retry.Content = "条件不满足时重复检查，直到满足";
-            retry.Margin = new Thickness(0, 14, 0, 0);
-            retryInterval.Width = 84; retryInterval.Height = 30; retryInterval.Text = "1000";
-            retryMax.Width = 74; retryMax.Height = 30; retryMax.Text = "0";
-            var rrow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
-            rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
-            rrow.Children.Add(retryInterval);
-            rrow.Children.Add(new TextBlock { Text = "毫秒", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 16, 0) });
-            rrow.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
-            rrow.Children.Add(retryMax);
-            rrow.Children.Add(new TextBlock { Text = "次（0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
-            var rnote = new TextBlock
-            {
-                Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 6, 0, 0),
-                Text = "不勾选时条件不满足就直接跳过该动作。勾选后会按间隔反复判定，等到满足才继续（等待期间可暂停 / 停止）；到达次数上限仍不满足则跳过。\n方案级运行条件本来就会一直等到满足，因此该勾选对它无影响，但间隔与次数上限同样生效（超出上限即结束本次运行）。",
-            };
-            void RefreshRetry() { rrow.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
-            retry.Checked += (_, _) => RefreshRetry();
-            retry.Unchecked += (_, _) => RefreshRetry();
-            RefreshRetry();
-            detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rnote);
-        }
+            var r = ShowConditionItemDialog(null);
+            if (r != null) { items.Add(r); RefreshList(); }
+        };
+        RefreshList();
 
-        // 勾选开关后，明细收进一个缩进 + 弱底色 + 强调左条的面板里，一眼看出属于该开关的“势力范围”。
+        // ---- 重复检查（对整组条件生效）----
+        retry.Content = "条件不满足时重复检查，直到满足";
+        retry.Margin = new Thickness(0, 14, 0, 0);
+        retryInterval.Width = 84; retryInterval.Height = 30; retryInterval.Text = "1000";
+        retryMax.Width = 74; retryMax.Height = 30; retryMax.Text = "0";
+        var rrow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
+        rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+        rrow.Children.Add(retryInterval);
+        rrow.Children.Add(new TextBlock { Text = "毫秒", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 16, 0) });
+        rrow.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+        rrow.Children.Add(retryMax);
+        rrow.Children.Add(new TextBlock { Text = "次（0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
+        var rnote = new TextBlock
+        {
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 6, 0, 0),
+            Text = "不勾选时条件不满足就直接跳过该动作。勾选后会按间隔反复判定，等到满足才继续（等待期间可暂停 / 停止）；到达次数上限仍不满足则跳过。\n方案级运行条件本来就会一直等到满足，因此该勾选对它无影响，但间隔与次数上限同样生效（超出上限即结束本次运行）。",
+        };
+        void RefreshRetry() { rrow.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
+        retry.Checked += (_, _) => RefreshRetry();
+        retry.Unchecked += (_, _) => RefreshRetry();
+        RefreshRetry();
+        detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rnote);
+
+        // 勾选开关后，明细收进一个缩进 + 弱底色 + 强调左条的面板里，一眼看出属于该开关的"势力范围"。
         var detailWrap = new Border
         {
             Background = (Brush)FindResource("Hover"),
@@ -983,7 +993,111 @@ public partial class MainWindow
         return panel;
     }
 
-    // 单个时间字段：标签 + [时]:[分]；小时选“不限”时禁用分钟。
+    /// <summary>编辑单条运行条件的子对话框。source 为 null 即新增。取消返回 null。</summary>
+    private ConditionItem? ShowConditionItemDialog(ConditionItem? source)
+    {
+        var win = MakeDialog(source == null ? "添加运行条件" : "编辑运行条件");
+        win.Closed += (_, _) => HideIdScreens(win);
+        var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var sp = new StackPanel();
+        var scroller = MakeScrollHost(sp); Grid.SetRow(scroller, 0); grid.Children.Add(scroller);
+
+        var typeCombo = new ComboBox { Height = 32, Margin = new Thickness(0, 0, 0, 12) };
+        typeCombo.Items.Add("时间段"); typeCombo.Items.Add("图片出现");
+        typeCombo.SelectedIndex = source?.Type == "ImageMatch" ? 1 : 0;
+
+        // 时间段
+        ComboBox sh = new(), sm = new(), eh = new(), em = new();
+        var timeRow = new StackPanel { Orientation = Orientation.Horizontal };
+        timeRow.Children.Add(BuildTimeField("从", sh, sm));
+        timeRow.Children.Add(new Border { Width = 22 });
+        timeRow.Children.Add(BuildTimeField("到", eh, em));
+        var timeSub = new StackPanel();
+        timeSub.Children.Add(timeRow);
+        timeSub.Children.Add(new TextBlock
+        {
+            Text = "某侧选“不限”表示开放边界（例：只设“到 18:00”即 18:00 前均满足）。",
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0),
+        });
+
+        // 图片出现：与「点击图片」共用同一编辑器（无"匹配第几"）
+        var img = new ClickImagePanel(this, win, withIndex: false, boxed: false, notchBgKey: "Bg");
+        var imgSub = new StackPanel();
+        imgSub.Children.Add(img.Panel);
+        imgSub.Children.Add(new TextBlock
+        {
+            Text = "在限制区域内搜索目标图片，找到即视为本条满足（未设区域则搜整块锚定屏）。",
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0),
+        });
+
+        var invert = new CheckBox { Content = "取反（条件不成立时才算满足）", Margin = new Thickness(0, 14, 0, 0), IsChecked = source?.Invert == true };
+
+        var body = new StackPanel();
+        body.Children.Add(FieldLabel("条件类型"));
+        body.Children.Add(typeCombo);
+        body.Children.Add(timeSub);
+        body.Children.Add(imgSub);
+        body.Children.Add(invert);
+        sp.Children.Add(GroupCard("条件", body));
+
+        void RefreshType()
+        {
+            bool image = typeCombo.SelectedIndex == 1;
+            timeSub.Visibility = image ? Visibility.Collapsed : Visibility.Visible;
+            imgSub.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
+            // 图片条件要选屏：多屏时顺带把屏幕编号标出来
+            if (image && ScreenInfo.All().Count > 1) ShowIdScreens(win); else HideIdScreens(win);
+        }
+        typeCombo.SelectionChanged += (_, _) => RefreshType();
+
+        if (source != null)
+        {
+            SetTimeSelection(sh, sm, source.StartMinute);
+            SetTimeSelection(eh, em, source.EndMinute);
+            if (source.Type == "ImageMatch") img.LoadCond(source);
+        }
+        RefreshType();
+
+        var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
+        var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton") };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        bar.Children.Add(okBtn); bar.Children.Add(cancelBtn);
+        var footer = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 12, 14, 0), Child = bar };
+        Grid.SetRow(footer, 1); grid.Children.Add(footer);
+
+        ConditionItem? result = null;
+        okBtn.Click += (_, _) =>
+        {
+            try
+            {
+                var it = new ConditionItem { Invert = invert.IsChecked == true };
+                if (typeCombo.SelectedIndex == 1)
+                {
+                    it.Type = "ImageMatch";
+                    img.ApplyCond(it);   // 缺图会抛异常，下面统一提示
+                }
+                else
+                {
+                    var start = SelectedMinute(sh, sm);
+                    var end = SelectedMinute(eh, em);
+                    if (!start.HasValue && !end.HasValue)
+                        throw new InvalidOperationException("请至少选择开始时间或结束时间。");
+                    it.Type = "TimeRange";
+                    it.StartMinute = start; it.EndMinute = end;
+                }
+                result = it;
+                win.DialogResult = true;
+            }
+            catch (Exception ex)
+            {
+                ThemedDialog.Show(ex.Message, "条件不完整", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+            }
+        };
+        win.Content = grid;
+        return win.ShowDialog() == true ? result : null;
+    }
     private StackPanel BuildTimeField(string label, ComboBox hour, ComboBox minute)
     {
         FillHourCombo(hour);
@@ -2240,22 +2354,22 @@ public partial class MainWindow
         }
 
         // 运行条件「图片出现」共用本编辑器：读写 IRunCondition 的 RunConditionXxx 字段（与 MacroStep 的 ClickImage* 平行）。
-        public void LoadCond(IRunCondition src)
+        public void LoadCond(IConditionData src)
         {
-            Png = ImageStore.Bytes(src.RunConditionImage);
-            Monitor = src.RunConditionMonitor; RelX = src.RunConditionRectX; RelY = src.RunConditionRectY; W = src.RunConditionRectW; H = src.RunConditionRectH;
-            _thrText.Text = ((int)Math.Round(Math.Clamp(src.RunConditionThreshold > 0 ? src.RunConditionThreshold : 0.9, 0.1, 1.0) * 100)).ToString();
+            Png = ImageStore.Bytes(src.Image);
+            Monitor = src.Monitor; RelX = src.RectX; RelY = src.RectY; W = src.RectW; H = src.RectH;
+            _thrText.Text = ((int)Math.Round(Math.Clamp(src.Threshold > 0 ? src.Threshold : 0.9, 0.1, 1.0) * 100)).ToString();
             _index.Text = "1";
             Refresh(); SyncEdges();
         }
 
-        public void ApplyCond(IRunCondition dst)
+        public void ApplyCond(IConditionData dst)
         {
             if (!HasImage) throw new InvalidOperationException("请先设置目标图片（截图 / 导入 / 粘贴）。");
-            dst.RunConditionImage = ImageStore.Ref(Png!);   // 立即外置成 file:hash 引用
-            dst.RunConditionMonitor = Monitor; dst.RunConditionRectX = RelX; dst.RunConditionRectY = RelY;
-            dst.RunConditionRectW = W; dst.RunConditionRectH = H;
-            dst.RunConditionThreshold = Threshold;
+            dst.Image = ImageStore.Ref(Png!);   // 立即外置成 file:hash 引用
+            dst.Monitor = Monitor; dst.RectX = RelX; dst.RectY = RelY;
+            dst.RectW = W; dst.RectH = H;
+            dst.Threshold = Threshold;
         }
 
         public void Apply(MacroStep s)

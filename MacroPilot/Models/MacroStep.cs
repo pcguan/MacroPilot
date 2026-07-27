@@ -95,6 +95,11 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
 
     // 运行条件：RunConditionType 支持 TimeRange / ImageMatch；RunConditionInvert=true 表示条件取反。
     // 时间用当天分钟数保存（0-1439），null 表示开放边界：仅开始=开始及之后，仅结束=结束及之前。
+    // 多条件（v0.4）：条件列表 + 与/或。历史存档的单条字段（下方 RunConditionXxx）由
+    // RunCondition.Normalize 并入本列表后清空，因此新存档里只会出现这两个属性。
+    public System.Collections.Generic.List<ConditionItem> RunConditions { get; set; } = new();
+    public string RunConditionLogic { get; set; } = "And";
+
     public string RunConditionType { get; set; } = "";
     public bool RunConditionInvert { get; set; }
     public int? RunConditionStartMinute { get; set; }
