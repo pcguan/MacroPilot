@@ -171,11 +171,13 @@ public sealed class RunHud : Window
 
     public void SetPlan(string name) => _plan.Text = name;
     public void SetLoop(string loop) => _loop.Text = loop;
-    public void SetAction(int pct, string text)
+    public void SetAction(double pct, string text)
     {
-        _bar.Value = Math.Clamp(pct, 0, 100);
-        _pct.Text = pct + "%";
-        if (!string.IsNullOrEmpty(text)) _action.Text = text;
+        pct = Math.Clamp(pct, 0, 100);
+        MainWindow.GlideTo(_bar, pct);   // 与主窗口进度条同一套平滑推进（前进滑动、后退瞬跳）
+        string t = (int)Math.Round(pct) + "%";
+        if (_pct.Text != t) _pct.Text = t;
+        if (!string.IsNullOrEmpty(text) && _action.Text != text) _action.Text = text;
     }
 
     /// <summary>kind: Running / Paused / Success / Stopped / Error / Done。</summary>

@@ -1025,7 +1025,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _runner.ActBegin += body => _logQueue.Enqueue(new LogMsg(LogOp.Begin, LogTime(), "", body, ""));
         _runner.ActEnd += (status, kind) => _logQueue.Enqueue(new LogMsg(LogOp.End, "", status, kind, ""));
         _runner.StepStateChanged += (st, on) => _stepQueue.Enqueue((st, on));
-        _runner.Progress += (pct, txt) => { _progPct = pct; _progText = txt; _progActive = true; };
+        // volatile 不支持 double，存"千分之几"的 int（0.1% 分辨率对进度条足够平滑）。
+        _runner.Progress += (pct, txt) => { _progTenths = (int)(pct * 10); _progText = txt; _progActive = true; };
         _runner.PlanLoopChanged += s => _planLoopText = s;
         _runner.PausedChanged += paused => _pausedSignal = paused ? 1 : 2;
         _runner.Finished += reason => _finishSignal = reason;
@@ -1085,20 +1086,40 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (node.FailAction != null) MapRunTree(node.FailAction, top);
     }
     private volatile bool _progActive;
-    private volatile int _progPct;
+    private volatile int _progTenths;   // 进度 ×10（0~1000）：volatile 不支持 double，用 int 存 0.1% 分辨率
     private volatile string _progText = "";
     private volatile string _planLoopText = "";   // 方案级"第 N/总 轮"（PlanLoopChanged 置，FlushRunUi 显示在方案名后）
     private volatile int _pausedSignal;     // 0 无, 1 暂停, 2 运行
     private volatile string? _finishSignal; // Done/Stopped/Error
     private string _runDisplayName = "";
     private System.Windows.Threading.DispatcherTimer? _uiFlush;
+    private System.Threading.Tasks.Task _logWriteChain = System.Threading.Tasks.Task.CompletedTask;   // 日志落盘串行链（保序、不占 UI 线程）
     private static string LogTime() => DateTime.Now.ToString("HH:mm:ss.fff");
+
+    /// <summary>
+    /// 进度条平滑推进：前进时用 ~160ms 线性动画滑到目标（两个刷新周期，8ms 帧率渲染补出中间帧——
+    /// 80ms 一跳的采样直接 Value= 会一格一格蹦）；后退（新动作归零/新一圈）则立即跳，不做"倒着缩"动画。
+    /// </summary>
+    internal static void GlideTo(System.Windows.Controls.Primitives.RangeBase bar, double target)
+    {
+        if (target < bar.Value)
+        {
+            bar.BeginAnimation(System.Windows.Controls.Primitives.RangeBase.ValueProperty, null);   // 清掉在跑的动画，否则直接设 Value 会被动画值压住
+            bar.Value = target;
+            return;
+        }
+        if (target == bar.Value) return;
+        var anim = new System.Windows.Media.Animation.DoubleAnimation(target, TimeSpan.FromMilliseconds(160))
+        { FillBehavior = System.Windows.Media.Animation.FillBehavior.HoldEnd };
+        bar.BeginAnimation(System.Windows.Controls.Primitives.RangeBase.ValueProperty, anim);   // 默认 SnapshotAndReplace：从当前动画值续走，不跳变
+    }
 
     private void StartRunUiTimer()
     {
         if (_uiFlush == null)
         {
-            _uiFlush = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+            // Render 优先级：默认 Background 会被同队列的布局/滚动工作顶延，tick 间距忽长忽短——进度条肉眼可见地发涩。
+            _uiFlush = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(80) };
             _uiFlush.Tick += (_, _) => FlushRunUi();
         }
         _uiFlush.Start();
@@ -1156,11 +1177,18 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                     break;
             }
         }
-        if (pending != null) Storage.AppendRunLog(string.Join(Environment.NewLine, pending));
+        // 落盘挪出 UI 线程（串行链保序）：File.AppendAllText 在 UI 线程上偶发几 ms 的抖动，正好卡在进度条刷新之间。
+        if (pending != null)
+        {
+            var batch = string.Join(Environment.NewLine, pending);
+            _logWriteChain = _logWriteChain.ContinueWith(_ => Storage.AppendRunLog(batch),
+                System.Threading.Tasks.TaskScheduler.Default);
+        }
         if (added)
         {
             bool atBottom = LogAtBottom();
-            while (_logs.Count > 2000) _logs.RemoveAt(0);
+            // 滞回裁剪：超 2200 才一次裁回 2000，别每 tick 都做 RemoveAt(0)（每次都触发 CollectionChanged→列表重排）。
+            if (_logs.Count > 2200) while (_logs.Count > 2000) _logs.RemoveAt(0);
             if (atBottom && LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
         }
         // 当前动作高亮 + 自动滚动：滚动目标映射到顶层祖先行（组合子动作/监听动作不在扁平列表里），
@@ -1181,9 +1209,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _hud?.SetLoop(_planLoopText);
         if (_progActive)
         {
+            double pct = _progTenths / 10.0;
             ProgressStrip.Visibility = Visibility.Visible;
-            ProgressBar.Value = _progPct; ProgressPercentText.Text = _progPct + "%"; ProgressActionText.Text = _progText;
-            _hud?.SetAction(_progPct, _progText);
+            GlideTo(ProgressBar, pct);
+            int shown = (int)Math.Round(pct);
+            string pctText = shown + "%";
+            if (ProgressPercentText.Text != pctText) ProgressPercentText.Text = pctText;
+            ProgressActionText.Text = _progText;
+            _hud?.SetAction(pct, _progText);
         }
         // 暂停/继续
         int p = _pausedSignal;

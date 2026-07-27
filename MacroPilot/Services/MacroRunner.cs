@@ -33,7 +33,7 @@ public sealed class MacroRunner
     public event Action<string, string>? Log;                // (level, message) 普通日志行
     public event Action<string>? ActBegin;                   // 开始一条动作日志行（状态=执行中）
     public event Action<string, string>? ActEnd;             // 结束动作日志行 (状态文字, 状态种类)
-    public event Action<int, string>? Progress;              // (percent, 状态串)
+    public event Action<double, string>? Progress;           // (percent 0~100，double——整数百分比只有 100 个台阶，等待类动作的进度条会一顿一顿)
     public event Action<bool>? PausedChanged;                // isPaused
     public event Action<string>? Finished;                   // Done/Stopped/Error
     public event Action<string>? PlanLoopChanged;            // 方案循环文本"第 N/总 轮"（每轮开始变；属方案级，与动作级状态分开显示）
@@ -143,6 +143,7 @@ public sealed class MacroRunner
         // report 时按已过时间推进进度并在状态栏显示等待百分比。
         if (ms <= 0) return;
         double total = ms;
+        double lastReported = -100;   // 上次上报的已过毫秒：末段自旋每圈只有微秒级，不节流会在收尾几毫秒里疯狂拼串上报
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (true)
         {
@@ -163,7 +164,11 @@ public sealed class MacroRunner
             if (report)
             {
                 double done = Math.Min(total, sw.Elapsed.TotalMilliseconds);
-                Progress?.Invoke((int)(done / total * 100), StatusLine(done, total));
+                if (done - lastReported >= 16 || done >= total)   // ~一帧一报足够（UI 端 80ms 才取一次）
+                {
+                    lastReported = done;
+                    Progress?.Invoke(done / total * 100.0, StatusLine(done, total));
+                }
             }
         }
     }
