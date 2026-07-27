@@ -127,7 +127,9 @@ public partial class MainWindow
 
     // 在指定显示器上盖一个透明全屏覆盖层，用户点击选位（带十字准星 + 实时坐标）。
     // 返回 (设备名, nx, ny)；Esc/无选择返回 null。用物理像素精确覆盖，避开 DPI 换算。
-    private (string dev, double nx, double ny)? PickOnMonitor(ScreenInfo.Monitor mon, Window dialog)
+    // 跨屏点选：覆盖层铺满整个虚拟桌面，任意屏直接点，落点用物理光标坐标经 FromPoint 自动识别屏幕
+    // （返回 设备名+屏内百分比）。不再要求先在下拉框选屏——下拉只作手输/预览的锚定，点选后自动跟随。
+    private (string dev, double nx, double ny)? PickAnywhere(Window dialog)
     {
         (string dev, double nx, double ny)? result = null;
         var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
@@ -135,6 +137,7 @@ public partial class MainWindow
         // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用透过透明覆盖层清晰可见。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);  // SWP_NOSIZE|NOMOVE|NOACTIVATE
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var (ox, oy, vw, vh) = VirtualBounds();
         var overlay = new Window
         {
             WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
@@ -154,7 +157,7 @@ public partial class MainWindow
         canvas.Children.Add(vLine); canvas.Children.Add(hLine); canvas.Children.Add(coord);
         var hint = new TextBlock
         {
-            Text = $"在「{mon.Label}」上点击选择位置（Esc 取消）",
+            Text = "在目标位置点击选择（可跨屏，自动识别屏幕；Esc 取消）",
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 28, 0, 0),
             Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold,
@@ -166,9 +169,10 @@ public partial class MainWindow
         overlay.SourceInitialized += (_, _) =>
         {
             var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
-            SetWindowPos(h, HWND_TOPMOST, mon.Left, mon.Top, mon.Width, mon.Height, 0x0040); // SWP_SHOWWINDOW
+            SetWindowPos(h, HWND_TOPMOST, ox, oy, vw, vh, 0x0040); // SWP_SHOWWINDOW，铺满虚拟桌面
         };
         overlay.Loaded += (_, _) => { overlay.Activate(); overlay.Focus(); };
+        string lastDev = ""; string devLabel = "";   // 屏名查询缓存：别在每次 MouseMove 里枚举显示器
         overlay.MouseMove += (_, e) =>
         {
             var p = e.GetPosition(canvas);
@@ -176,8 +180,9 @@ public partial class MainWindow
             hLine.Y1 = hLine.Y2 = p.Y; hLine.X1 = 0; hLine.X2 = canvas.ActualWidth;
             var (cx, cy) = ScreenInfo.CursorPos();
             var f = ScreenInfo.FromPoint(cx, cy);
-            coord.Text = $"{f.nx * 100:0.#}% , {f.ny * 100:0.#}%";
-            Canvas.SetLeft(coord, Math.Min(p.X + 14, Math.Max(0, canvas.ActualWidth - 96)));
+            if (f.device != lastDev) { lastDev = f.device; devLabel = ScreenInfo.ByDevice(f.device).Label; }
+            coord.Text = $"{devLabel}  {f.nx * 100:0.#}% , {f.ny * 100:0.#}%";
+            Canvas.SetLeft(coord, Math.Min(p.X + 14, Math.Max(0, canvas.ActualWidth - 170)));
             Canvas.SetTop(coord, Math.Min(p.Y + 14, Math.Max(0, canvas.ActualHeight - 26)));
         };
         overlay.MouseLeftButtonDown += (_, _) =>
@@ -1723,6 +1728,8 @@ public partial class MainWindow
         private readonly System.Windows.Controls.Image _thumb = new() { MaxWidth = 220, MaxHeight = 150, Stretch = System.Windows.Media.Stretch.Uniform };
         private readonly Border _thumbBorder;
         private readonly TextBlock _imgStatus, _regionHint;
+        // 锚定屏下拉：手动调参（填四边）时指定基准屏；截图/编辑区域自动识别后自动跟随。
+        private readonly ComboBox _monCombo = new() { Height = 30, VerticalAlignment = VerticalAlignment.Center };
         // 限制区域四边（尖角浮标输入格，值内部统一为屏内像素）：左/右/上/下。构造时 new（需 dim 委托）。
         private EdgeCell _left = null!, _right = null!, _top = null!, _bottom = null!;
         // 相似度阈值：复用运行条件那套百分比文本框（越高越严格），默认 90。
@@ -1764,12 +1771,25 @@ public partial class MainWindow
             var editBtn = MkIcon("", "编辑区域：在屏幕上拖动·缩放调整搜索范围");
             _previewBtn = MkIcon("", "预览：在屏幕上白框回显当前区域");
             var clearBtn = MkIcon("", "清除限制区域（改为搜索整块主屏）");
-            var regionHeader = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 16, 0, 6) };
-            regionHeader.Children.Add(new TextBlock { Text = "限制区域", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+            // 头部：标题 + 屏幕下拉（手动调参的锚定屏；截图/编辑区域自动识别后自动跟随）+ 编辑/预览/清除图标。
+            var regionHeader = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 16, 0, 6) };
+            var regionTitle = new TextBlock { Text = "限制区域", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+            DockPanel.SetDock(regionTitle, Dock.Left); regionHeader.Children.Add(regionTitle);
             var regionBtns = new StackPanel { Orientation = Orientation.Horizontal };
             regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn); regionBtns.Children.Add(clearBtn);
             DockPanel.SetDock(regionBtns, Dock.Right); regionHeader.Children.Add(regionBtns);
+            _monCombo.Margin = new Thickness(10, 0, 8, 0);
+            foreach (var m in ScreenInfo.All()) _monCombo.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Device });
+            regionHeader.Children.Add(_monCombo);
             inner.Children.Add(regionHeader);
+            _monCombo.SelectionChanged += (_, _) =>
+            {
+                if (_syncing) return;
+                // 手动换屏：四边百分比不变，按新屏尺寸重算区域像素（DP 模式则保持像素值）。
+                Monitor = (_monCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+                EdgesToRegion();
+                SyncEdges();
+            };
             _left = new EdgeCell(o, "左", () => RegionMon().Width, true);
             _right = new EdgeCell(o, "右", () => RegionMon().Width, false);
             _top = new EdgeCell(o, "上", () => RegionMon().Height, false);
@@ -1855,7 +1875,7 @@ public partial class MainWindow
             {
                 if (W > 0 && H > 0) { var m = ScreenInfo.ByDevice(Monitor); o.PreviewRegion(m.Left + RelX, m.Top + RelY, W, H, win); }
             };
-            Refresh();
+            Refresh(); SyncEdges();   // SyncEdges 初始化锚定屏下拉（默认主屏）
         }
 
         private static byte[]? ClipboardPng()
@@ -1901,11 +1921,14 @@ public partial class MainWindow
 
         private ScreenInfo.Monitor RegionMon() => ScreenInfo.ByDevice(string.IsNullOrEmpty(Monitor) ? ScreenInfo.Primary().Device : Monitor);
 
-        // 区域 → 四边格（各格按自身 %/DP 模式渲染屏内像素）。空区域→清空（露出占位标签）。
-        // 仅在区域被程序化改动时调用（截图/编辑/清除/回填），别在 Refresh 里无脑调（会清掉用户半途输入）。
+        // 区域 → 四边格（各格按自身 %/DP 模式渲染屏内像素）+ 锚定屏下拉跟随。空区域→清空（露出占位标签）。
+        // 仅在区域被程序化改动时调用（截图/编辑/清除/回填/换屏），别在 Refresh 里无脑调（会清掉用户半途输入）。
         private void SyncEdges()
         {
             _syncing = true;
+            var dev = RegionMon().Device;
+            foreach (var it in _monCombo.Items)
+                if (it is ComboBoxItem c && c.Tag is string d && string.Equals(d, dev, StringComparison.OrdinalIgnoreCase)) { _monCombo.SelectedItem = it; break; }
             if (W > 0 && H > 0)
             {
                 _left.SetPx(RelX); _right.SetPx(RelX + W); _top.SetPx(RelY); _bottom.SetPx(RelY + H);
@@ -1997,7 +2020,7 @@ public partial class MainWindow
                 f.Children.Add(row);
                 return f;
             }
-            var pickBtn = new Button { Style = (Style)o.FindResource("IconButton"), FontSize = 16, Content = "\uE81D", ToolTip = "在屏幕上点选坐标" };
+            var pickBtn = new Button { Style = (Style)o.FindResource("IconButton"), FontSize = 16, Content = "\uE81D", ToolTip = "点选坐标（可跨屏，自动识别屏幕）" };
             var previewBtn = new Button { Style = (Style)o.FindResource("IconButton"), FontSize = 16, Content = "\uE7B3", ToolTip = "预览已选位置", Margin = new Thickness(2, 0, 0, 0) };
             var valRow = new DockPanel { LastChildFill = false };
             var valLabel = Label("坐标值");
@@ -2061,7 +2084,7 @@ public partial class MainWindow
             FillMonitors();
             pickBtn.Click += (_, _) =>
             {
-                var r = o.PickOnMonitor(ScreenInfo.ByDevice(Device), win);
+                var r = o.PickAnywhere(win);   // 跨屏点选：自动识别屏幕，回填时下拉自动切到落点所在屏
                 if (r is { } picked)
                 {
                     Write(picked.dev, picked.nx, picked.ny);
