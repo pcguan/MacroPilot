@@ -528,6 +528,100 @@ public partial class MainWindow
         }
     }
 
+    // 「正则随机生成」语法速查：分组罗列支持的规则，每条一句说明 + 一个可直接照抄的例子。
+    private void ShowRegexHelpDialog()
+    {
+        var win = MakeDialog("随机文本 · 支持的正则语法");
+        var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var sp = new StackPanel();
+        var scroller = MakeScrollHost(sp); Grid.SetRow(scroller, 0); grid.Children.Add(scroller);
+
+        var mono = new FontFamily("Consolas, Cascadia Mono, Microsoft YaHei UI");
+        StackPanel cur = null!;
+        void Section(string title, string? note = null)
+        {
+            cur = new StackPanel();
+            if (note != null)
+                cur.Children.Add(new TextBlock { Text = note, Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) });
+            sp.Children.Add(GroupCard(title, cur));
+        }
+        // 一条规则：语法（等宽、强调色、浅底药丸）+ 说明；下一行是例子。
+        void Rule(string syntax, string desc, string example)
+        {
+            var row = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+            var head = new StackPanel { Orientation = Orientation.Horizontal };
+            head.Children.Add(new Border
+            {
+                Background = (Brush)FindResource("Hover"), CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 1, 6, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock { Text = syntax, FontFamily = mono, FontSize = 13, Foreground = (Brush)FindResource("Accent"), FontWeight = FontWeights.SemiBold },
+            });
+            head.Children.Add(new TextBlock { Text = desc, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), FontSize = 13 });
+            row.Children.Add(head);
+            row.Children.Add(new TextBlock { Text = example, FontFamily = mono, FontSize = 12, Foreground = (Brush)FindResource("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(2, 4, 0, 0) });
+            cur.Children.Add(row);
+        }
+
+        Section("字符类", "从一堆候选字符里随机取【一个】；配合量词就能取多个。");
+        Rule("[abc]", "括号内任选一个", "[abc]         →  a");
+        Rule("[a-z]", "区间：a 到 z 任选一个", "[a-z]{5}      →  kqxwe");
+        Rule("[0-9a-z]", "多个区间可并排写", "[0-9a-z]{10}  →  4udr6w0eqi");
+        Rule("[^abc]", "取反：除这些之外的可打印字符", "[^0-9]{3}     →  _.x");
+
+        Section("预定义字符类", "常用字符集的简写。");
+        Rule("\\d", "数字 0-9", "\\d{6}         →  235991");
+        Rule("\\w", "字母、数字、下划线", "\\w{4}         →  E52N");
+        Rule("\\s", "空格", "a\\sb          →  a b");
+        Rule("\\D \\W \\S", "上面三个的取反", "\\D{3}         →  +)]");
+        Rule(".", "任意可打印字符（不含空格）", ".{5}          →  k#2Qw");
+
+        Section("量词", "跟在字符、字符类或分组后面，指定重复次数。");
+        Rule("{n}", "正好 n 次", "\\d{6}         →  235991");
+        Rule("{n,m}", "n 到 m 次之间随机", "[A-Z]{2,4}    →  MPB");
+        Rule("{n,}", "至少 n 次（最多再加 8 次）", "a{2,}         →  aaaaa");
+        Rule("?", "0 或 1 次", "ab?c          →  ac 或 abc");
+        Rule("*", "0 到 8 次", "ab*           →  abbb");
+        Rule("+", "1 到 9 次", "ab+           →  abb");
+
+        Section("分组与交替");
+        Rule("(...)", "括起来当整体，可整体加量词", "(ab){3}       →  ababab");
+        Rule("|", "多选一，随机挑一个分支", "(红|绿|蓝)     →  蓝");
+        Rule("嵌套组合", "分组 / 交替 / 量词可任意组合", "(abc|xyz)-\\w{4}  →  xyz-Tckf");
+
+        Section("转义与字面量");
+        Rule("\\. \\[ \\{ \\( \\| \\\\", "特殊字符前加反斜杠 = 它本身", "a\\.b          →  a.b");
+        Rule("\\n  \\t", "换行 / 制表符", "第一行\\n第二行");
+        Rule("中文等字符", "非特殊字符原样输出，可混写", "颜色(红|绿|蓝) →  颜色绿");
+
+        Section("常用示例", "可直接复制到内容框使用。");
+        Rule("[0-9a-z]{10}", "10 位随机小写字母数字", "→  4udr6w0eqi");
+        Rule("\\d{6}", "6 位数字验证码", "→  235991");
+        Rule("1[3-9]\\d{9}", "随机手机号", "→  14951696329");
+        Rule("[a-zA-Z]\\w{5,11}", "字母开头的用户名", "→  Kf3n8sz");
+        Rule("user_\\d{1,3}@test\\.com", "随机邮箱", "→  user_69@test.com");
+
+        Section("限制说明");
+        cur.Children.Add(new TextBlock
+        {
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap,
+            Text = "· 这里的正则用来【生成】而不是匹配，所以断言 (?=...)、反向引用 \\1 这类只在匹配时有意义的语法不支持。\n" +
+                   "· 锚点 ^ 与 $ 会被忽略。\n" +
+                   "· * + {n,} 这类无上限量词最多再重复 8 次，避免生成超长内容；结果总长上限 4096 字符。\n" +
+                   "· 每次执行都会重新生成：动作重复 N 次，就得到 N 个各不相同的结果。",
+        });
+
+        var closeBtn = new Button { Content = "关闭", Width = 88, Height = 36, IsDefault = true, IsCancel = true, Style = (Style)FindResource("PrimaryButton") };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        bar.Children.Add(closeBtn);
+        var footer = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 12, 14, 0), Child = bar };
+        Grid.SetRow(footer, 1); grid.Children.Add(footer);
+        closeBtn.Click += (_, _) => win.Close();
+        win.Content = grid;
+        win.ShowDialog();
+    }
+
     // 手动截取目标图片：先下沉本体+编辑窗口，浮动工具条让用户自由整理桌面（把目标窗口拖到前台）；
     // 点“开始框选”后冻结整屏快照，在其上橡皮筋选区；结果从快照裁剪（不含覆盖层）。返回 PNG + 绑定的虚拟像素区域。
     private (byte[] png, int vx, int vy, int w, int h)? CaptureTargetImage(Window dialog)
@@ -1134,15 +1228,17 @@ public partial class MainWindow
         // 正则随机：把上面的内容当【生成模式】，每次执行随机生成一串（不是用来匹配的）。
         var randomCheck = new CheckBox { Content = "正则随机生成", VerticalAlignment = VerticalAlignment.Center };
         var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "\uE890", ToolTip = "预览：按当前模式随机生成一个示例" };
+        var regexHelpBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "\uE897", ToolTip = "支持的正则语法与示例" };
+        regexHelpBtn.Click += (_, _) => ShowRegexHelpDialog();
         var randomRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 10, 0, 0) };
         DockPanel.SetDock(randomCheck, Dock.Left); randomRow.Children.Add(randomCheck);
+        DockPanel.SetDock(regexHelpBtn, Dock.Right); randomRow.Children.Add(regexHelpBtn);   // 先 dock 的更靠右
         DockPanel.SetDock(previewBtn, Dock.Right); randomRow.Children.Add(previewBtn);
         var randomHint = new TextBlock
         {
             Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
             Text = "把上面的内容当作正则【生成模式】，每次执行随机生成一串（重复多次即每次不同）。\n" +
-                   "例：[0-9a-z]{10} → 10 位随机小写字母数字；\\d{6} → 6 位数字；1[3-9]\\d{9} → 手机号；(abc|xyz)-\\w{4} → 二选一加 4 位。\n" +
-                   "支持 [字符类] \\d \\w \\s (分组) | 交替 {n} {n,m} ? * + 与转义；不支持断言/反向引用。",
+                   "例：[0-9a-z]{10} → 10 位随机小写字母数字；\\d{6} → 6 位数字验证码。完整语法与更多示例点右上角 ? 查看。",
         };
         var previewText = new TextBlock { FontFamily = new FontFamily("Consolas, Cascadia Mono, Microsoft YaHei UI"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
         previewBtn.Click += (_, _) =>
