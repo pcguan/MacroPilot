@@ -13,27 +13,37 @@
 
 | 目录 / 文件 | 内容 |
 | --- | --- |
-| `Models/` | `MacroStep`（动作，含子动作与监听动作，递归；点击/移动/拖动/滚轮/键盘/等待/激活窗口/跳转/组合）、`MacroPlan`、`MacroDocument`、`IRunCondition`（方案级与动作级运行条件的公共契约）、`LogEntry` |
+| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；带稳定 `Id` 供跳转绑定）、`MacroPlan`、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或，三级共用的公共契约）、`LogEntry` |
 | `Input/` | `IInputBackend` 抽象（含 `MouseDown/MouseUp` 供拖动）；`Ch9329Device`（串口硬件）、`NativeInputDevice`（SendInput）、`Ch9329Scanner`（按 USB VID:PID 过滤后探测串口）、`KeyMap`、`ScreenInfo`（多屏拓扑） |
-| `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片条件匹配、`ImageStore` 图片外置+孤儿清理、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
+| `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片搜索匹配、`ImageStore` 图片外置+孤儿清理、`RandomText`（逆向正则：按模式生成随机串）、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
 | `App.xaml(.cs)` | 单实例（唤起已有窗口后静默退出，**不弹模态**）+ 按需提权 + 显式建窗口 + 全局统一 ToolTip 延迟 |
-| `MainWindow.xaml(.cs)` | 主界面；partial 拆分：`.Dialogs`（编辑对话框，内含 `CoordBlock`/`RepeatBlock`/`TimeInputRow` 可复用块）、`.RunCondition`（运行条件编辑器 + 方案设置对话框）、`.Hud`（运行悬浮窗）、`.Tray`（系统托盘）、`.Schedule`（定时启动）、`.Update`（更新进度窗） |
+| `MainWindow.xaml(.cs)` | 主界面；partial 拆分：`.Dialogs`（编辑对话框，内含 `CoordBlock`/`RepeatBlock`/`TimeInputRow`/`EdgeCell`/`ClickImagePanel`/`RectPicker` 可复用块）、`.RunCondition`（运行条件编辑器 + 方案设置对话框）、`.Snip`（截图覆盖层：自动框窗 + 标注工具条）、`.Hud`（运行悬浮窗）、`.Tray`（系统托盘）、`.Schedule`（定时启动）、`.Update`（更新进度窗） |
+| `../MacroPilot.Tests/` | xUnit 单元测试。`FakeBackend` 顶掉真实键鼠输出、只记录调用序列，于是「方案跑出来的动作序列」可直接断言；业务逻辑（条件 / 挂点 / 循环 / 跳转 / 停止暂停）全覆盖，实际注入层不测。**改模型字段必跑**——`ModelIntegrityTests` 用反射查 `Clone`/`RunCondition.Copy` 有没有漏拷 |
 
 ## 几个容易踩的设计点
 
 **执行引擎（`MacroRunner`）**
 - `RunTop` → `RunGroup`（递归嵌套组合）→ `RunLeaf`；监听动作经 `RunHook` 复用 `RunLeaf/RunGroup`，因此天然支持递归。
 - 跳转是独立的 Jump 动作：执行时上报 `_pendingJump`，由 `RunTop` 在当前顶层步骤结束后统一消费（在组合内/监听里执行同样生效）。旧格式挂在其它动作上的 `JumpTarget` **一律忽略、不迁移**——保持引擎只有一条跳转路径。
+- 跳转目标绑定 `MacroStep.Id`（稳定身份）而非序号，插入/删除/排序都不会指错；只有序号的旧存档回退按序号定位。`Clone` 必须带上 `Id`（运行副本、撤销快照靠它继续指向目标），**复制粘贴则要 `RenewId()`** 换新身份，否则副本与原件抢同一个跳转目标。
+- 监听有 **7 个挂点**，统一经 `MacroStep.HookList()` 枚举——图片收集、运行页映射、脏对比等所有「遍历监听」的地方都走它，别再手写多连 if（漏一处就孤儿图误删 / 映射缺失）。
+- 条件判定（含重复检查的整个等待）跑在动作高亮**之前**，故 `RunTop` 取到 step 后要先发一次 `StepStateChanged(step,true)`，否则等待期间界面上看不出卡在哪一步。
+- 运行页高亮取「本轮最后一个开始执行的动作」并**保持到下一个动作开始**：瞬时动作的 开始→结束 会落在同一个刷新周期里互相抵消，逐条 `IsExecuting = on` 会导致根本看不到高亮。
 - 运行的是当前方案的**克隆快照**，避免运行中编辑与引擎争同一个集合。`MacroStep.Clone()` 会带上 `DisplayIndex`，否则运行页序号全是 0。
 - 运行页是**扁平列表**（只有顶层行）：自动滚动时要把当前步映射到它的**顶层祖先行**，否则执行组合内部时列表不滚。
 
 **运行条件（`ShouldRun`）**
-- 返回值即"是否执行"，取反逻辑是 `Invert ? !found : found`。
-- `conditionText` **只在跳过时打日志**，因此必须报**实际观测状态**（如"目标图片未出现（匹配度 0.62/阈值 0.90）"），不能报"条件目标标签"，否则日志读起来正好相反。
+- 条件是**一组** `ConditionItem` + `And`/`Or`，取反是**每条独立**的（`Invert ? !found : found`）。求值短路：And 遇假、Or 遇真即停——图片条件要抓屏搜索，能省一次是一次。
+- 历史存档的单条 `RunConditionXxx` 字段由 `RunCondition.Normalize` 并入列表后清空。**幂等**，且判定 / 图片收集 / 编辑器三个入口都会先调一次，任一路径漏调也不会丢条件。
+- `conditionText` **只在跳过时打日志**，因此必须报**实际观测状态**（如「目标图片未出现（区域内最高相似度 0.62 / 阈值 0.90）」），不能报「条件目标标签」，否则日志读起来正好相反。
+- **重复检查**：不满足时按间隔轮询重判（走 `Wait`，暂停/停止照常响应），每次判定都记一条带相似度的日志。方案级历来就是「空转等到满足」，故忽略该勾选始终等待，但间隔与次数上限对它生效。
 
-**图片匹配（`ScreenMatch`）**
-- **固定位置**逐像素比对（不搜索）：抓取模板同尺寸区域，单通道差 ≤ 28 视为相同，相同占比 ≥ 阈值即命中。
-- 对位置偏移、缩放、DPI、动画都敏感；调不准时先看日志里的实际匹配度再定阈值。
+**图片匹配（`ScreenMatch.FindMatches`）**
+- **区域内滑窗搜索**（不是固定位置比对）：返回所有 ≥ 阈值的命中中心点，NMS 去重后按阅读顺序排序，供「匹配第几个」索引。运行条件与「点击图片」共用这一套。
+- 相似度是**模板梯度加权**的一致像素占比：结构像素（文字/图标边缘）权重高、平坦背景权重 1。**等权的「90% 一致」对平坦底+小特征的模板必然失效**——特征只占 ~15% 面积时任何近色平坦区都能凑够分（实测一屏 33 个假命中）。
+- 必须**逐像素扫描**：加权指标下偏 1px 分数就跌破阈值，隔点扫会把真目标整个漏掉。性能靠**结构像素优先 + 预算早退**（按权重降序比，假位置在前百来个像素上就爆预算），872×762 区域实测 71ms。
+- 早退预算按 `DiagSlack` 放宽一档，用来算出未命中时的**区域内最高相似度**——否则只知道「没到阈值」，无从判断是画面变了还是差一点。
+- 改这个算法前先用 Python + 真实截图离线验证，再在 corp-win 上用独立 harness 对齐 C# 移植。
 
 **拟人化移动**
 - `MoveDuration` 次线性于距离 + 随机；`EmitStroke` 用贝塞尔轻弧 + 前快后慢速度剖面（`v(u)=u^a(1-u)^b`）+ 相关抖动。
@@ -70,6 +80,17 @@
 
 **图片外置 / 孤儿清理（`ImageStore`）**
 - 存储（plans.json）用 `file:<sha256>` 引用 + `images\<hash>.png` 外置；导出用 `Inline` 内联成 base64 自包含，导入用 `Externalize` 落地转引用（**方案级与动作级条件都要处理**）。保存成功后 `Sweep` 删掉不再被任何方案/剪贴板引用的孤儿图（运行期跳过）。
+
+**全屏覆盖层（点选 / 截图 / 区域编辑 / 预览）**
+- **要实时跟手的**（点选十字线）必须**每屏一个独立窗**：铺满虚拟桌面的单个大窗按整窗面积合成，几千像素宽时十字线明显跟不上鼠标。多窗模态用 `Dispatcher.PushFrame` 替代 `ShowDialog`。**冻屏快照类**（截图框选 / 编辑区域）可以用单个大窗。
+- 跟手三件套：`Cursor=None` 藏系统光标（软件绘制永远落后硬件光标 1-2 帧，同屏可比就永远像在「追」）、`CompositionTarget.Rendering` 每帧直读 `GetCursorPos`（鼠标事件携带的是过去的位置）、元素用 `TranslateTransform` 移动（不触发布局）。
+- 初始几何**别依赖某个时点的 `ActualWidth`**：窗口从默认尺寸被 `SetWindowPos` 撑到全屏要经历多轮布局，`Loaded` 时它常是 0。正解是用户第一次上手前，每轮 `SizeChanged` 都从原始虚拟像素重新推导；结果也要在**关窗前**算好。
+- 子覆盖层的 `KeyDown` **必须 `e.Handled = true`**——否则 Enter/Esc 会透传到父对话框触发 `IsDefault`/`IsCancel`，把整个编辑窗一起关掉。
+- 矩形交互统一走 `RectPicker`（四角/四边命中 + 内部拖动 + 外部重画 + 方向键微调），截图框选与编辑限制区域共用，手感一致。自动框窗与手动拖拽的取舍按**位移阈值**判定（原地点击才用窗口矩形），别在 `MouseDown` 就下结论。
+
+**主窗口快捷键与运行期窗口状态**
+- 运行页 Esc 用 **`PreviewKeyDown`（隧道）**：冒泡的 `KeyDown` 会被列表控件先行消费，表现为「点日志区能按、点动作列表按不动」。文本框内的 Esc 仍留给它自己。
+- 「把程序自己最小化的窗口还回来」与「结束后是否抢前台」是**两件事**：前者必须无条件执行，否则关掉 `ActivateOnFinish` 时窗口一直扣在最小化状态，焦点不在本窗口，所有快捷键失灵。
 
 **单实例 / 窗口拾取（易踩）**
 - 单实例撞锁**不能弹模态框**——更新助手会重启本体，模态框会常驻占住安装目录、任务管理器也杀不掉；改为唤起已有窗口后静默退出。
