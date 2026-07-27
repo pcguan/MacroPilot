@@ -128,17 +128,21 @@ public partial class MainWindow
     // 在指定显示器上盖一个透明全屏覆盖层，用户点击选位（带十字准星 + 实时坐标）。
     // 返回 (设备名, nx, ny)；Esc/无选择返回 null。用物理像素精确覆盖，避开 DPI 换算。
     // 跨屏点选：【每块屏一个独立覆盖窗】（复用标识屏幕的多窗模式），任意屏直接点，返回 设备名+屏内百分比。
-    // 为什么不用一个铺满虚拟桌面的大窗：AllowsTransparency 的分层窗按整窗面积合成，几千像素宽的大窗
-    // 每次挪十字线都要重合成超大表面——十字线肉眼可见地跟不上鼠标。拆成每屏一窗后各窗只有单屏大小，
-    // 十字线只在光标所在屏渲染（离开即隐藏），恢复到旧单屏点选的流畅度。
+    // 两条关键性能约束（都踩过）：
+    //  ① 别用一个铺满虚拟桌面的大窗——按整窗面积合成，几千像素宽时十字线跟不上鼠标；
+    //  ② 别用 AllowsTransparency=true——WPF 分层窗走【软件渲染】(UpdateLayeredWindow 整面 CPU 拷贝，
+    //     单屏 2560×1440 每帧十几 MB)，即使每屏一窗，每帧挪十字线仍会有"凝滞感"。
+    //     故改为【冻结截图作背景的不透明窗】：走 GPU 硬件加速，每帧只是几个 transform，丝滑。
+    //     冻屏与截图框选/编辑区域的交互一致（点选的是位置，背景静止不影响）。
     private (string dev, double nx, double ny)? PickAnywhere(Window dialog)
     {
         (string dev, double nx, double ny)? result = null;
         var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
-        // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用透过透明覆盖层清晰可见。
+        // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用清晰可见（并留时间重绘，别被拍进冻屏）。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);  // SWP_NOSIZE|NOMOVE|NOACTIVATE
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        System.Threading.Thread.Sleep(150);
 
         var accent = (Brush)FindResource("Accent");
         var overlays = new List<Window>();
@@ -158,13 +162,18 @@ public partial class MainWindow
             var m = mon;
             var overlay = new Window
             {
-                WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+                // AllowsTransparency=false → 不透明窗，走 GPU 硬件加速（见函数头说明）。
+                WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
                 // 藏掉系统光标：软件绘制永远落后硬件光标 1-2 帧，两者同屏可比就永远"追着跑"——
                 // 十字线+中心点自己就是光标（截图工具的通行做法），没有参照物就没有可感知延迟。
                 ShowInTaskbar = false, Topmost = true, Cursor = Cursors.None,
-                Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
+                Background = Brushes.Black,   // 被下面的冻屏图铺满，仅作兜底
             };
             var root = new Grid();
+            // 本屏冻结画面 + 轻压暗（原来的半透明遮罩效果，现在在窗内合成，GPU 处理）。
+            using (var shot = Services.ScreenMatch.CaptureRegion(m.Left, m.Top, m.Width, m.Height))
+                root.Children.Add(new System.Windows.Controls.Image { Source = ToBitmapSource(shot), Stretch = System.Windows.Media.Stretch.Fill });
+            root.Children.Add(new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)) });
             var canvas = new Canvas { Visibility = Visibility.Collapsed };   // 光标在本屏才显示
             // 虚线十字贯穿本屏 + 外圈光环 + 白描边中心点（与"预览位置"同一族视觉）。
             // 全部用 RenderTransform 移动：不触发布局（measure/arrange），每帧只重渲染。
@@ -460,8 +469,9 @@ public partial class MainWindow
         var accent = (Brush)FindResource("Accent");
         var overlay = new Window
         {
-            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross, Background = Brushes.Transparent,
+            // 有冻屏截图铺底，无需分层窗：AllowsTransparency=false 才走 GPU 硬件加速（框选拖拽更跟手）。
+            WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross, Background = Brushes.Black,
         };
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };  // 轻微压暗，突出选框
@@ -547,8 +557,9 @@ public partial class MainWindow
         var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
         var overlay = new Window
         {
-            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Arrow, Background = Brushes.Transparent,
+            // 同上：有冻屏截图铺底，用不透明窗走 GPU。
+            WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Arrow, Background = Brushes.Black,
         };
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };
@@ -601,8 +612,9 @@ public partial class MainWindow
         var accent = (Brush)FindResource("Accent");
         var overlay = new Window
         {
-            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Background = Brushes.Transparent,
+            // 同上：有冻屏截图铺底，用不透明窗走 GPU（区域拖动/缩放更跟手）。
+            WindowStyle = WindowStyle.None, AllowsTransparency = false, ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false, Topmost = true, Background = Brushes.Black,
         };
         var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = System.Windows.Media.Stretch.Fill };
         var dim = new System.Windows.Shapes.Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x66, 0, 0, 0)) };
