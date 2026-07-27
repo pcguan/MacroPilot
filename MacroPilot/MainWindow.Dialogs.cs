@@ -257,21 +257,23 @@ public partial class MainWindow
         // 每帧直读物理光标驱动十字线：绕过鼠标事件队列（事件是"过去的位置"，渲染时又晚一拍），
         // 在渲染前一刻取最新位置，把可感知延迟压到最低。
         int lastX = int.MinValue, lastY = int.MinValue;
+        bool primed = false;   // 首帧窗口还没排版完（ActualWidth=0），此时算出的十字线位置是错的：
+                               // 必须等真正画对一次再启用"没动就跳过"的短路，否则不挪鼠标就一直不渲染。
         onFrame = (_, _) =>
         {
             var (cx, cy) = ScreenInfo.CursorPos();
-            if (cx == lastX && cy == lastY) return;   // 没动就不碰视觉树
+            if (primed && cx == lastX && cy == lastY) return;   // 没动就不碰视觉树
             lastX = cx; lastY = cy;
             foreach (var pt in parts)
             {
                 bool on = pt.m.Contains(cx, cy);
                 if (pt.canvas.Visibility != (on ? Visibility.Visible : Visibility.Collapsed))
                     pt.canvas.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-                if (on)
-                {
-                    double cw = Math.Max(1.0, pt.canvas.ActualWidth), chh = Math.Max(1.0, pt.canvas.ActualHeight);
-                    pt.update((cx - pt.m.Left) * cw / pt.m.Width, (cy - pt.m.Top) * chh / pt.m.Height);
-                }
+                if (!on) continue;
+                double cw = pt.canvas.ActualWidth, chh = pt.canvas.ActualHeight;
+                if (cw < 1 || chh < 1) continue;   // 尺寸未就绪，下一帧再试（primed 仍为 false）
+                pt.update((cx - pt.m.Left) * cw / pt.m.Width, (cy - pt.m.Top) * chh / pt.m.Height);
+                primed = true;
             }
         };
         System.Windows.Media.CompositionTarget.Rendering += onFrame;
@@ -421,6 +423,103 @@ public partial class MainWindow
         finally { bmp.UnlockBits(data); }
     }
 
+    /// <summary>
+    /// 矩形框选的共用交互模型（DIP 空间）：四角/四边调整 + 内部整体拖动 + 外部重画 + 方向键微调。
+    /// 「截图框选」与「编辑限制区域」共用，保证两处手感完全一致。只管几何，绘制由调用方的 Layout 负责。
+    /// </summary>
+    private sealed class RectPicker
+    {
+        private const double Edge = 8;      // 边/角命中容差（DIP）
+        private const double MinSize = 8;
+        public double X, Y, W, H;
+        public bool Has;
+        private string? _grab;
+        private System.Windows.Point _down;
+        private double _ox, _oy, _ow, _oh;
+
+        public bool Dragging => _grab != null;
+
+        /// <summary>命中类型：nw/ne/sw/se 角、n/s/w/e 边、move 内部、new 外部（重画）。</summary>
+        public string HitTest(System.Windows.Point p)
+        {
+            if (!Has || W < 1 || H < 1) return "new";
+            bool nl = Math.Abs(p.X - X) <= Edge, nr = Math.Abs(p.X - (X + W)) <= Edge;
+            bool nt = Math.Abs(p.Y - Y) <= Edge, nb = Math.Abs(p.Y - (Y + H)) <= Edge;
+            bool inX = p.X >= X - Edge && p.X <= X + W + Edge;
+            bool inY = p.Y >= Y - Edge && p.Y <= Y + H + Edge;
+            if (inX && inY)
+            {
+                if (nl && nt) return "nw";
+                if (nr && nt) return "ne";
+                if (nl && nb) return "sw";
+                if (nr && nb) return "se";
+                if (nl) return "w";
+                if (nr) return "e";
+                if (nt) return "n";
+                if (nb) return "s";
+            }
+            if (p.X > X && p.X < X + W && p.Y > Y && p.Y < Y + H) return "move";
+            return "new";
+        }
+
+        public static Cursor CursorFor(string mode) => mode switch
+        {
+            "nw" or "se" => Cursors.SizeNWSE,
+            "ne" or "sw" => Cursors.SizeNESW,
+            "w" or "e" => Cursors.SizeWE,
+            "n" or "s" => Cursors.SizeNS,
+            "move" => Cursors.SizeAll,
+            _ => Cursors.Cross,
+        };
+
+        public void Begin(System.Windows.Point p)
+        {
+            _grab = HitTest(p);
+            _down = p; _ox = X; _oy = Y; _ow = W; _oh = H;
+            if (_grab == "new")   // 外部按下＝从该点重画（等价于抓住右下角拖）
+            {
+                X = p.X; Y = p.Y; W = 0; H = 0; Has = true;
+                _ox = X; _oy = Y; _ow = 0; _oh = 0; _grab = "se";
+            }
+        }
+
+        public void Drag(System.Windows.Point p, double maxW, double maxH)
+        {
+            if (_grab == null) return;
+            double dx = p.X - _down.X, dy = p.Y - _down.Y;
+            if (_grab == "move")
+            {
+                X = Math.Clamp(_ox + dx, 0, Math.Max(0, maxW - W));
+                Y = Math.Clamp(_oy + dy, 0, Math.Max(0, maxH - H));
+                return;
+            }
+            double l = _ox, t = _oy, r = _ox + _ow, b = _oy + _oh;
+            if (_grab.Contains('w')) l = _ox + dx;
+            if (_grab.Contains('e')) r = _ox + _ow + dx;
+            if (_grab.Contains('n')) t = _oy + dy;
+            if (_grab.Contains('s')) b = _oy + _oh + dy;
+            X = Math.Min(l, r); Y = Math.Min(t, b); W = Math.Abs(r - l); H = Math.Abs(b - t);
+        }
+
+        public void End() => _grab = null;
+
+        /// <summary>方向键微调：resize=true 调大小（右/下边），否则整体移动。</summary>
+        public void Nudge(double dx, double dy, bool resize)
+        {
+            if (!Has) return;
+            if (resize) { W = Math.Max(MinSize, W + dx); H = Math.Max(MinSize, H + dy); }
+            else { X += dx; Y += dy; }
+        }
+
+        /// <summary>限制在画布内（移动/缩放后调用）。</summary>
+        public void Clamp(double maxW, double maxH)
+        {
+            W = Math.Clamp(W, 0, maxW); H = Math.Clamp(H, 0, maxH);
+            X = Math.Clamp(X, 0, Math.Max(0, maxW - W));
+            Y = Math.Clamp(Y, 0, Math.Max(0, maxH - H));
+        }
+    }
+
     // 手动截取目标图片：先下沉本体+编辑窗口，浮动工具条让用户自由整理桌面（把目标窗口拖到前台）；
     // 点“开始框选”后冻结整屏快照，在其上橡皮筋选区；结果从快照裁剪（不含覆盖层）。返回 PNG + 绑定的虚拟像素区域。
     private (byte[] png, int vx, int vy, int w, int h)? CaptureTargetImage(Window dialog)
@@ -434,46 +533,9 @@ public partial class MainWindow
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
 
-        // --- 浮动工具条（非模态于其它程序）：用户整理好桌面再点“开始框选” ---
-        bool proceed = false;
-        var toolbar = new Window
-        {
-            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Background = Brushes.Transparent, SizeToContent = SizeToContent.WidthAndHeight,
-        };
-        var pClr = ((SolidColorBrush)FindResource("Panel")).Color;
-        var tbCard = new Border
-        {
-            Background = new SolidColorBrush(Color.FromArgb(0xC0, pClr.R, pClr.G, pClr.B)),  // 半透明，露出底下桌面
-            BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 10, 14, 10), Cursor = Cursors.SizeAll,
-            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 2, Opacity = 0.2, Color = Colors.Black },
-        };
-        var tbStack = new StackPanel();
-        tbStack.Children.Add(new TextBlock { Text = "整理好桌面后点下方按钮框选（可拖动本条移动位置）", Foreground = (Brush)FindResource("Ink"), FontSize = 13, TextWrapping = TextWrapping.Wrap, MaxWidth = 320, Margin = new Thickness(0, 0, 0, 10) });
-        var tbBtns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var startBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "开始框选目标区域" };
-        var cancelBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "取消", Margin = new Thickness(4, 0, 0, 0) };
-        tbBtns.Children.Add(startBtn); tbBtns.Children.Add(cancelBtn);
-        tbStack.Children.Add(tbBtns); tbCard.Child = tbStack; toolbar.Content = tbCard;
-        startBtn.Click += (_, _) => { proceed = true; toolbar.Close(); };
-        cancelBtn.Click += (_, _) => { proceed = false; toolbar.Close(); };
-        tbCard.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) toolbar.DragMove(); };  // 拖动移动
-        toolbar.Loaded += (_, _) =>
-        {
-            var pm = ScreenInfo.Primary();
-            toolbar.Left = pm.Left + (pm.Width - toolbar.ActualWidth) / 2;
-            toolbar.Top = pm.Top + 40;
-        };
-        toolbar.ShowDialog();
-
-        if (!proceed) { Services.WindowActivator.ActivateHwnd(mainH); Services.WindowActivator.ActivateHwnd(dlgH); return null; }
-
-        // 关闭模态工具条会让 WPF 重新激活本体（owner）弹到前台——重新下沉，并留时间让被盖住的目标窗口重绘，
-        // 保证冻屏抓到的就是“开始框选”那一刻的桌面（与整理阶段一致，不含本体）。
-        SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
-        SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
-        System.Threading.Thread.Sleep(180);
+        // 直接进入框选：不再有"整理桌面"的工具条阶段（用户要求）。仅留一小段等待，
+        // 让刚被下沉的本体/编辑窗完成重绘，别把自己拍进冻屏快照。
+        System.Threading.Thread.Sleep(150);
 
         // --- 冻结整屏快照 ---
         var (ox, oy, vw, vh) = VirtualBounds();
@@ -496,7 +558,7 @@ public partial class MainWindow
         canvas.Children.Add(rubber); canvas.Children.Add(sizeLbl);
         var hint = new TextBlock
         {
-            Text = "拖拽框选目标图片 · 松开后可用方向键微调 · 回车确认 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Text = "拖拽框选目标图片 · 松开后可拖动/调边界/方向键微调 · 回车确认 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
             Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
         };
         var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); overlay.Content = root;
@@ -508,51 +570,52 @@ public partial class MainWindow
         overlay.Loaded += (_, _) => { overlay.Activate(); overlay.Focus(); };
         // 快照像素/DIP 比例：图片铺满窗口，其像素宽=vw；无论多屏/DPI，映射恒定。
         double PixPerDip() => vw / Math.Max(1.0, snapImg.ActualWidth);
-        System.Windows.Point? downDip = null;
-        // 选区在 DIP 空间维护（拖拽与方向键微调共用同一份状态），确认时才换算成虚拟像素。
-        double bx = 0, by = 0, bw = 0, bh = 0;
-        bool hasSel = false;
+        // 选区交互与「编辑限制区域」共用 RectPicker：区域内拖动整体移动、边/角调整边界、
+        // 区域外拖拽才重画；松手不结束，可继续调整或方向键微调，回车确认。
+        var pick = new RectPicker();
         void LayoutSel()
         {
-            Canvas.SetLeft(rubber, bx); Canvas.SetTop(rubber, by); rubber.Width = bw; rubber.Height = bh;
+            pick.Clamp(snapImg.ActualWidth, snapImg.ActualHeight);
+            rubber.Visibility = pick.Has ? Visibility.Visible : Visibility.Collapsed;
+            sizeLbl.Visibility = pick.Has ? Visibility.Visible : Visibility.Collapsed;
+            Canvas.SetLeft(rubber, pick.X); Canvas.SetTop(rubber, pick.Y); rubber.Width = pick.W; rubber.Height = pick.H;
             double r = PixPerDip();
-            int px = ox + (int)Math.Round(bx * r), py = oy + (int)Math.Round(by * r);
-            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(bw * r)}×{(int)Math.Round(bh * r)}";
-            Canvas.SetLeft(sizeLbl, bx); Canvas.SetTop(sizeLbl, Math.Max(0, by - 24));
+            int px = ox + (int)Math.Round(pick.X * r), py = oy + (int)Math.Round(pick.Y * r);
+            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(pick.W * r)}×{(int)Math.Round(pick.H * r)}";
+            Canvas.SetLeft(sizeLbl, pick.X); Canvas.SetTop(sizeLbl, Math.Max(0, pick.Y - 24));
         }
         void CommitSel()
         {
             double r = PixPerDip();
-            sel = (ox + (int)Math.Round(bx * r), oy + (int)Math.Round(by * r),
-                   (int)Math.Round(bw * r), (int)Math.Round(bh * r));
+            sel = (ox + (int)Math.Round(pick.X * r), oy + (int)Math.Round(pick.Y * r),
+                   (int)Math.Round(pick.W * r), (int)Math.Round(pick.H * r));
         }
         overlay.MouseLeftButtonDown += (_, e) =>
         {
-            downDip = e.GetPosition(snapImg);
-            bx = downDip.Value.X; by = downDip.Value.Y; bw = 0; bh = 0; hasSel = true;
-            rubber.Visibility = Visibility.Visible; sizeLbl.Visibility = Visibility.Visible;
+            pick.Begin(e.GetPosition(snapImg));
+            overlay.CaptureMouse();
             LayoutSel();
         };
         overlay.MouseMove += (_, e) =>
         {
-            if (downDip is not { } d) return;
-            var cur = e.GetPosition(snapImg);
-            bx = Math.Min(cur.X, d.X); by = Math.Min(cur.Y, d.Y);
-            bw = Math.Abs(cur.X - d.X); bh = Math.Abs(cur.Y - d.Y);
+            var p2 = e.GetPosition(snapImg);
+            if (!pick.Dragging) { overlay.Cursor = RectPicker.CursorFor(pick.HitTest(p2)); return; }
+            pick.Drag(p2, snapImg.ActualWidth, snapImg.ActualHeight);
             LayoutSel();
         };
-        // 松手【不立即结束】：进入微调阶段（方向键调整、回车确认、也可重新拖拽重画）。
+        // 松手【不立即结束】：可继续拖动/调边界/方向键微调，回车才确认。
         overlay.MouseLeftButtonUp += (_, _) =>
         {
-            if (downDip == null) return;
-            downDip = null;
-            if (bw >= 2 && bh >= 2)
-                hint.Text = "方向键移动 · Ctrl+方向键 调大小 · Shift 加速 · 回车确认 · 可重新拖拽重画 · Esc 取消";
+            if (!pick.Dragging) return;
+            pick.End();
+            overlay.ReleaseMouseCapture();
+            if (pick.W >= 2 && pick.H >= 2)
+                hint.Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车确认 · Esc 取消";
         };
         overlay.KeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape) { e.Handled = true; sel = null; overlay.Close(); return; }
-            if (e.Key == Key.Enter) { e.Handled = true; if (hasSel && bw >= 2 && bh >= 2) CommitSel(); overlay.Close(); return; }
+            if (e.Key == Key.Enter) { e.Handled = true; if (pick.Has && pick.W >= 2 && pick.H >= 2) CommitSel(); overlay.Close(); return; }
             int dx = 0, dy = 0;
             switch (e.Key)
             {
@@ -563,12 +626,10 @@ public partial class MainWindow
                 default: return;
             }
             e.Handled = true;
-            if (!hasSel || downDip != null) return;
+            if (!pick.Has || pick.Dragging) return;
             // 步进按【物理像素】算（Shift 10px），再换成 DIP，混合 DPI 下手感一致。
             double stepDip = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, PixPerDip());
-            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
-            { bw = Math.Max(2, bw + dx * stepDip); bh = Math.Max(2, bh + dy * stepDip); }
-            else { bx += dx * stepDip; by += dy * stepDip; }
+            pick.Nudge(dx * stepDip, dy * stepDip, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
             LayoutSel();
         };
         overlay.ShowDialog();
@@ -676,7 +737,7 @@ public partial class MainWindow
         }
         var hint = new TextBlock
         {
-            Text = "拖动方框移动 · 拖四角缩放 · 空白处拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车确定 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车确定 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
             Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6), IsHitTestVisible = false,
         };
         // 确定 / 取消 悬浮条
@@ -691,79 +752,58 @@ public partial class MainWindow
             SetWindowPos(h, HWND_TOPMOST, ox, oy, vw, vh, 0x0040);
         };
 
-        // 区域在 DIP 空间维护；r = 虚拟像素/DIP（多屏/DPI 恒定）。
-        double rx = 0, ry = 0, rw = 0, rh = 0;
+        // 区域在 DIP 空间维护；r = 虚拟像素/DIP（多屏/DPI 恒定）。交互与「截图框选」共用 RectPicker
+        // （区域内拖动移动、边/角调整边界、区域外拖拽重画、方向键微调），两处手感一致。
+        var pick = new RectPicker();
         double R() => vw / Math.Max(1.0, snapImg.ActualWidth);
         void Layout()
         {
-            double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
-            rw = Math.Clamp(rw, 0, cw); rh = Math.Clamp(rh, 0, chh);
-            rx = Math.Clamp(rx, 0, Math.Max(0, cw - rw)); ry = Math.Clamp(ry, 0, Math.Max(0, chh - rh));
-            Canvas.SetLeft(box, rx); Canvas.SetTop(box, ry); box.Width = rw; box.Height = rh;
-            double[] hx = { rx, rx + rw, rx, rx + rw }, hy = { ry, ry, ry + rh, ry + rh };
+            pick.Clamp(snapImg.ActualWidth, snapImg.ActualHeight);
+            Canvas.SetLeft(box, pick.X); Canvas.SetTop(box, pick.Y); box.Width = pick.W; box.Height = pick.H;
+            double[] hx = { pick.X, pick.X + pick.W, pick.X, pick.X + pick.W };
+            double[] hy = { pick.Y, pick.Y, pick.Y + pick.H, pick.Y + pick.H };
             for (int i = 0; i < 4; i++) { Canvas.SetLeft(handles[i], hx[i] - 6); Canvas.SetTop(handles[i], hy[i] - 6); }
             double r = R();
-            int px = ox + (int)Math.Round(rx * r), py = oy + (int)Math.Round(ry * r);
-            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(rw * r)}×{(int)Math.Round(rh * r)}";
-            Canvas.SetLeft(sizeLbl, rx); Canvas.SetTop(sizeLbl, Math.Max(0, ry - 24));
+            int px = ox + (int)Math.Round(pick.X * r), py = oy + (int)Math.Round(pick.Y * r);
+            sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(pick.W * r)}×{(int)Math.Round(pick.H * r)}";
+            Canvas.SetLeft(sizeLbl, pick.X); Canvas.SetTop(sizeLbl, Math.Max(0, pick.Y - 24));
         }
         // 既有区域的初始框：不能"只初始化一次"——窗口从默认尺寸被 SetWindowPos 撑到全屏会经历多轮布局，
         // 若在中间某轮（尺寸还不对）就锁死初始化，比例失真会把既有框算得又小又偏（被 clamp 后形同没框），
         // 之后正确尺寸到位也不再重算——表现成"有数据却要重新手动画框"。
-        // 改为：用户第一次上手（按下鼠标）之前，每轮尺寸变化都从【原始虚拟像素】重新推导；上手后停止跟随。
+        // 改为：用户第一次上手（按下鼠标/键盘微调）之前，每轮尺寸变化都从【原始虚拟像素】重新推导。
         bool touched = false;
         void SyncFromCur()
         {
             if (touched || snapImg.ActualWidth < 1 || snapImg.ActualHeight < 1) return;
             double r = R();
             if (curW is int cW && cW > 0 && curH is int cH && cH > 0)
-            { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }   // 有区域→画出既有框（可拖动/缩放）
-            else { rx = ry = rw = rh = 0; }   // 无区域→不预置框，让用户自行拖拽画（hint 有提示）
+            {
+                pick.X = ((curVx ?? ox) - ox) / r; pick.Y = ((curVy ?? oy) - oy) / r;
+                pick.W = cW / r; pick.H = cH / r; pick.Has = true;   // 有区域→画出既有框（可拖动/调边界）
+            }
+            else { pick.X = pick.Y = pick.W = pick.H = 0; pick.Has = false; }   // 无区域→自行拖拽画
             Layout();
         }
         snapImg.SizeChanged += (_, _) => SyncFromCur();
         overlay.Loaded += (_, _) => { SyncFromCur(); overlay.Activate(); overlay.Focus(); };
 
-        // 直接鼠标交互（镜像 CaptureTargetImage 那套可靠做法）：Thumb 在无边框透明置顶窗里命中不稳，
-        // 之前"编辑区域后不生效"就是拖动根本没被 Thumb 接住。改由 overlay 级鼠标事件 + 几何命中判定。
-        string? grab = null; System.Windows.Point down = default; double gx = 0, gy = 0, gw = 0, gh = 0;
-        string HitTest(System.Windows.Point p)
-        {
-            (double x, double y, string m)[] cs = { (rx, ry, "nw"), (rx + rw, ry, "ne"), (rx, ry + rh, "sw"), (rx + rw, ry + rh, "se") };
-            foreach (var c in cs) if (Math.Abs(p.X - c.x) <= 10 && Math.Abs(p.Y - c.y) <= 10) return c.m;
-            if (p.X >= rx && p.X <= rx + rw && p.Y >= ry && p.Y <= ry + rh) return "move";
-            return "new";
-        }
+        // 直接鼠标交互（Thumb 在无边框透明置顶窗里命中不稳，早期"编辑区域不生效"就是拖动没被接住）。
         overlay.MouseLeftButtonDown += (_, e) =>
         {
             touched = true;   // 用户上手后初始框停止跟随布局重算
-            var p = e.GetPosition(snapImg);
-            grab = HitTest(p); down = p; gx = rx; gy = ry; gw = rw; gh = rh;
-            if (grab == "new") { rx = p.X; ry = p.Y; rw = 0; rh = 0; gx = rx; gy = ry; gw = 0; gh = 0; grab = "se"; }   // 空白拖拽=从起点重画
+            pick.Begin(e.GetPosition(snapImg));
             overlay.CaptureMouse(); e.Handled = true;
+            Layout();
         };
         overlay.MouseMove += (_, e) =>
         {
             var p = e.GetPosition(snapImg);
-            if (grab == null)
-            {
-                overlay.Cursor = HitTest(p) switch { "nw" or "se" => Cursors.SizeNWSE, "ne" or "sw" => Cursors.SizeNESW, "move" => Cursors.SizeAll, _ => Cursors.Cross };
-                return;
-            }
-            double dx = p.X - down.X, dy = p.Y - down.Y;
-            if (grab == "move") { rx = gx + dx; ry = gy + dy; }
-            else
-            {
-                double L = gx, T = gy, Rr = gx + gw, B = gy + gh;
-                if (grab.Contains('w')) L = gx + dx;
-                if (grab.Contains('e')) Rr = gx + gw + dx;
-                if (grab.Contains('n')) T = gy + dy;
-                if (grab.Contains('s')) B = gy + gh + dy;
-                rx = Math.Min(L, Rr); ry = Math.Min(T, B); rw = Math.Abs(Rr - L); rh = Math.Abs(B - T);
-            }
+            if (!pick.Dragging) { overlay.Cursor = RectPicker.CursorFor(pick.HitTest(p)); return; }
+            pick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight);
             Layout();
         };
-        overlay.MouseLeftButtonUp += (_, _) => { if (grab != null) { grab = null; overlay.ReleaseMouseCapture(); } };
+        overlay.MouseLeftButtonUp += (_, _) => { if (pick.Dragging) { pick.End(); overlay.ReleaseMouseCapture(); } };
 
         // 结果在【窗口仍显示时】就地算好并存起来——关窗后 snapImg.ActualWidth 会变 0、R() 失真，
         // 那正是"编辑后回来区域没变/不对"的根因。
@@ -771,8 +811,8 @@ public partial class MainWindow
         void Confirm()
         {
             double r = R();
-            int wpx = (int)Math.Round(rw * r), hpx = (int)Math.Round(rh * r);
-            if (wpx >= 8 && hpx >= 8) outv = (ox + (int)Math.Round(rx * r), oy + (int)Math.Round(ry * r), wpx, hpx);
+            int wpx = (int)Math.Round(pick.W * r), hpx = (int)Math.Round(pick.H * r);
+            if (wpx >= 8 && hpx >= 8) outv = (ox + (int)Math.Round(pick.X * r), oy + (int)Math.Round(pick.Y * r), wpx, hpx);
             overlay.Close();
         }
         okBtn.Click += (_, _) => Confirm();
@@ -793,13 +833,11 @@ public partial class MainWindow
                 default: return;
             }
             e.Handled = true;
-            if (rw < 1 || rh < 1) return;
+            if (!pick.Has || pick.Dragging) return;
             touched = true;   // 键盘微调也算上手，停止跟随布局重算
             // 步进按【物理像素】算（Shift 10px）再换 DIP；Ctrl+方向键 调大小，否则整体移动。
             double stepDip = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, R());
-            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
-            { rw = Math.Max(16, rw + dx * stepDip); rh = Math.Max(16, rh + dy * stepDip); }
-            else { rx += dx * stepDip; ry += dy * stepDip; }
+            pick.Nudge(dx * stepDip, dy * stepDip, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
             Layout();
         };
         overlay.ShowDialog();
