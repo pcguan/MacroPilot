@@ -45,6 +45,13 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     // 与拟人化轨迹天然配套——轨迹拟人了、落点却每次分毫不差反而露馅。每次重复各自重新随机。
     public int ClickOffset { get; set; }
 
+    // 文本输入（TextInput，输入 → 键盘 → 文本）：
+    // TextMode ""/Auto=自动分流（软件后端→Unicode 注入；CH9329→剪贴板粘贴）、Unicode=强制注入、Clipboard=强制剪贴板。
+    // 键盘协议传的是按键位置而非字符，汉字没有对应键位，故非 ASCII 只能靠这两条路径之一（详见 IInputBackend.SupportsUnicodeText）。
+    public string Text { get; set; } = "";
+    public string TextMode { get; set; } = "";
+    public int TextCharDelayMs { get; set; }   // 逐字符间隔（仅 Unicode 注入有意义），0=不等待
+
     // 点击图片（MouseClickImage）：在限制区域内搜索模板图，点击匹配到的第 N 个。
     // ClickImage 存储约定同 RunConditionImage：file:hash 引用 / 旧内联 base64（由 ImageStore 统一处理）。
     public string ClickImage { get; set; } = "";
@@ -141,6 +148,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
             DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
+            Text = Text, TextMode = TextMode, TextCharDelayMs = TextCharDelayMs,
             ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
             ClickImageRectX = ClickImageRectX, ClickImageRectY = ClickImageRectY, ClickImageRectW = ClickImageRectW, ClickImageRectH = ClickImageRectH,
             ClickImageThreshold = ClickImageThreshold, ClickImageIndex = ClickImageIndex,
@@ -196,6 +204,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         "MouseDrag" => DragDisplay(),
         "MouseWheel" => $"滚轮 {Wheel} 格",
         "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
+        "TextInput" => TextDisplay(),
         "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
         "Jump" => JumpTarget >= 1 ? (JumpTimes > 0 ? $"跳转到动作 {JumpTarget}（最多 {JumpTimes} 次）" : $"跳转到动作 {JumpTarget}") : "跳转（未设置目标）",
         _ => Type
@@ -242,6 +251,15 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             ? $"（{Pct(DragEndNormX, DragEndNormY)}）"
             : $"{Short(DragEndMonitor)}（{Pct(DragEndNormX, DragEndNormY)}）";
         return $"{ButtonCn(Button)}拖动 {from} → {to}" + MoveSuffix();
+    }
+
+    // 文本：显示前若干字（换行转 ␍ 便于单行展示）+ 输入方式。
+    private string TextDisplay()
+    {
+        string t = (Text ?? "").Replace("\r", "").Replace("\n", "⏎");
+        if (t.Length > 24) t = t[..24] + "…";
+        string mode = TextMode switch { "Unicode" => "注入", "Clipboard" => "剪贴板", _ => "自动" };
+        return string.IsNullOrEmpty(t) ? $"输入文本（未设置内容）" : $"输入文本「{t}」（{mode}）";
     }
 
     // 点击图片：点击「区域内第 N 个匹配」+ 按钮 + 相似度。

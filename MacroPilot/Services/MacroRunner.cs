@@ -472,6 +472,7 @@ public sealed class MacroRunner
                 break;
             // 点击图片 = 在限制区域内搜模板 → 取第 N 个命中 → 移到其中心 → 点击。找不到/不足 N 个则本步失败（走失败监听、不中断方案）。
             case "MouseClickImage": ClickImage(step, ct); break;
+            case "TextInput": TypeText(step, ct); break;
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
             // 跳转动作：上报给 RunTop，在当前顶层步骤结束后跳到目标序号（在组合内/监听里执行也生效）。
             case "Jump": _pendingJump = step; break;
@@ -498,6 +499,76 @@ public sealed class MacroRunner
         (vx, vy) = ApplyOffset(vx, vy, step.ClickOffset);               // 落点偏移（每次调用各自随机）
         if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
         else _backend.MouseMove(vx, vy);
+    }
+
+    // 文本输入：自动分流 —— 软件后端走 Unicode 注入（能出中文），CH9329 是真实 HID 键盘、
+    // 物理上发不了汉字，只能走剪贴板 + Ctrl+V。用户也可在动作里强制指定其中一条路径。
+    private void TypeText(MacroStep step, CancellationToken ct)
+    {
+        var text = step.Text ?? "";
+        if (text.Length == 0) throw new InvalidOperationException("文本输入：内容为空。");
+
+        bool canInject = _backend.SupportsUnicodeText;
+        string mode = step.TextMode switch
+        {
+            "Unicode" => canInject ? "Unicode" : "Clipboard",   // 硬件后端注入不了，降级并在下面记日志
+            "Clipboard" => "Clipboard",
+            _ => canInject ? "Unicode" : "Clipboard",           // 自动
+        };
+        if (step.TextMode == "Unicode" && !canInject)
+            Log?.Invoke("Warning", "当前输出方式为 CH9329 硬件键盘，无法直接注入字符，已改用剪贴板粘贴。");
+
+        if (mode == "Unicode")
+        {
+            _backend.TypeText(text, Jitter(step.TextCharDelayMs), ct);
+            return;
+        }
+
+        // ---- 剪贴板路径 ----
+        // 剪贴板是 STA 独占资源：必须切到 UI 线程访问，且常被别的程序短暂占用，要重试。
+        string? backup = ClipboardGetText();
+        if (!ClipboardSetText(text)) throw new InvalidOperationException("文本输入：写入剪贴板失败（可能被其它程序占用）。");
+        try
+        {
+            Wait(60, ct);                                   // 给目标程序留出感知剪贴板变化的时间
+            _backend.KeyTap("V", 0x01, Math.Max(30, Jitter(step.HoldMs)), ct);   // 0x01 = 左 Ctrl
+            Wait(120, ct);                                  // 粘贴是异步的，还原太早目标程序会读到旧内容
+        }
+        finally
+        {
+            if (backup != null) ClipboardSetText(backup);    // 尽量还原用户原有剪贴板内容
+        }
+    }
+
+    // 剪贴板读写：切 UI 线程（STA）+ 重试；失败不抛（还原失败不该影响主流程）。
+    private static string? ClipboardGetText()
+    {
+        var app = System.Windows.Application.Current;
+        if (app == null) return null;
+        string? r = null;
+        try { app.Dispatcher.Invoke(() => { try { if (System.Windows.Clipboard.ContainsText()) r = System.Windows.Clipboard.GetText(); } catch { } }); }
+        catch { }
+        return r;
+    }
+
+    private static bool ClipboardSetText(string text)
+    {
+        var app = System.Windows.Application.Current;
+        if (app == null) return false;
+        bool ok = false;
+        try
+        {
+            app.Dispatcher.Invoke(() =>
+            {
+                for (int i = 0; i < 5 && !ok; i++)
+                {
+                    try { System.Windows.Clipboard.SetText(text); ok = true; }
+                    catch { Thread.Sleep(40); }   // CLIPBRD_E_CANT_OPEN：别的程序正占着，稍后重试
+                }
+            });
+        }
+        catch { }
+        return ok;
     }
 
     // 点击图片：区域内搜模板 → 第 N 个命中 → 移到中心 → 点击。

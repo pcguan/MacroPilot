@@ -1060,10 +1060,12 @@ public partial class MainWindow
         mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("点击坐标"); mouseActionCombo.Items.Add("点击图片");
         mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
+        var keyActionCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
+        keyActionCombo.Items.Add("按键"); keyActionCombo.Items.Add("文本"); keyActionCombo.SelectedIndex = 0;
         var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
         runActionCombo.SelectedIndex = 0;
-        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(runActionCombo);
+        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(keyActionCombo); typeRow.Children.Add(runActionCombo);
         baseContent.Children.Add(typeRow);
 
         // 鼠标面板
@@ -1117,6 +1119,56 @@ public partial class MainWindow
         keyboardPanel.Children.Add(SubGroup("按住时间", keyboardHoldRow.Panel));
         var kbRepeat = new RepeatBlock(this, "按键次数（0 为无限）");
         keyboardPanel.Children.Add(kbRepeat.Panel);
+
+        // ---- 文本面板（输入 → 键盘 → 文本）----
+        // 键盘协议传的是按键位置而非字符，汉字没有对应键位：软件后端可用 Unicode 注入绕过布局直接投递字符；
+        // CH9329 是真实 HID 键盘，物理上发不出汉字，只能剪贴板粘贴。
+        bool hwBackend = string.Equals(_doc.Backend, "Serial", StringComparison.OrdinalIgnoreCase);
+        var textPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(textPanel);
+        var textBox = new TextBox
+        {
+            AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90, MaxHeight = 180,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top, Padding = new Thickness(6, 4, 6, 4),
+        };
+        textPanel.Children.Add(SubGroup("文本内容", textBox,
+            new TextBlock { Text = "支持中文、换行等任意字符。执行时会输入到【当前焦点窗口】，通常需要先用「运行 → 激活窗口」把目标窗口切到前台。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) }));
+
+        var textModeCombo = new ComboBox { Height = 32 };
+        var itAuto = new ComboBoxItem { Content = "自动（推荐）", Tag = "" };
+        var itUni = new ComboBoxItem { Content = "字符注入", Tag = "Unicode" };
+        var itClip = new ComboBoxItem { Content = "剪贴板粘贴", Tag = "Clipboard" };
+        textModeCombo.Items.Add(itAuto); textModeCombo.Items.Add(itUni); textModeCombo.Items.Add(itClip);
+        textModeCombo.SelectedIndex = 0;
+        var charDelayText = new TextBox { Text = "0", Width = 90, Height = 32 };
+        var charDelayRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
+        charDelayRow.Children.Add(new TextBlock { Text = "逐字间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+        charDelayRow.Children.Add(charDelayText);
+        charDelayRow.Children.Add(new TextBlock { Text = "毫秒（0 = 不等待；仅字符注入方式有效）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), FontSize = 12, Margin = new Thickness(8, 0, 0, 0) });
+        var textModeNote = new TextBlock { Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
+        textPanel.Children.Add(SubGroup("输入方式", textModeCombo, textModeNote, charDelayRow));
+
+        void RefreshTextMode()
+        {
+            string m = (textModeCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            bool clip = hwBackend || m == "Clipboard";
+            charDelayRow.Visibility = clip ? Visibility.Collapsed : Visibility.Visible;
+            textModeNote.Text = hwBackend
+                ? "当前输出方式为 CH9329 硬件键盘：它模拟的是真实键盘按键，无法直接发出汉字等字符，因此文本一律走剪贴板粘贴（会自动备份并还原你原有的剪贴板内容）。\n⚠ 部分软件禁用粘贴、或用自绘输入框不响应 Ctrl+V，此时不会生效；游戏内多数也不支持。"
+                : m == "Clipboard"
+                    ? "把文本写入剪贴板后发送 Ctrl+V（会自动备份并还原你原有的剪贴板内容）。\n⚠ 部分软件禁用粘贴、或用自绘输入框不响应 Ctrl+V，此时不会生效；游戏内多数也不支持。"
+                    : m == "Unicode"
+                        ? "逐字符直接注入（绕过键盘布局与输入法，中文可直接输出）。\n⚠ 游戏等直接读取键盘扫描码的程序收不到这类字符，此时请改用剪贴板粘贴。"
+                        : "自动：本机模拟 → 逐字符注入（中文可直接输出）；CH9329 硬件 → 剪贴板粘贴。\n⚠ 注入对读取扫描码的游戏无效；粘贴对禁用 Ctrl+V 的软件无效。";
+        }
+        if (hwBackend)   // 硬件后端：注入项不可选，直接锁到剪贴板
+        {
+            itAuto.IsEnabled = false; itUni.IsEnabled = false;
+            textModeCombo.SelectedItem = itClip;
+        }
+        textModeCombo.SelectionChanged += (_, _) => RefreshTextMode();
+        RefreshTextMode();
+        var textRepeat = new RepeatBlock(this, "输入次数（0 为无限）");
+        textPanel.Children.Add(textRepeat.Panel);
 
         // 等待面板
         var waitRow = new TimeInputRow(this, _doc.DefaultWaitMs);
@@ -1317,6 +1369,7 @@ public partial class MainWindow
         string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
         string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击") : "";
+        string KeyAct() => Dev() == "键盘" ? (keyActionCombo.SelectedItem?.ToString() ?? "按键") : "";
         string RunAct() => Cat() == "运行" ? (runActionCombo.SelectedItem?.ToString() ?? "等待") : "";
 
         void SyncIdScreens()
@@ -1334,7 +1387,9 @@ public partial class MainWindow
             runActionCombo.Visibility = t == "运行" ? Visibility.Visible : Visibility.Collapsed;
 
             mousePanel.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
-            keyboardPanel.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
+            keyActionCombo.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
+            keyboardPanel.Visibility = d == "键盘" && KeyAct() == "按键" ? Visibility.Visible : Visibility.Collapsed;
+            textPanel.Visibility = d == "键盘" && KeyAct() == "文本" ? Visibility.Visible : Visibility.Collapsed;
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
             windowPanel.Visibility = ra == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
             jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
@@ -1364,7 +1419,7 @@ public partial class MainWindow
             // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
             runRepeat.Panel.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
 
-            capturingKey = d == "键盘";
+            capturingKey = d == "键盘" && KeyAct() == "按键";
             if (capturingKey) win.Focus();
             // 窗口列表改按需枚举（点选择器时才 RefreshWindows，见 OpenPicker），不在打开时同步枚举；
             // 屏幕序号标记（每屏一个置顶窗口）也延后到后台优先级异步显示 —— 消除激活窗口/鼠标移动动作双击打开时的卡顿厚重感。
@@ -1374,6 +1429,7 @@ public partial class MainWindow
         deviceCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         runActionCombo.SelectionChanged += (_, _) => UpdatePanels();
+        keyActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         buttonCombo.SelectionChanged += (_, _) => UpdatePanels();   // 切「仅移动」要收起按住时间/次数
         coordCheck.Checked += (_, _) => UpdatePanels();             // 勾选坐标才显示拟人化、才需要标屏
         coordCheck.Unchecked += (_, _) => UpdatePanels();
@@ -1474,6 +1530,19 @@ public partial class MainWindow
                     }
                     else throw new InvalidOperationException("请选择鼠标动作。");
                 }
+                else if (dev == "键盘" && KeyAct() == "文本")
+                {
+                    var txt = textBox.Text ?? "";
+                    if (txt.Length == 0) throw new InvalidOperationException("请先填写要输入的文本内容。");
+                    result = new MacroStep
+                    {
+                        Type = "TextInput",
+                        Text = txt,
+                        TextMode = (textModeCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
+                        TextCharDelayMs = Math.Max(0, ParseInt(charDelayText.Text, 0)),
+                    };
+                    textRepeat.Apply(result);
+                }
                 else if (dev == "键盘")
                 {
                     if (string.IsNullOrWhiteSpace(capturedKey) && capturedModifier == 0)
@@ -1555,12 +1624,20 @@ public partial class MainWindow
                     dragEnd.Write(source.DragEndMonitor, source.DragEndNormX, source.DragEndNormY);
                     break;
                 case "MouseWheel":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "滚轮"; wheelText.Text = source.Wheel.ToString(); break;
-                case "KeyTap":        typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
+                case "TextInput":
+                    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; keyActionCombo.SelectedItem = "文本";
+                    textBox.Text = source.Text;
+                    charDelayText.Text = Math.Max(0, source.TextCharDelayMs).ToString();
+                    if (!hwBackend)   // 硬件后端已锁定剪贴板，不用回填模式
+                        foreach (var it in textModeCombo.Items)
+                            if (it is ComboBoxItem c && (c.Tag as string ?? "") == (source.TextMode ?? "")) { textModeCombo.SelectedItem = it; break; }
+                    break;
+                case "KeyTap":        typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "键盘"; keyActionCombo.SelectedItem = "按键"; capturedKey = source.Key; capturedModifier = source.Modifier; capturedText.Text = FormatCapturedKey(source.Key, source.Modifier); keyboardHoldRow.SetMs(source.HoldMs, source.HoldUnit); break;
                 case "Wait":          typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "等待"; waitRow.SetMs(source.DurationMs, source.DurationUnit); break;
                 case "ActivateWindow":typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "激活窗口"; selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); break;
                 case "Jump":          typeCombo.SelectedItem = "运行"; runActionCombo.SelectedItem = "跳转"; break;   // 目标/次数由下方通用回填写入
             }
-            mouseRepeat.Load(source); kbRepeat.Load(source); runRepeat.Load(source);
+            mouseRepeat.Load(source); kbRepeat.Load(source); runRepeat.Load(source); textRepeat.Load(source);
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
             if (source.JumpTarget >= 1 && source.JumpTarget <= count) jumpTargetCombo.SelectedIndex = source.JumpTarget;
             jumpMaxText.Text = Math.Max(0, source.JumpTimes).ToString();

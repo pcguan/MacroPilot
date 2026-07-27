@@ -19,6 +19,18 @@ public interface IInputBackend : IDisposable
     /// <summary>按下并保持 holdMs（可含小数）后松开一个键（含修饰键）。ct 取消时提前结束按住并立即抬键。</summary>
     void KeyTap(string key, byte modifier, double holdMs, System.Threading.CancellationToken ct = default);
 
+    /// <summary>
+    /// 能否直接注入任意 Unicode 字符（中文等）。
+    /// 键盘协议传的是【按键位置】而非字符，汉字没有对应键位——只有软件后端能靠 SendInput 的
+    /// KEYEVENTF_UNICODE 绕过键盘布局直接投递字符；CH9329 是真实 HID 键盘，物理上做不到（返回 false，
+    /// 文本只能走剪贴板粘贴）。
+    /// </summary>
+    bool SupportsUnicodeText => false;
+
+    /// <summary>逐字符注入文本（仅 <see cref="SupportsUnicodeText"/> 为 true 时可用）。
+    /// charDelayMs：每个字符之间的间隔，0=不等待。换行/制表由实现改发真实的回车/Tab 键。</summary>
+    void TypeText(string text, double charDelayMs, System.Threading.CancellationToken ct = default) { }
+
     /// <summary>在当前光标位置点击鼠标，按住 holdMs（可含小数）。button: Left/Right/Middle。ct 取消时提前抬起。</summary>
     void MouseClick(string button, double holdMs, System.Threading.CancellationToken ct = default);
 

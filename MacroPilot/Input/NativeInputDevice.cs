@@ -104,6 +104,44 @@ public sealed class NativeInputDevice : IInputBackend
         return list;
     }
 
+    // ---- Unicode 文本注入 ----
+    // 原理：KEYEVENTF_UNICODE 时 wVk 必须为 0、wScan 放 UTF-16 码元，系统据此给焦点窗口投递 WM_CHAR，
+    // 【绕过键盘布局与输入法】，因此中文/emoji/任意符号都能输出。代价是走消息层——用 RawInput/
+    // DirectInput 读扫描码的程序（多数游戏）收不到。
+    public bool SupportsUnicodeText => true;
+
+    public void TypeText(string text, double charDelayMs, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (ct.IsCancellationRequested) return;
+            char c = text[i];
+            // 换行/制表用【真实键】：不少程序不响应 WM_CHAR 的 \n（换行要的是 Enter 这个键事件）。
+            if (c == '\n') { KeyEvent(0x0D, true); KeyEvent(0x0D, false); }
+            else if (c == '\t') { KeyEvent(0x09, true); KeyEvent(0x09, false); }
+            else if (c == '\r') continue;                      // CRLF 的 \r 跳过，由上面的 \n 出 Enter
+            else if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+            {
+                // BMP 外字符（emoji）是代理对：两个码元连发，系统自行合成一个字符。
+                UnicodeEvent(c, true); UnicodeEvent(c, false);
+                i++;
+                UnicodeEvent(text[i], true); UnicodeEvent(text[i], false);
+            }
+            else { UnicodeEvent(c, true); UnicodeEvent(c, false); }
+            if (charDelayMs > 0) Sleep(charDelayMs, ct);
+        }
+    }
+
+    private static void UnicodeEvent(char unit, bool down)
+    {
+        var inp = new INPUT { type = INPUT_KEYBOARD };
+        inp.U.ki.wVk = 0;                       // 必须为 0，否则系统按虚拟键解释
+        inp.U.ki.wScan = unit;
+        inp.U.ki.dwFlags = KEYEVENTF_UNICODE | (down ? 0u : KEYEVENTF_KEYUP);
+        SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>());
+    }
+
     // 扩展键：其扫描码与小键盘键重叠，必须置 KEYEVENTF_EXTENDEDKEY 区分。
     // 否则 ScanCode 模式下方向键/Home/End/PgUp/PgDn/Ins/Del/右 Ctrl/右 Alt 等会被当成小键盘键
     // （如"左方向"VK_LEFT→扫描码 0x4B，NumLock 开时变成输入字符 "4"）。
@@ -142,7 +180,7 @@ public sealed class NativeInputDevice : IInputBackend
 
     // ---- P/Invoke ----
     private const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;
-    private const uint KEYEVENTF_KEYUP = 0x0002, KEYEVENTF_SCANCODE = 0x0008, KEYEVENTF_EXTENDEDKEY = 0x0001;
+    private const uint KEYEVENTF_KEYUP = 0x0002, KEYEVENTF_SCANCODE = 0x0008, KEYEVENTF_EXTENDEDKEY = 0x0001, KEYEVENTF_UNICODE = 0x0004;
     private const uint MOUSEEVENTF_MOVE = 0x0001, MOUSEEVENTF_ABSOLUTE = 0x8000, MOUSEEVENTF_WHEEL = 0x0800, MOUSEEVENTF_VIRTUALDESK = 0x4000;
     private const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002, MOUSEEVENTF_LEFTUP = 0x0004;
