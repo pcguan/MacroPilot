@@ -1212,8 +1212,7 @@ public partial class MainWindow
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、带坐标的鼠标动作。只有一块屏时不自动标（没意义），手动「标识屏幕」按钮不受影响。
-            // 点击图片有自己的截图/区域编辑覆盖层，不在此自动标屏。
-            bool coordView = Act() is "移动" or "拖动" or "点击坐标";
+            bool coordView = Act() is "移动" or "拖动" or "点击坐标" or "点击图片";
             bool needScreens = (RunAct() == "激活窗口" || coordView) && ScreenInfo.All().Count > 1;
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
@@ -1767,21 +1766,28 @@ public partial class MainWindow
             _thumbBorder = new Border { BorderBrush = (Brush)o.FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Child = _thumb, Visibility = Visibility.Collapsed };
             inner.Children.Add(_thumbBorder);
 
-            // —— 限制区域（对齐自动精灵：尖角浮标格 [左][右][上][下] 贴合一体 + 编辑/预览/清除 图标）——
+            // —— 限制区域（风格与坐标块一致：标题+操作图标行 → 强调左条缩进块内：显示器行 / 区域值行 / 提示）——
             var editBtn = MkIcon("", "编辑区域：在屏幕上拖动·缩放调整搜索范围");
             _previewBtn = MkIcon("", "预览：在屏幕上白框回显当前区域");
             var clearBtn = MkIcon("", "清除限制区域（改为搜索整块主屏）");
-            // 头部：标题 + 屏幕下拉（手动调参的锚定屏；截图/编辑区域自动识别后自动跟随）+ 编辑/预览/清除图标。
-            var regionHeader = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 16, 0, 6) };
-            var regionTitle = new TextBlock { Text = "限制区域", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+            var idBtn = MkIcon("", "标识屏幕（在各屏显示编号，帮你分清下拉对应哪块屏）");
+            idBtn.Click += (_, _) => o.ShowIdScreens(win);
+            var regionHeader = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 16, 0, 0) };
+            var regionTitle = new TextBlock { Text = "限制区域（只在此范围内搜索）", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
             DockPanel.SetDock(regionTitle, Dock.Left); regionHeader.Children.Add(regionTitle);
             var regionBtns = new StackPanel { Orientation = Orientation.Horizontal };
-            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn); regionBtns.Children.Add(clearBtn);
+            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn); regionBtns.Children.Add(clearBtn); regionBtns.Children.Add(idBtn);
             DockPanel.SetDock(regionBtns, Dock.Right); regionHeader.Children.Add(regionBtns);
-            _monCombo.Margin = new Thickness(10, 0, 8, 0);
-            foreach (var m in ScreenInfo.All()) _monCombo.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Device });
-            regionHeader.Children.Add(_monCombo);
             inner.Children.Add(regionHeader);
+
+            var regionDetail = new StackPanel();
+            TextBlock RLabel(string t2) => new() { Text = t2, Width = 52, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            // 显示器行（与坐标块同款）：锚定屏——手动填四边时的基准；截图/编辑区域自动识别后自动跟随。
+            var monRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 6, 0, 14) };
+            monRow.Children.Add(RLabel("显示器"));
+            foreach (var m in ScreenInfo.All()) _monCombo.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Device });
+            monRow.Children.Add(_monCombo);
+            regionDetail.Children.Add(monRow);
             _monCombo.SelectionChanged += (_, _) =>
             {
                 if (_syncing) return;
@@ -1790,16 +1796,27 @@ public partial class MainWindow
                 EdgesToRegion();
                 SyncEdges();
             };
+            // 区域值行：四个尖角浮标格（贴合一体）。
             _left = new EdgeCell(o, "左", () => RegionMon().Width, true);
             _right = new EdgeCell(o, "右", () => RegionMon().Width, false);
             _top = new EdgeCell(o, "上", () => RegionMon().Height, false);
             _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false);
             foreach (var c in new[] { _left, _right, _top, _bottom }) c.Committed += EdgesToRegion;
-            var cellsRow = new StackPanel { Orientation = Orientation.Horizontal };
-            cellsRow.Children.Add(_left.Root); cellsRow.Children.Add(_right.Root); cellsRow.Children.Add(_top.Root); cellsRow.Children.Add(_bottom.Root);
-            inner.Children.Add(cellsRow);
-            _regionHint = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
-            inner.Children.Add(_regionHint);
+            var cellsRow = new DockPanel { LastChildFill = false };
+            cellsRow.Children.Add(RLabel("区域值"));
+            var cells = new StackPanel { Orientation = Orientation.Horizontal };
+            cells.Children.Add(_left.Root); cells.Children.Add(_right.Root); cells.Children.Add(_top.Root); cells.Children.Add(_bottom.Root);
+            cellsRow.Children.Add(cells);
+            regionDetail.Children.Add(cellsRow);
+            _regionHint = new TextBlock { Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
+            regionDetail.Children.Add(_regionHint);
+            // 强调左条缩进（与坐标块 _wrap 同款视觉）。
+            inner.Children.Add(new Border
+            {
+                BorderBrush = (Brush)o.FindResource("Accent"), BorderThickness = new Thickness(2, 0, 0, 0),
+                CornerRadius = new CornerRadius(0, 6, 6, 0), Padding = new Thickness(12, 10, 0, 2),
+                Margin = new Thickness(2, 10, 0, 0), Child = regionDetail,
+            });
             clearBtn.Click += (_, _) => { Monitor = ""; RelX = RelY = W = H = 0; Refresh(); SyncEdges(); };
             copyBtn.Click += (_, _) =>
             {
