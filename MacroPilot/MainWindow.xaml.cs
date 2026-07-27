@@ -39,10 +39,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private bool _planRightClickOnItem;
     private bool _stepRightClickOnItem;
     private List<Ch9329PortInfo> _ch9329Ports = new();
-    // 跳转目标按“对象身份”跟随增删/排序：记住上次 RefreshIndices 时的顶层顺序，
-    // 每次结构变更后把 JumpTarget(旧序号)→目标对象→新序号 重映射；目标被删/入组则清 0。
-    private List<MacroStep> _jumpOrder = new();
-    private MacroPlan? _jumpOrderPlan;
     // 撤销快照：方案级（名称 + 动作列表 + 循环次数 + 间隔），所有方案属性修改都可撤销。
     // AddedPlan 非空 → 这是一条“新增方案”的结构撤销项（撤销即移除该方案）；否则是当前方案内的动作编辑快照。
     // Condition 是方案级运行条件的快照（用一个空壳 MacroPlan 承载，仅取其 IRunCondition 部分）。
@@ -719,8 +715,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plan.LoopDelayMs = snap.LoopDelayMs;
         if (snap.Condition != null) RunCondition.Copy(snap.Condition, _plan);
         RefreshPlanSummary();
-        _jumpOrderPlan = null;   // 恢复的是快照克隆（新对象），其 JumpTarget 已对应恢复后的顺序，走基线不重映射
-        RefreshIndices(); UndoButton.IsEnabled = _undo.Count > 0; MarkDirty();
+        RefreshIndices();   // 跳转按 Id 绑定，快照克隆保留了原 Id，恢复后自动指回原目标 UndoButton.IsEnabled = _undo.Count > 0; MarkDirty();
         AddLog("Info", "已撤销上一步修改。");
     }
 
@@ -756,9 +751,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             if (SameStepContent(edited, _step)) return;
             PushUndo();
-            // 编辑=整项替换成新对象；把基线里旧对象的身份过继给新对象，别让"指向被编辑步"的跳转丢失。
-            int jo = _jumpOrder.IndexOf(_step);
-            if (jo >= 0) _jumpOrder[jo] = edited;
+            // 编辑=整项替换成新对象：把旧对象的身份过继给它，指向本步的跳转才不会失效。
+            edited.Id = _step.Id;
             _plan.Steps[idx] = edited;
             RefreshIndices(); StepsList.SelectedIndex = idx; MarkDirty();
         }
@@ -786,7 +780,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var parentGroup = target != null ? FindParentGroup(target) : null;
         PushUndo();
         var pasted = _clip.Clone();
-        pasted.JumpTarget = 0; pasted.JumpTimes = 0;   // 复制来的跳转序号在新位置无意义，清掉免得指错
+        pasted.RenewId();                              // 副本必须是新身份，否则跳转会同时指向原件与副本
+        pasted.JumpTargetId = ""; pasted.JumpTarget = 0; pasted.JumpTimes = 0;   // 复制来的跳转目标在新位置无意义
         if (parentGroup != null && !_clip.IsGroup)
         {
             // 聚焦在组合内部的子动作：作为兄弟子动作粘到该子动作之后（组合不嵌套组合）。
@@ -906,20 +901,23 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_plan == null) return;
         var steps = _plan.Steps;
-        // 跳转目标重映射：仅当上次基线属于当前方案时做（换方案/撤销恢复走基线路径，保留既有序号）。
-        if (ReferenceEquals(_jumpOrderPlan, _plan))
+        // 跳转目标跟随动作本身：JumpTargetId 绑定的是目标对象，插入/删除/排序都不会指错，
+        // 这里只负责把"当前序号"同步到 JumpTarget 供界面显示（也让旧版格式保持可读）。
+        // 组合内与监听里的跳转同样指向顶层序号，故用 Flatten 递归遍历——只扫顶层会漏掉它们。
+        foreach (var s in MacroStep.Flatten(steps))
         {
-            foreach (var s in steps)
-            {
-                if (s.JumpTarget < 1) continue;
-                MacroStep? tgt = s.JumpTarget <= _jumpOrder.Count ? _jumpOrder[s.JumpTarget - 1] : null;
-                int ni = tgt != null ? steps.IndexOf(tgt) : -1;
-                s.JumpTarget = ni >= 0 ? ni + 1 : 0;   // 目标被删除 / 移入组合 → 取消跳转，避免指错或死循环
-            }
+            if (s.Type != "Jump") continue;
+            // 只有序号的旧存档：按当前顺序解析出目标身份（一次性，之后就与序号无关了）
+            if (s.JumpTargetId.Length == 0 && s.JumpTarget >= 1 && s.JumpTarget <= steps.Count)
+                s.JumpTargetId = steps[s.JumpTarget - 1].Id;
+            int ni = -1;
+            if (s.JumpTargetId.Length > 0)
+                for (int k = 0; k < steps.Count; k++) if (steps[k].Id == s.JumpTargetId) { ni = k; break; }
+            // 目标不在顶层（被删除/移入组合）→ 显示序号置 0 表示当前不可达；
+            // 但【保留 JumpTargetId】，这样撤销删除或把目标移回顶层后，跳转会自动恢复。
+            s.JumpTarget = ni + 1;
         }
         for (int i = 0; i < steps.Count; i++) steps[i].DisplayIndex = i + 1;
-        _jumpOrder = steps.ToList();      // 记下这次的顺序，作为下次重映射的基线
-        _jumpOrderPlan = _plan;
     }
 
     // 右键"禁用/启用"：顶层动作用选中步 _step；组合子动作用 sender.DataContext。切换即标脏，徽标/变灰随属性通知即时更新。
@@ -1459,8 +1457,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         plan.Steps.Clear();
         foreach (var s in saved.Steps) plan.Steps.Add(s);
         _undo.Clear(); UndoButton.IsEnabled = false;
-        _jumpOrderPlan = null;   // 同 Undo：填入的是反序列化的新对象，跳转序号已对应恢复后的顺序，走基线不重映射（否则全被清 0）
-        RefreshIndices();
+        RefreshIndices();   // 同 Undo：跳转按 Id 绑定，反序列化保留了 Id，无需特殊处理
         RefreshSaveState();
         PlansList.Items.Refresh();
     }
@@ -2058,7 +2055,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             var c = st.Clone();
             if (c.JumpTarget > i) c.JumpTarget -= i;
-            else { c.JumpTarget = 0; c.JumpTimes = 0; }
+            else { c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0; }
             _runOrigin[c] = st;
             sub.Steps.Add(c);
         }
@@ -2073,7 +2070,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var sub = new MacroPlan { Name = $"单次测试：第 {i + 1} 步", LoopCount = 1 };
         _runOrigin.Clear(); _runSourcePlan = _plan;
         var c = _plan.Steps[i].Clone();
-        c.JumpTarget = 0; c.JumpTimes = 0;   // 单步测试无处可跳（也别动原对象）
+        c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0;   // 单步测试无处可跳（也别动原对象）
         _runOrigin[c] = _plan.Steps[i];
         sub.Steps.Add(c);
         RunPlan(sub, sub.Name);
@@ -2118,7 +2115,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plan.Steps.RemoveAt(i);
         var kids = g.Children.ToList();
         // 子动作提升回顶层：其原 JumpTarget 是"在组合内/入组前"的旧序号，对当前顶层无意义，清掉。
-        foreach (var c in kids) { c.JumpTarget = 0; c.JumpTimes = 0; }
+        foreach (var c in kids) { c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0; }
         for (int k = 0; k < kids.Count; k++) _plan.Steps.Insert(i + k, kids[k]);
         RefreshIndices();
         if (i < _plan.Steps.Count) StepsList.SelectedIndex = i;
@@ -2185,11 +2182,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         PushUndo();
         int gi = _plan.Steps.IndexOf(g);
         g.Children.Remove(child);
-        child.JumpTarget = 0; child.JumpTimes = 0;   // 移出到顶层：旧跳转序号无意义，清掉
+        child.JumpTargetId = ""; child.JumpTarget = 0; child.JumpTimes = 0;   // 移出到顶层：旧跳转目标无意义，清掉
         _plan.Steps.RemoveAt(gi);
         int at = gi;
         if (g.Children.Count >= 2) _plan.Steps.Insert(at++, g);
-        else { foreach (var c in g.Children.ToList()) { c.JumpTarget = 0; c.JumpTimes = 0; _plan.Steps.Insert(at++, c); } g.Children.Clear(); }
+        else { foreach (var c in g.Children.ToList()) { c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0; _plan.Steps.Insert(at++, c); } g.Children.Clear(); }
         _plan.Steps.Insert(at, child);
         RefreshIndices(); StepsList.SelectedIndex = at; MarkDirty();
     }

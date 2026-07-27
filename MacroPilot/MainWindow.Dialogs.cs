@@ -1482,14 +1482,16 @@ public partial class MainWindow
         var jumpPanel = SubGroup(null, jumpInner);
         jumpPanel.Visibility = Visibility.Collapsed; baseContent.Children.Add(jumpPanel);
         var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
-        jumpTargetCombo.Items.Add("（选择目标动作）");
+        // 目标用 Tag 记住动作的【身份 Id】而不是序号：之后在它前面插入/删除动作，跳转仍指向同一个动作。
+        jumpTargetCombo.Items.Add(new ComboBoxItem { Content = "（选择目标动作）", Tag = "" });
         int count = _plan?.Steps.Count ?? 0;
         for (int n = 1; n <= count; n++)
         {
             // 有备注显示备注，否则显示动作简述（截断防超宽）
-            var brief = _plan!.Steps[n - 1].Brief;
+            var tgt = _plan!.Steps[n - 1];
+            var brief = tgt.Brief;
             if (brief.Length > 42) brief = brief[..42] + "…";
-            jumpTargetCombo.Items.Add($"{n}. {brief}");
+            jumpTargetCombo.Items.Add(new ComboBoxItem { Content = $"{n}. {brief}", Tag = tgt.Id });
         }
         jumpTargetCombo.SelectedIndex = 0;
         jumpInner.Children.Add(FieldLabel("跳转到"));
@@ -1746,7 +1748,13 @@ public partial class MainWindow
                 {
                     if (jumpTargetCombo.SelectedIndex < 1)
                         throw new InvalidOperationException("请选择跳转的目标动作。");
-                    result = new MacroStep { Type = "Jump", JumpTarget = jumpTargetCombo.SelectedIndex, JumpTimes = Math.Max(0, ParseInt(jumpMaxText.Text, 0)) };
+                    result = new MacroStep
+                    {
+                        Type = "Jump",
+                        JumpTargetId = (jumpTargetCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
+                        JumpTarget = jumpTargetCombo.SelectedIndex,   // 仅作显示用，RefreshIndices 会按 Id 重新同步
+                        JumpTimes = Math.Max(0, ParseInt(jumpMaxText.Text, 0)),
+                    };
                 }
                 else // 激活窗口
                 {
@@ -1820,7 +1828,13 @@ public partial class MainWindow
             }
             mouseRepeat.Load(source); kbRepeat.Load(source); runRepeat.Load(source); textRepeat.Load(source);
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
-            if (source.JumpTarget >= 1 && source.JumpTarget <= count) jumpTargetCombo.SelectedIndex = source.JumpTarget;
+            // 回填按身份找，找不到（目标已被删除/移入组合）就停在"（选择目标动作）"
+            if (source.JumpTargetId.Length > 0)
+            {
+                for (int n = 1; n < jumpTargetCombo.Items.Count; n++)
+                    if ((jumpTargetCombo.Items[n] as ComboBoxItem)?.Tag as string == source.JumpTargetId) { jumpTargetCombo.SelectedIndex = n; break; }
+            }
+            else if (source.JumpTarget >= 1 && source.JumpTarget <= count) jumpTargetCombo.SelectedIndex = source.JumpTarget;   // 只有序号的旧数据
             jumpMaxText.Text = Math.Max(0, source.JumpTimes).ToString();
             noteText.Text = source.Note;
         }

@@ -91,8 +91,13 @@ public static class Harness
     /// <summary>等待动作（毫秒），用于测暂停/停止时序。</summary>
     public static MacroStep Wait(int ms) => new() { Type = "Wait", DurationMs = ms, LoopCount = 1 };
 
-    /// <summary>跳转到第 target 个顶层动作（1 起）；times=最大重复次数，0 为不限。</summary>
-    public static MacroStep Jump(int target, int times = 0) => new() { Type = "Jump", JumpTarget = target, JumpTimes = times, LoopCount = 1 };
+    /// <summary>跳转到指定动作（按身份绑定）；times=最大重复次数，0 为不限。</summary>
+    public static MacroStep JumpTo(MacroStep target, int times = 0)
+        => new() { Type = "Jump", JumpTargetId = target.Id, JumpTimes = times, LoopCount = 1 };
+
+    /// <summary>只按序号的跳转（模拟旧存档，验证兼容路径）。</summary>
+    public static MacroStep Jump(int target, int times = 0)
+        => new() { Type = "Jump", JumpTarget = target, JumpTimes = times, LoopCount = 1 };
 
     public static MacroStep Group(params MacroStep[] children)
     {

@@ -226,13 +226,30 @@ public sealed class MacroRunner
             // JumpTimes =「最大重复次数」，仅作防死循环上限（0=不限）：本轮内已跳次数达到上限后
             // 该跳转失效、顺序往下走。旧格式挂在其它动作上的 JumpTarget 一律忽略。
             var jumpSrc = _pendingJump; _pendingJump = null;
-            if (jumpSrc != null && jumpSrc.JumpTarget >= 1 && jumpSrc.JumpTarget <= steps.Count)
+            if (jumpSrc != null)
             {
-                jumpUsed.TryGetValue(jumpSrc, out var used);
-                if (jumpSrc.JumpTimes <= 0 || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = jumpSrc.JumpTarget - 1; continue; }
+                int ti = JumpIndex(jumpSrc, steps);
+                if (ti >= 0)
+                {
+                    jumpUsed.TryGetValue(jumpSrc, out var used);
+                    if (jumpSrc.JumpTimes <= 0 || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = ti; continue; }
+                }
             }
             i++;
         }
+    }
+
+    // 跳转目标定位：JumpTargetId（绑定动作本身，增删排序都不会指错）优先；
+    // 只有序号的旧存档回退用 JumpTarget。目标不在顶层（被删/移入组合）返回 -1，即不跳。
+    private static int JumpIndex(MacroStep jump, System.Collections.Generic.IList<MacroStep> steps)
+    {
+        if (jump.JumpTargetId.Length > 0)
+        {
+            for (int k = 0; k < steps.Count; k++)
+                if (steps[k].Id == jump.JumpTargetId) return k;
+            return -1;
+        }
+        return jump.JumpTarget >= 1 && jump.JumpTarget <= steps.Count ? jump.JumpTarget - 1 : -1;
     }
 
     // 组合：高亮整组，逐个子动作记日志(执行中→成功/失败)，支持组合自身循环。

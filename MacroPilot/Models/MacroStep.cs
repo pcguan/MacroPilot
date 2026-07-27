@@ -78,7 +78,26 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public int LoopDelayMs { get; set; } = 1000;
     public int LoopDelayUnit { get; set; } = 1;           // 0毫秒 1秒 2分钟 3小时
 
-    // 执行后跳转：JumpTarget=目标动作序号(1 起, 0=不跳)；JumpTimes=次数(0=无限)
+    // 动作的稳定身份：跳转靠它绑定目标，因此插入/删除/排序都不会指错。
+    // 懒生成——新建对象时不占 Guid，首次读取（含序列化）才生成；反序列化时用存档里的值。
+    private string _id = "";
+    public string Id
+    {
+        get => _id.Length > 0 ? _id : (_id = System.Guid.NewGuid().ToString("N"));
+        set => _id = value ?? "";
+    }
+
+    /// <summary>换一个新身份（复制粘贴用：副本必须与原件区分，否则跳转会指到两个动作上）。递归到子动作与监听。</summary>
+    public void RenewId()
+    {
+        _id = System.Guid.NewGuid().ToString("N");
+        foreach (var (_, hook) in HookList()) hook.RenewId();
+        foreach (var c in Children) c.RenewId();
+    }
+
+    // 跳转目标：JumpTargetId 才是真相（绑定动作本身）；JumpTarget 是它在顶层列表里的当前序号，
+    // 仅用于界面显示与兼容旧存档，由 MainWindow.RefreshIndices 按 Id 同步。JumpTimes=最大重复次数(0=无限)。
+    public string JumpTargetId { get; set; } = "";
     public int JumpTarget { get; set; }
     public int JumpTimes { get; set; }
 
@@ -184,7 +203,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             ClickImageThreshold = ClickImageThreshold, ClickImageIndex = ClickImageIndex,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
-            JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
+            Id = Id, JumpTargetId = JumpTargetId, JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
             DisplayIndex = DisplayIndex,   // 运行页跑的是克隆副本，带上序号否则运行列表全显 0.（编辑页会 RefreshIndices 重算，不受影响）
             PreCondAction = PreCondAction?.Clone(), CondSuccessAction = CondSuccessAction?.Clone(),
             CondFailAction = CondFailAction?.Clone(), PreRunAction = PreRunAction?.Clone(),
@@ -197,6 +216,18 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         // 导致动作级重试配置在运行副本里丢失（跑的是克隆件）。新增条件字段只需改 RunCondition.Copy。
         RunCondition.Copy(this, clone);
         return clone;
+    }
+
+    /// <summary>递归展开一棵动作树：自身 → 各监听挂点 → 子动作。跳转同步等需要"看到每一个动作"的地方共用。</summary>
+    public static System.Collections.Generic.IEnumerable<MacroStep> Flatten(System.Collections.Generic.IEnumerable<MacroStep> roots)
+    {
+        foreach (var root in roots)
+        {
+            yield return root;
+            foreach (var (_, hook) in root.HookList())
+                foreach (var x in Flatten(new[] { hook })) yield return x;
+            foreach (var x in Flatten(root.Children)) yield return x;
+        }
     }
 
     /// <summary>简易描述：有备注用备注，否则用动作本身的简述（不带循环/监听等后缀）。跳转目标下拉等紧凑场景用。</summary>

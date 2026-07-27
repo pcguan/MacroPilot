@@ -111,6 +111,97 @@ public class FlowTests
         Assert.Equal(new[] { "a", "a", "b" }, r.Calls);
     }
 
+    // ---- 跳转绑定动作身份（v0.4.1）----
+
+    [Fact]
+    public void 在目标之前插入动作后跳转仍指向同一个动作()
+    {
+        // 用户场景：原本"跳转到动作 3"，之后在动作 3 前面插了一个新动作，
+        // 旧的动作 3 变成了动作 4——跳转应当自动跟到 4，而不是还指着第 3 位。
+        var a = Key("a"); var b = Key("b"); var c = Key("c");
+        var plan = Plan(a, b, c, JumpTo(c, 1));
+        plan.Steps.Insert(1, Key("x"));       // 在 b 之前插入 → c 从第 3 位变成第 4 位
+
+        var r = Run(plan);
+        // 期望：a x b c → 跳回 c → c 再跑一次 → 结束
+        Assert.Equal(new[] { "a", "x", "b", "c", "c" }, r.Calls);
+    }
+
+    [Fact]
+    public void 删除目标之前的动作后跳转仍指向同一个动作()
+    {
+        var a = Key("a"); var b = Key("b"); var c = Key("c");
+        var plan = Plan(a, b, c, JumpTo(c, 1));
+        plan.Steps.Remove(b);                 // c 从第 3 位变成第 2 位
+
+        var r = Run(plan);
+        Assert.Equal(new[] { "a", "c", "c" }, r.Calls);
+    }
+
+    [Fact]
+    public void 重新排序后跳转仍指向同一个动作()
+    {
+        var a = Key("a"); var b = Key("b"); var c = Key("c");
+        var plan = Plan(a, b, c, JumpTo(a, 1));
+        plan.Steps.Remove(a); plan.Steps.Insert(2, a);   // a 挪到第 3 位：b c a Jump
+
+        var r = Run(plan);
+        Assert.Equal(new[] { "b", "c", "a", "a" }, r.Calls);
+    }
+
+    [Fact]
+    public void 目标被删除后跳转不生效也不乱跳()
+    {
+        var a = Key("a"); var c = Key("c");
+        var plan = Plan(a, c, JumpTo(c, 5));
+        plan.Steps.Remove(c);                 // 目标没了
+
+        var r = Run(plan);
+        Assert.Equal(new[] { "a" }, r.Calls);
+        Assert.Equal("Done", r.Reason);
+    }
+
+    [Fact]
+    public void 组合内的跳转同样按身份绑定()
+    {
+        var a = Key("a");
+        var g = Group(Key("x"), JumpTo(a, 1));
+        var plan = Plan(a, g);
+        plan.Steps.Insert(0, Key("head"));    // a 从第 1 位变成第 2 位
+
+        var r = Run(plan);
+        Assert.Equal(new[] { "head", "a", "x", "a", "x" }, r.Calls);
+    }
+
+    [Fact]
+    public void 只有序号的旧存档跳转仍可用()
+    {
+        // 旧数据没有 JumpTargetId，运行时回退按序号定位
+        var r = Run(Plan(Key("a"), Key("b"), Jump(1, 1)));
+        Assert.Equal(new[] { "a", "b", "a", "b" }, r.Calls);
+    }
+
+    [Fact]
+    public void 克隆保留身份于是运行副本的跳转仍然有效()
+    {
+        // 方案运行的是克隆副本：Id 必须一起克隆，否则跳转在副本里找不到目标
+        var a = Key("a");
+        var plan = Plan(a, JumpTo(a, 1));
+        var copy = Plan(plan.Steps[0].Clone(), plan.Steps[1].Clone());
+        var r = Run(copy);
+        Assert.Equal(new[] { "a", "a" }, r.Calls);
+    }
+
+    [Fact]
+    public void 换身份后副本与原件互不影响()
+    {
+        var a = Key("a");
+        var dup = a.Clone();
+        Assert.Equal(a.Id, dup.Id);      // 克隆保持身份
+        dup.RenewId();
+        Assert.NotEqual(a.Id, dup.Id);   // 粘贴时换新身份，跳转不会同时指向两个
+    }
+
     [Fact]
     public void 被禁用的跳转不生效()
     {
