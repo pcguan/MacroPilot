@@ -260,7 +260,16 @@ public partial class MainWindow
         };
 
         // ---- 鼠标交互 ----
-        bool autoPickable = true;   // 还没框过选区时，悬停自动框窗口
+        // 自动识别窗口 vs 手动框选：按下时【两种意图都先保留】，松手时按位移判定——
+        // 位移超过阈值＝用户在拖拽，说明主动放弃了自动识别，用拖出来的区域；
+        // 几乎没动＝一次点击，才采用按下瞬间高亮的那个窗口。
+        // （旧实现在 MouseDown 里直接采用窗口并 return，拖拽根本没机会开始。）
+        bool autoPickable = true;          // 尚未确定选区：悬停高亮窗口、点击可采用
+        WRect? autoCandidate = null;       // 当前高亮窗口的矩形（DIP）
+        WPoint downPt = default;
+        bool dragMoved = false;            // 本次按下是否已判定为拖拽
+        const double DragSlop = 4;         // 超过这个位移（DIP）才算拖拽，容忍点击时的手抖
+
         overlay.MouseLeftButtonDown += (_, e) =>
         {
             var p = e.GetPosition(snapImg);
@@ -273,20 +282,10 @@ public partial class MainWindow
                 overlay.CaptureMouse();
                 return;
             }
-            // 选区模式：悬停在自动框上直接点，等于采用该窗口矩形
-            if (autoPickable && autoBox.Visibility == Visibility.Visible && !pick.Has)
-            {
-                pick.X = Canvas.GetLeft(autoBox); pick.Y = Canvas.GetTop(autoBox);
-                pick.W = autoBox.Width; pick.H = autoBox.Height; pick.Has = true;
-                autoBox.Visibility = Visibility.Collapsed; autoPickable = false;
-                LayoutSel();
-                return;
-            }
-            autoPickable = false;
-            autoBox.Visibility = Visibility.Collapsed;
-            pick.Begin(p);
+            downPt = p; dragMoved = false;
+            pick.Begin(p);                 // 先按"可能要拖拽"起手；若最终判定是点击，松手时用候选窗口覆盖
             overlay.CaptureMouse();
-            LayoutSel();
+            if (!autoPickable) LayoutSel();   // 已有选区时立即反馈；自动识别阶段先不画 0 尺寸的框
         };
         overlay.MouseMove += (_, e) =>
         {
@@ -299,7 +298,17 @@ public partial class MainWindow
                 return;
             }
             if (tool.Length > 0) return;
-            if (pick.Dragging) { pick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight); LayoutSel(); return; }
+            if (pick.Dragging)
+            {
+                if (!dragMoved && (Math.Abs(p.X - downPt.X) > DragSlop || Math.Abs(p.Y - downPt.Y) > DragSlop))
+                {
+                    dragMoved = true;                        // 开始拖拽＝放弃自动识别
+                    autoCandidate = null;
+                    autoBox.Visibility = Visibility.Collapsed;
+                }
+                if (dragMoved || !autoPickable) { pick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight); LayoutSel(); }
+                return;
+            }
             if (pick.Has) { overlay.Cursor = RectPicker.CursorFor(pick.HitTest(p)); return; }
             // 未框选：找光标下最上层的窗口，高亮它
             if (!autoPickable) return;
@@ -308,14 +317,16 @@ public partial class MainWindow
             var hitR = HitWindow(winRects, vx, vy);
             if (hitR is { } wr)
             {
-                Canvas.SetLeft(autoBox, (wr.X - ox) / r); Canvas.SetTop(autoBox, (wr.Y - oy) / r);
-                autoBox.Width = wr.Width / r; autoBox.Height = wr.Height / r;
+                double bx = (wr.X - ox) / r, by = (wr.Y - oy) / r, bw = wr.Width / r, bh = wr.Height / r;
+                autoCandidate = new WRect(bx, by, bw, bh);   // 记下候选，供"点击即采用"使用
+                Canvas.SetLeft(autoBox, bx); Canvas.SetTop(autoBox, by);
+                autoBox.Width = bw; autoBox.Height = bh;
                 autoBox.Visibility = Visibility.Visible;
                 sizeLbl.Visibility = Visibility.Visible;
                 sizeLbl.Text = $"{(int)wr.Width} × {(int)wr.Height}";
-                Canvas.SetLeft(sizeLbl, (wr.X - ox) / r); Canvas.SetTop(sizeLbl, Math.Max(0, (wr.Y - oy) / r - 24));
+                Canvas.SetLeft(sizeLbl, bx); Canvas.SetTop(sizeLbl, Math.Max(0, by - 24));
             }
-            else { autoBox.Visibility = Visibility.Collapsed; sizeLbl.Visibility = Visibility.Collapsed; }
+            else { autoCandidate = null; autoBox.Visibility = Visibility.Collapsed; sizeLbl.Visibility = Visibility.Collapsed; }
         };
         overlay.MouseLeftButtonUp += (_, _) =>
         {
@@ -328,7 +339,26 @@ public partial class MainWindow
                 drawing = null;
                 return;
             }
-            if (pick.Dragging) { pick.End(); overlay.ReleaseMouseCapture(); LayoutSel(); }
+            if (!pick.Dragging) return;
+            pick.End();
+            overlay.ReleaseMouseCapture();
+            if (autoPickable)
+            {
+                if (!dragMoved && autoCandidate is { } wr)
+                {
+                    // 一次点击（没拖动）→ 采用高亮的那个窗口
+                    pick.X = wr.X; pick.Y = wr.Y; pick.W = wr.Width; pick.H = wr.Height; pick.Has = true;
+                }
+                if (pick.W >= 2 && pick.H >= 2)
+                {
+                    autoPickable = false;                    // 选区已定，退出自动识别阶段
+                    autoCandidate = null;
+                    autoBox.Visibility = Visibility.Collapsed;
+                    hint.Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车完成 · Esc 取消";
+                }
+                else pick.Has = false;                       // 空点一下（没命中窗口也没拖出区域）：维持可继续识别
+            }
+            LayoutSel();
         };
 
         // ---- 确认 / 取消 / 键盘 ----
