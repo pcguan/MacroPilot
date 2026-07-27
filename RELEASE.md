@@ -23,7 +23,7 @@
 
 同时在 `MacroPilot/changelog.json` **最前面**加上本版本的条目（`version` / `date` / `notes`）。这份文件是概况页「本次更新」和 release 说明的**唯一来源**，漏写会导致第 5 步的脚本直接报错退出。
 
-## 2. 推送到 corp-win 编译构建
+## 2. 推送到 corp-win 跑测试 + 编译构建
 
 直接 scp 源码上去（**不要**绕 GitHub clone——源码本体不到 1 MB，直推更快）：
 
@@ -35,12 +35,21 @@ tar -cf - --exclude=.git --exclude=bin --exclude=obj --exclude=build \
           --exclude=archive.7z --exclude=payload . | tar -xf - -C $D
 scp -rq $D/. corp-win:'C:/Users/pengcheng.guan/MacroPilot_src/'
 
+# 先跑单元测试：业务逻辑（运行条件/监听挂点/循环跳转/克隆完整性）全在这里把关，失败就别往下走
+ssh corp-win 'cd /d %USERPROFILE%\MacroPilot_src\MacroPilot.Tests && dotnet test -v q --nologo'
+
 ssh corp-win 'cd /d %USERPROFILE%\MacroPilot_src\MacroPilotInstaller_Flutter_WPF && echo. | build.bat'
 ```
 
 `build.bat` 六步：publish WPF → 打 `assets\payload\app.zip` → flutter build → 打 `archive.7z` → 拼 SFX 单文件 exe 到桌面。
 
-**构建失败就回第 1 步修，别继续往下走。** 构建成功后核对产物版本号确实是新版：
+**测试或构建失败就回第 1 步修，别继续往下走。**
+
+> 测试工程见 `MacroPilot.Tests/`（xUnit）：用 `FakeBackend` 顶掉真实键鼠输出，只断言"方案跑出来的动作序列"，
+> 不依赖硬件、也不会真的动鼠标。**改了模型字段务必跑一遍**——`ModelIntegrityTests` 会用反射查
+> `Clone` / `RunCondition.Copy` 有没有漏拷（历史上因此出过两次实际影响运行的 bug）。
+> 测试项目不进安装包（`build.bat` 只 publish `MacroPilot.csproj`，已验证 payload 里没有 Tests 文件）。
+ 构建成功后核对产物版本号确实是新版：
 
 ```bash
 ssh corp-win 'powershell -NoProfile -Command "(Get-Item C:\Users\pengcheng.guan\MacroPilot_src\MacroPilotInstaller_Flutter_WPF\stage_payload\MacroPilot.dll).VersionInfo.FileVersion"'
