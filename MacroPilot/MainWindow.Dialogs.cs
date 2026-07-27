@@ -586,23 +586,22 @@ public partial class MainWindow
             sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(rw * r)}×{(int)Math.Round(rh * r)}";
             Canvas.SetLeft(sizeLbl, rx); Canvas.SetTop(sizeLbl, Math.Max(0, ry - 24));
         }
-        // 初始区域必须等 snapImg 真正排好版（ActualWidth>0）再算——窗口是在 SourceInitialized 里用 SetWindowPos
-        // 撑到 vw×vh 的，Loaded 触发时 ActualWidth 常还是 0，那会把初始区域算成近 0（除以 r=vw），
-        // 于是"编辑后区域没变/框里没数据"。改由 snapImg.SizeChanged 在尺寸到位后只初始化一次。
-        bool inited = false;
-        void InitRegion()
+        // 既有区域的初始框：不能"只初始化一次"——窗口从默认尺寸被 SetWindowPos 撑到全屏会经历多轮布局，
+        // 若在中间某轮（尺寸还不对）就锁死初始化，比例失真会把既有框算得又小又偏（被 clamp 后形同没框），
+        // 之后正确尺寸到位也不再重算——表现成"有数据却要重新手动画框"。
+        // 改为：用户第一次上手（按下鼠标）之前，每轮尺寸变化都从【原始虚拟像素】重新推导；上手后停止跟随。
+        bool touched = false;
+        void SyncFromCur()
         {
-            double cw = snapImg.ActualWidth, chh = snapImg.ActualHeight;
-            if (inited || cw < 1 || chh < 1) return;
-            inited = true;
+            if (touched || snapImg.ActualWidth < 1 || snapImg.ActualHeight < 1) return;
             double r = R();
             if (curW is int cW && cW > 0 && curH is int cH && cH > 0)
-            { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }   // 有区域→画出既有框
+            { rx = ((curVx ?? ox) - ox) / r; ry = ((curVy ?? oy) - oy) / r; rw = cW / r; rh = cH / r; }   // 有区域→画出既有框（可拖动/缩放）
             else { rx = ry = rw = rh = 0; }   // 无区域→不预置框，让用户自行拖拽画（hint 有提示）
             Layout();
         }
-        snapImg.SizeChanged += (_, _) => InitRegion();
-        overlay.Loaded += (_, _) => { InitRegion(); overlay.Activate(); overlay.Focus(); };
+        snapImg.SizeChanged += (_, _) => SyncFromCur();
+        overlay.Loaded += (_, _) => { SyncFromCur(); overlay.Activate(); overlay.Focus(); };
 
         // 直接鼠标交互（镜像 CaptureTargetImage 那套可靠做法）：Thumb 在无边框透明置顶窗里命中不稳，
         // 之前"编辑区域后不生效"就是拖动根本没被 Thumb 接住。改由 overlay 级鼠标事件 + 几何命中判定。
@@ -616,6 +615,7 @@ public partial class MainWindow
         }
         overlay.MouseLeftButtonDown += (_, e) =>
         {
+            touched = true;   // 用户上手后初始框停止跟随布局重算
             var p = e.GetPosition(snapImg);
             grab = HitTest(p); down = p; gx = rx; gy = ry; gw = rw; gh = rh;
             if (grab == "new") { rx = p.X; ry = p.Y; rw = 0; rh = 0; gx = rx; gy = ry; gw = 0; gh = 0; grab = "se"; }   // 空白拖拽=从起点重画
