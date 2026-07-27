@@ -969,13 +969,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _runOrigin.Clear(); _runSourcePlan = src;
         var steps = new System.Collections.ObjectModel.ObservableCollection<MacroStep>();
         foreach (var s in src.Steps) { var c = s.Clone(); _runOrigin[c] = s; steps.Add(c); }
-        return new MacroPlan
+        var run = new MacroPlan
         {
             Name = src.Name, LoopCount = src.LoopCount, LoopDelayMs = src.LoopDelayMs,
-            RunConditionType = src.RunConditionType, RunConditionInvert = src.RunConditionInvert,
-            RunConditionStartMinute = src.RunConditionStartMinute, RunConditionEndMinute = src.RunConditionEndMinute,
             Steps = steps,
         };
+        // 运行条件整体拷贝：原先手写字段列表，漏了图片条件的图片/屏幕/矩形/阈值（方案级「图片出现」
+        // 因此在运行副本里退化成无条件），也漏了后加的重复检查参数。改走 RunCondition.Copy 统一维护。
+        RunCondition.Copy(src, run);
+        return run;
     }
 
     // 运行指定方案（快照副本；"从此动作开始/单次"另构临时方案）。

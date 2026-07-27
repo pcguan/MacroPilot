@@ -25,6 +25,13 @@ public interface IRunCondition
     int RunConditionRectW { get; set; }
     int RunConditionRectH { get; set; }
     double RunConditionThreshold { get; set; }
+
+    // 重复检查：条件不满足时按间隔重新判定，直到满足或达到次数上限。
+    // 【方案级】历来就是"空转等到条件满足"，故忽略本开关始终等待（旧行为不变），但间隔/次数上限对它生效。
+    // 【动作级/组合级】原本是"不满足即跳过"，勾选后才改为重复检查。
+    bool RunConditionRetry { get; set; }
+    int RunConditionRetryIntervalMs { get; set; }   // 默认 1000
+    int RunConditionRetryMax { get; set; }          // 0 = 不限次数
 }
 
 public static class RunCondition
@@ -49,6 +56,9 @@ public static class RunCondition
         dst.RunConditionRectW = src.RunConditionRectW;
         dst.RunConditionRectH = src.RunConditionRectH;
         dst.RunConditionThreshold = src.RunConditionThreshold;
+        dst.RunConditionRetry = src.RunConditionRetry;
+        dst.RunConditionRetryIntervalMs = src.RunConditionRetryIntervalMs;
+        dst.RunConditionRetryMax = src.RunConditionRetryMax;
     }
 
     /// <summary>清空运行条件。</summary>
@@ -62,5 +72,8 @@ public static class RunCondition
         c.RunConditionMonitor = "";
         c.RunConditionRectX = c.RunConditionRectY = c.RunConditionRectW = c.RunConditionRectH = 0;
         c.RunConditionThreshold = 0.9;
+        c.RunConditionRetry = false;
+        c.RunConditionRetryIntervalMs = 1000;
+        c.RunConditionRetryMax = 0;
     }
 }

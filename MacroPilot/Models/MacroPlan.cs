@@ -27,6 +27,10 @@ public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
     public int RunConditionRectW { get; set; }
     public int RunConditionRectH { get; set; }
     public double RunConditionThreshold { get; set; } = 0.9;
+    // 重复检查（详见 IRunCondition）：间隔默认 1000ms，次数 0=不限。旧 JSON 无这些键时取此处默认值，行为不变。
+    public bool RunConditionRetry { get; set; }
+    public int RunConditionRetryIntervalMs { get; set; } = 1000;
+    public int RunConditionRetryMax { get; set; }
     [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);
 
 

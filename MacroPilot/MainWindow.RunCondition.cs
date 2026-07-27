@@ -23,6 +23,8 @@ public partial class MainWindow
         public readonly ComboBox StartHour = new(), StartMinute = new(), EndHour = new(), EndMinute = new();
         public readonly ComboBox TypeCombo = new();   // 时间段 / 图片出现
         public ClickImagePanel Img = null!;           // 图片出现＝与「点击图片」共用同一编辑器（无「匹配第几」、不套卡片底）
+        public readonly CheckBox Retry = new();       // 条件不满足时重复检查
+        public readonly System.Windows.Controls.TextBox RetryInterval = new(), RetryMax = new();
         public StackPanel Panel = null!;
     }
 
@@ -33,7 +35,8 @@ public partial class MainWindow
         // 宿主窗口懒解析（win=null）：本编辑器在对话框组装前构建；notchBg 用 Hover——条件明细区的底色。
         ed.Img = new ClickImagePanel(this, null, withIndex: false, boxed: false, notchBgKey: "Hover");
         ed.Panel = BuildRunConditionPanel(ed.Enabled, ed.Invert, ed.StartHour, ed.StartMinute,
-                                          ed.EndHour, ed.EndMinute, ed.TypeCombo, ed.Img);
+                                          ed.EndHour, ed.EndMinute, ed.TypeCombo, ed.Img,
+                                          ed.Retry, ed.RetryInterval, ed.RetryMax);
         if (source != null) LoadRunCondition(ed, source);
         return ed;
     }
@@ -44,6 +47,9 @@ public partial class MainWindow
         ed.Invert.IsChecked = src.RunConditionInvert;
         SetTimeSelection(ed.StartHour, ed.StartMinute, src.RunConditionStartMinute);
         SetTimeSelection(ed.EndHour, ed.EndMinute, src.RunConditionEndMinute);
+        ed.Retry.IsChecked = src.RunConditionRetry;
+        ed.RetryInterval.Text = (src.RunConditionRetryIntervalMs <= 0 ? 1000 : src.RunConditionRetryIntervalMs).ToString();
+        ed.RetryMax.Text = Math.Max(0, src.RunConditionRetryMax).ToString();
         if (src.RunConditionType == "ImageMatch")
         {
             ed.Img.LoadCond(src);             // 引用(file:hash)/旧内联 base64 都能解析；面板自行回显缩略图与区域
@@ -63,6 +69,7 @@ public partial class MainWindow
             dst.RunConditionType = "ImageMatch";
             dst.RunConditionInvert = ed.Invert.IsChecked == true;
             ed.Img.ApplyCond(dst);   // 图片/锚定屏/限制区域/阈值（缺图会抛异常，由调用方统一提示）
+            ApplyRetry(ed, dst);
             return;
         }
 
@@ -75,6 +82,16 @@ public partial class MainWindow
         dst.RunConditionInvert = ed.Invert.IsChecked == true;
         dst.RunConditionStartMinute = start;
         dst.RunConditionEndMinute = end;
+        ApplyRetry(ed, dst);
+    }
+
+    // 重复检查三项（两种条件类型共用；放在 RunCondition.Clear 之后写，否则会被清掉）。
+    private static void ApplyRetry(RunConditionEditor ed, IRunCondition dst)
+    {
+        dst.RunConditionRetry = ed.Retry.IsChecked == true;
+        int iv = ParseInt(ed.RetryInterval.Text, 1000);
+        dst.RunConditionRetryIntervalMs = iv <= 0 ? 1000 : iv;
+        dst.RunConditionRetryMax = Math.Max(0, ParseInt(ed.RetryMax.Text, 0));
     }
 
     // ================= 方案设置对话框（循环次数 / 间隔 / 运行条件三合一） =================
@@ -146,7 +163,10 @@ public partial class MainWindow
                           || probe.RunConditionRectY != plan.RunConditionRectY
                           || probe.RunConditionRectW != plan.RunConditionRectW
                           || probe.RunConditionRectH != plan.RunConditionRectH
-                          || Math.Abs(probe.RunConditionThreshold - plan.RunConditionThreshold) > 1e-9;
+                          || Math.Abs(probe.RunConditionThreshold - plan.RunConditionThreshold) > 1e-9
+                          || probe.RunConditionRetry != plan.RunConditionRetry
+                          || probe.RunConditionRetryIntervalMs != plan.RunConditionRetryIntervalMs
+                          || probe.RunConditionRetryMax != plan.RunConditionRetryMax;
 
                 plan.LoopCount = loops; plan.LoopDelayMs = delayMs; plan.LoopDelayUnit = u;
                 RunCondition.Copy(probe, plan);

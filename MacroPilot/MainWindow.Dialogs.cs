@@ -876,7 +876,10 @@ public partial class MainWindow
         ComboBox endHour,
         ComboBox endMinute,
         ComboBox? typeCombo = null,
-        ClickImagePanel? img = null)
+        ClickImagePanel? img = null,
+        CheckBox? retry = null,
+        TextBox? retryInterval = null,
+        TextBox? retryMax = null)
     {
         bool withImage = typeCombo != null && img != null;
 
@@ -931,6 +934,32 @@ public partial class MainWindow
             }
             typeCombo.SelectionChanged += (_, _) => RefreshType();
             RefreshType();
+        }
+
+        // ---- 重复检查（条件不满足时轮询等待）----
+        if (retry != null && retryInterval != null && retryMax != null)
+        {
+            retry.Content = "条件不满足时重复检查，直到满足";
+            retry.Margin = new Thickness(0, 14, 0, 0);
+            retryInterval.Width = 84; retryInterval.Height = 30; retryInterval.Text = "1000";
+            retryMax.Width = 74; retryMax.Height = 30; retryMax.Text = "0";
+            var rrow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
+            rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+            rrow.Children.Add(retryInterval);
+            rrow.Children.Add(new TextBlock { Text = "毫秒", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 16, 0) });
+            rrow.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+            rrow.Children.Add(retryMax);
+            rrow.Children.Add(new TextBlock { Text = "次（0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
+            var rnote = new TextBlock
+            {
+                Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 6, 0, 0),
+                Text = "不勾选时条件不满足就直接跳过该动作。勾选后会按间隔反复判定，等到满足才继续（等待期间可暂停 / 停止）；到达次数上限仍不满足则跳过。\n方案级运行条件本来就会一直等到满足，因此该勾选对它无影响，但间隔与次数上限同样生效（超出上限即结束本次运行）。",
+            };
+            void RefreshRetry() { rrow.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
+            retry.Checked += (_, _) => RefreshRetry();
+            retry.Unchecked += (_, _) => RefreshRetry();
+            RefreshRetry();
+            detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rnote);
         }
 
         // 勾选开关后，明细收进一个缩进 + 弱底色 + 强调左条的面板里，一眼看出属于该开关的“势力范围”。
