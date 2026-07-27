@@ -528,6 +528,26 @@ public partial class MainWindow
         }
     }
 
+    // 帮助图标：细圆环 + 问号，矢量自绘。
+    // 不用字体图标是因为 Segoe MDL2 / Fluent 各版本里那个问号字形又粗又方，与本项目其它细线图标不搭；
+    // 自绘还能保证不同 Windows 版本（字体版本不同）渲染一致。颜色用 SetResourceReference 跟随主题。
+    private static UIElement HelpGlyph()
+    {
+        var g = new Grid { Width = 16, Height = 16, SnapsToDevicePixels = true };
+        var ring = new Ellipse { Width = 15, Height = 15, StrokeThickness = 1.2, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        ring.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "Ink");
+        var q = new TextBlock
+        {
+            Text = "?", FontSize = 10, FontWeight = FontWeights.SemiBold,
+            FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI"),
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, -0.5, 0, 0),   // 问号在字面里偏下，往上顶半像素才在圆心
+        };
+        q.SetResourceReference(TextBlock.ForegroundProperty, "Ink");
+        g.Children.Add(ring); g.Children.Add(q);
+        return g;
+    }
+
     // 「正则随机生成」语法速查：分组罗列支持的规则，每条一句说明 + 一个可直接照抄的例子。
     private void ShowRegexHelpDialog()
     {
@@ -1228,7 +1248,7 @@ public partial class MainWindow
         // 正则随机：把上面的内容当【生成模式】，每次执行随机生成一串（不是用来匹配的）。
         var randomCheck = new CheckBox { Content = "正则随机生成", VerticalAlignment = VerticalAlignment.Center };
         var previewBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "\uE890", ToolTip = "预览：按当前模式随机生成一个示例" };
-        var regexHelpBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "\uE897", ToolTip = "支持的正则语法与示例" };
+        var regexHelpBtn = new Button { Style = (Style)FindResource("IconButton"), Content = HelpGlyph(), ToolTip = "支持的正则语法与示例" };
         regexHelpBtn.Click += (_, _) => ShowRegexHelpDialog();
         var randomRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 10, 0, 0) };
         DockPanel.SetDock(randomCheck, Dock.Left); randomRow.Children.Add(randomCheck);
