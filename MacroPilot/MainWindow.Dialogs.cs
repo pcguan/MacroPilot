@@ -142,8 +142,16 @@ public partial class MainWindow
 
         var accent = (Brush)FindResource("Accent");
         var overlays = new List<Window>();
+        // 每屏的十字线部件：可见性与位置由【每帧】驱动（见 OnFrame），不走鼠标事件。
+        var parts = new List<(ScreenInfo.Monitor m, Canvas canvas, Action<double, double> update)>();
         var frame = new System.Windows.Threading.DispatcherFrame();
-        void Done() { foreach (var w in overlays) try { w.Close(); } catch { } frame.Continue = false; }
+        System.EventHandler? onFrame = null;
+        void Done()
+        {
+            if (onFrame != null) { System.Windows.Media.CompositionTarget.Rendering -= onFrame; onFrame = null; }
+            foreach (var w in overlays) try { w.Close(); } catch { }
+            frame.Continue = false;
+        }
 
         foreach (var mon in ScreenInfo.All())
         {
@@ -151,21 +159,28 @@ public partial class MainWindow
             var overlay = new Window
             {
                 WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
-                ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross,
+                // 藏掉系统光标：软件绘制永远落后硬件光标 1-2 帧，两者同屏可比就永远"追着跑"——
+                // 十字线+中心点自己就是光标（截图工具的通行做法），没有参照物就没有可感知延迟。
+                ShowInTaskbar = false, Topmost = true, Cursor = Cursors.None,
                 Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
             };
             var root = new Grid();
-            var canvas = new Canvas { Visibility = Visibility.Collapsed };   // 光标进入本屏才显示十字线
+            var canvas = new Canvas { Visibility = Visibility.Collapsed };   // 光标在本屏才显示
             // 虚线十字贯穿本屏 + 外圈光环 + 白描边中心点（与"预览位置"同一族视觉）。
-            var vLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 } };
-            var hLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 } };
-            var ring = new Ellipse { Width = 28, Height = 28, Stroke = accent, StrokeThickness = 1.5 };
-            var dot = new Ellipse { Width = 8, Height = 8, Fill = accent, Stroke = Brushes.White, StrokeThickness = 1.5 };
+            // 全部用 RenderTransform 移动：不触发布局（measure/arrange），每帧只重渲染。
+            var vt = new TranslateTransform(); var ht = new TranslateTransform();
+            var ct = new TranslateTransform(); var lt = new TranslateTransform();
+            var vLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 }, RenderTransform = vt, X1 = 0, X2 = 0, Y1 = 0 };
+            var hLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 }, RenderTransform = ht, Y1 = 0, Y2 = 0, X1 = 0 };
+            var ring = new Ellipse { Width = 28, Height = 28, Stroke = accent, StrokeThickness = 1.5, RenderTransform = ct };
+            var dot = new Ellipse { Width = 8, Height = 8, Fill = accent, Stroke = Brushes.White, StrokeThickness = 1.5, RenderTransform = ct };
             var coord = new TextBlock
             {
-                Foreground = Brushes.White, FontSize = 12,
+                Foreground = Brushes.White, FontSize = 12, RenderTransform = lt,
                 Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3),
             };
+            Canvas.SetLeft(ring, -14); Canvas.SetTop(ring, -14);   // 元素锚在原点，位置全靠 transform
+            Canvas.SetLeft(dot, -4); Canvas.SetTop(dot, -4);
             canvas.Children.Add(vLine); canvas.Children.Add(hLine); canvas.Children.Add(ring); canvas.Children.Add(dot); canvas.Children.Add(coord);
             root.Children.Add(canvas);
             if (m.Primary)   // 提示条只放主屏，别每块屏都糊一条
@@ -184,21 +199,6 @@ public partial class MainWindow
                 var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
                 SetWindowPos(h, HWND_TOPMOST, m.Left, m.Top, m.Width, m.Height, 0x0040); // SWP_SHOWWINDOW
             };
-            overlay.MouseEnter += (_, _) => canvas.Visibility = Visibility.Visible;
-            overlay.MouseLeave += (_, _) => canvas.Visibility = Visibility.Collapsed;
-            overlay.MouseMove += (_, e) =>
-            {
-                // 纯本地几何：百分比 = 窗内 DIP / 窗 DIP 尺寸（本窗=本屏），不查任何系统 API。
-                var p = e.GetPosition(canvas);
-                double cw = Math.Max(1.0, canvas.ActualWidth), chh = Math.Max(1.0, canvas.ActualHeight);
-                vLine.X1 = vLine.X2 = p.X; vLine.Y1 = 0; vLine.Y2 = chh;
-                hLine.Y1 = hLine.Y2 = p.Y; hLine.X1 = 0; hLine.X2 = cw;
-                Canvas.SetLeft(ring, p.X - 14); Canvas.SetTop(ring, p.Y - 14);
-                Canvas.SetLeft(dot, p.X - 4); Canvas.SetTop(dot, p.Y - 4);
-                coord.Text = $"{m.Label}  {p.X / cw * 100:0.#}% , {p.Y / chh * 100:0.#}%";
-                Canvas.SetLeft(coord, Math.Min(p.X + 18, Math.Max(0, cw - 170)));
-                Canvas.SetTop(coord, Math.Min(p.Y + 18, Math.Max(0, chh - 26)));
-            };
             overlay.MouseLeftButtonDown += (_, _) =>
             {
                 var (cx, cy) = ScreenInfo.CursorPos();   // 落点取物理光标坐标（精确，不受 DIP 换算影响）
@@ -207,6 +207,16 @@ public partial class MainWindow
             };
             overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; Done(); } };
             overlays.Add(overlay);
+            parts.Add((m, canvas, (dipX, dipY) =>
+            {
+                double cw = Math.Max(1.0, canvas.ActualWidth), chh = Math.Max(1.0, canvas.ActualHeight);
+                if (vLine.Y2 != chh) vLine.Y2 = chh;   // 线长只在尺寸变化时改
+                if (hLine.X2 != cw) hLine.X2 = cw;
+                vt.X = dipX; ht.Y = dipY; ct.X = dipX; ct.Y = dipY;
+                coord.Text = $"{m.Label}  {dipX / cw * 100:0.#}% , {dipY / chh * 100:0.#}%";
+                lt.X = Math.Min(dipX + 18, Math.Max(0, cw - 170));
+                lt.Y = Math.Min(dipY + 18, Math.Max(0, chh - 26));
+            }));
         }
 
         foreach (var w in overlays) w.Show();
@@ -219,6 +229,27 @@ public partial class MainWindow
             var focusWin = overlays[Math.Clamp(idx, 0, overlays.Count - 1)];
             focusWin.Activate(); focusWin.Focus();
         }
+        // 每帧直读物理光标驱动十字线：绕过鼠标事件队列（事件是"过去的位置"，渲染时又晚一拍），
+        // 在渲染前一刻取最新位置，把可感知延迟压到最低。
+        int lastX = int.MinValue, lastY = int.MinValue;
+        onFrame = (_, _) =>
+        {
+            var (cx, cy) = ScreenInfo.CursorPos();
+            if (cx == lastX && cy == lastY) return;   // 没动就不碰视觉树
+            lastX = cx; lastY = cy;
+            foreach (var pt in parts)
+            {
+                bool on = pt.m.Contains(cx, cy);
+                if (pt.canvas.Visibility != (on ? Visibility.Visible : Visibility.Collapsed))
+                    pt.canvas.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                if (on)
+                {
+                    double cw = Math.Max(1.0, pt.canvas.ActualWidth), chh = Math.Max(1.0, pt.canvas.ActualHeight);
+                    pt.update((cx - pt.m.Left) * cw / pt.m.Width, (cy - pt.m.Top) * chh / pt.m.Height);
+                }
+            }
+        };
+        System.Windows.Media.CompositionTarget.Rendering += onFrame;
         System.Windows.Threading.Dispatcher.PushFrame(frame);   // 阻塞到点选/Esc（替代单窗 ShowDialog 的模态）
 
         // 拾取结束：把本体与编辑窗口切回前台。
