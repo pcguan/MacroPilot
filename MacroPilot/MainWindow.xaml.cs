@@ -1276,12 +1276,19 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 RunPlan(BuildRunPlan(ps), ps.Name);
             }), System.Windows.Threading.DispatcherPriority.Background);
         }
-        // 运行结束后按配置把本体激活到前台（默认开）。运行期最小化/下沉，结束才抬起。
+        // 运行期最小化/下沉，结束才抬起。
+        // 【必须区分两件事】"把程序自己最小化的窗口还回来" 与 "结束后是否抢前台"：
+        // 前者无条件要做——否则关掉「结束后回到前台」时，窗口会一直扣在最小化状态回不来
+        // （表现为运行页的 Esc 等快捷键全部失灵，因为焦点根本不在本窗口上）。
         bool wasMin = _minimizedForRun; _minimizedForRun = false;
-        if (_doc.ActivateOnFinish && !restartingSchedule)   // 马上要接着跑定时，不必先抬窗口再最小化
+        if (!restartingSchedule)   // 马上要接着跑定时，不必先抬窗口再最小化
         {
-            if (wasMin) RestoreFromTray();   // 曾为悬浮窗最小化/收托盘 → 完整恢复（Show+Normal+任务栏+置前）
-            else
+            if (wasMin)
+            {
+                Show(); ShowInTaskbar = true;
+                if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            }
+            if (_doc.ActivateOnFinish)
             {
                 var h = new WindowInteropHelper(this).Handle;
                 if (h != IntPtr.Zero) Services.WindowActivator.ActivateHwnd(h);

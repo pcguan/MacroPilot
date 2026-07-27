@@ -204,6 +204,9 @@ public sealed class MacroRunner
                 Log?.Invoke("Info", prefix + $"{step.Display}（已禁用，跳过）");
                 i++; continue;
             }
+            // 先亮起来再判条件：条件的"重复检查"可能等很久，此时界面上必须能看出卡在哪一步
+            // （RunLeaf/RunGroup 内部随后还会再发一次，同一对象，无副作用）。
+            StepStateChanged?.Invoke(step, true);
             if (step.IsGroup)
             {
                 if (!GateHooks(step, out var conditionText, ct))
@@ -403,6 +406,9 @@ public sealed class MacroRunner
                 Wait(interval, ct);
                 tries++;
                 ok = Evaluate(step, out conditionText);
+                // 每次判定都留痕：图片类条件会带上本次的实际相似度，
+                // 便于回答"为什么这次没匹配上"（是画面真的变了，还是只差一点点）。
+                Log?.Invoke("Info", $"　重复检查 第 {tries} 次：{conditionText}");
             }
             Log?.Invoke(ok ? "Info" : "Warning", ok
                 ? $"条件已满足（重复检查 {tries} 次）。"
@@ -460,12 +466,13 @@ public sealed class MacroRunner
             }
             else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
             double thr = Math.Clamp(c.Threshold, 0.5, 1.0);
-            var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr);
+            var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out double best);
             bool found = hits.Count > 0;
-            double best = 0; foreach (var h in hits) if (h.score > best) best = h.score;
             text = found
-                ? $"目标图片已出现（命中 {hits.Count} 个，相似度 {best:0.00}）"
-                : $"目标图片未出现（相似度阈值 {thr:0.00}）";
+                ? $"目标图片已出现（命中 {hits.Count} 个，最高相似度 {best:0.00} / 阈值 {thr:0.00}）"
+                : best > 0
+                    ? $"目标图片未出现（区域内最高相似度 {best:0.00} / 阈值 {thr:0.00}）"
+                    : $"目标图片未出现（区域内最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}）";
             return c.Invert ? !found : found;
         }
         if (c.Type != "TimeRange") { text = ""; return true; }
@@ -680,11 +687,14 @@ public sealed class MacroRunner
 
         double thr = Math.Clamp(step.ClickImageThreshold, 0.5, 1.0);
         System.Collections.Generic.List<(int cx, int cy, double score)> hits;
+        double best;
         using (var tpl = ScreenMatch.FromPng(bytes))
-            hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr);
+            hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out best);
 
         if (hits.Count == 0)
-            throw new InvalidOperationException($"点击图片：区域内未找到匹配（相似度阈值 {thr:0.00}）。");
+            throw new InvalidOperationException(best > 0
+                ? $"点击图片：区域内未找到匹配（最高相似度 {best:0.00} / 阈值 {thr:0.00}）。"
+                : $"点击图片：区域内未找到匹配（最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}）。");
         int idx = Math.Max(1, step.ClickImageIndex);
         if (idx > hits.Count)
             throw new InvalidOperationException($"点击图片：只找到 {hits.Count} 个匹配，不足第 {idx} 个。");

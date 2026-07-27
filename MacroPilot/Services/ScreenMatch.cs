@@ -14,6 +14,7 @@ namespace MacroPilot.Services;
 public static class ScreenMatch
 {
     private const int Tolerance = 28;   // 单通道容差，抗轻微色差/抗锯齿
+    private const double DiagSlack = 0.15;   // 统计"最高相似度"时相对阈值放宽的幅度（仅供诊断，不影响命中判定）
 
     /// <summary>抓取虚拟桌面某区域（虚拟像素）为 Bitmap（调用方负责 Dispose）。</summary>
     public static Bitmap CaptureRegion(int vx, int vy, int w, int h)
@@ -77,7 +78,17 @@ public static class ScreenMatch
     /// </summary>
     public static List<(int cx, int cy, double score)> FindMatches(
         Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold)
+        => FindMatches(template, regionVx, regionVy, regionW, regionH, threshold, out _);
+
+    /// <summary>
+    /// 同上，另外给出区域内的【最高相似度】bestScore——未命中时用它判断"是画面真变了还是只差一点"。
+    /// 为算得出这个值，早退预算比阈值放宽 <see cref="DiagSlack"/>；低于 (阈值-DiagSlack) 的位置照旧早早放弃，
+    /// 此时 bestScore 返回 0，表示"远低于阈值"。
+    /// </summary>
+    public static List<(int cx, int cy, double score)> FindMatches(
+        Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold, out double bestScore)
     {
+        bestScore = 0;
         var result = new List<(int, int, double)>();
         if (template == null || template.Width <= 0 || template.Height <= 0) return result;
         int tw = template.Width, th = template.Height;
@@ -138,7 +149,9 @@ public static class ScreenMatch
         }
 
         var raw = new List<(int x, int y, double score)>();
-        long budget = (long)(totalW * (1.0 - threshold));   // 加权差异超过它即不可能达标
+        long budget = (long)(totalW * (1.0 - threshold));                                // 加权差异超过它即不达标
+        long diagBudget = (long)(totalW * (1.0 - Math.Max(0, threshold - DiagSlack)));    // 放宽一档，用于统计最高相似度
+        double best = 0;
         for (int oy = 0; oy + th <= regionH; oy++)
         {
             int rowBase = oy * sStride;
@@ -155,12 +168,16 @@ public static class ScreenMatch
                         Math.Abs(tR[k] - sbuf[si + 2]) > Tolerance)
                     {
                         pen += wS[k];
-                        if (pen > budget) { ok = false; break; }
+                        if (pen > diagBudget) { ok = false; break; }   // 连"接近"都算不上，放弃该位置
                     }
                 }
-                if (ok) raw.Add((ox, oy, 1.0 - (double)pen / totalW));
+                if (!ok) continue;
+                double score = 1.0 - (double)pen / totalW;
+                if (score > best) best = score;
+                if (pen <= budget) raw.Add((ox, oy, score));           // 达阈值才算命中
             }
         }
+        bestScore = best;
 
         // 非极大值抑制：按分数降序贪心接受，抑制与已接受项中心距离在半个模板内的其它候选（同一目标的邻近位置）。
         raw.Sort((p, q) => q.score.CompareTo(p.score));
