@@ -843,7 +843,7 @@ public partial class MainWindow
     private FrameworkElement BuildHookRow(string label, Func<MacroStep?> get, Action<MacroStep?> set)
     {
         var row = new DockPanel { Margin = new Thickness(0, 4, 0, 4), LastChildFill = true };
-        var lbl = new TextBlock { Text = label, Width = 52, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
+        var lbl = new TextBlock { Text = label, Width = 100, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
         DockPanel.SetDock(lbl, Dock.Left); row.Children.Add(lbl);
         var clearBtn = new Button { Content = "清除", Width = 56, Height = 30, Margin = new Thickness(8, 0, 0, 0) };
         DockPanel.SetDock(clearBtn, Dock.Right); row.Children.Add(clearBtn);
@@ -1362,19 +1362,25 @@ public partial class MainWindow
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var cond = BuildRunConditionEditor(null);    // 与方案级共用同一套控件与逻辑
 
-        MacroStep? hookSuccess = source?.SuccessAction, hookComplete = source?.CompleteAction, hookFail = source?.FailAction;
+        MacroStep? hookPreCond = source?.PreCondAction, hookCondOk = source?.CondSuccessAction, hookCondFail = source?.CondFailAction,
+                   hookPreRun = source?.PreRunAction,
+                   hookSuccess = source?.SuccessAction, hookComplete = source?.CompleteAction, hookFail = source?.FailAction;
         sp.Children.Add(GroupCard("基础设置", baseContent));
         {
             var condPanel = cond.Panel;
             condPanel.Margin = new Thickness(0, 0, 0, 4);
             sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡
 
-            var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+            var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(GroupCard("事件监听",
                 hookNote,
-                BuildHookRow("成功后", () => hookSuccess, v => hookSuccess = v),
-                BuildHookRow("结束后", () => hookComplete, v => hookComplete = v),
-                BuildHookRow("失败后", () => hookFail, v => hookFail = v)));
+                BuildHookRow("运行条件判断前", () => hookPreCond, v => hookPreCond = v),
+                BuildHookRow("判断成功后", () => hookCondOk, v => hookCondOk = v),
+                BuildHookRow("判断失败后", () => hookCondFail, v => hookCondFail = v),
+                BuildHookRow("运行前", () => hookPreRun, v => hookPreRun = v),
+                BuildHookRow("运行成功后", () => hookSuccess, v => hookSuccess = v),
+                BuildHookRow("运行失败后", () => hookFail, v => hookFail = v),
+                BuildHookRow("运行结束后", () => hookComplete, v => hookComplete = v)));
 
             sp.Children.Add(GroupCard("备注（可选）", noteText));
         }
@@ -1608,6 +1614,8 @@ public partial class MainWindow
                 {
                     if (ra is "等待" or "激活窗口") runRepeat.Apply(result);   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
+                    result.PreCondAction = hookPreCond; result.CondSuccessAction = hookCondOk; result.CondFailAction = hookCondFail;
+                    result.PreRunAction = hookPreRun;
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
                 }
@@ -1752,13 +1760,19 @@ public partial class MainWindow
         condPanel.Margin = new Thickness(0, 0, 0, 4);
         sp.Children.Add(GroupCard("运行条件", condPanel));   // 与动作对话框一致：运行条件独立成卡
 
-        MacroStep? hookSuccess = source.SuccessAction, hookComplete = source.CompleteAction, hookFail = source.FailAction;
-        var hookNote = new TextBlock { Text = "执行成功 / 结束 / 失败后追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+        MacroStep? hookPreCond = source.PreCondAction, hookCondOk = source.CondSuccessAction, hookCondFail = source.CondFailAction,
+                   hookPreRun = source.PreRunAction,
+                   hookSuccess = source.SuccessAction, hookComplete = source.CompleteAction, hookFail = source.FailAction;
+        var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
         sp.Children.Add(GroupCard("事件监听",
             hookNote,
-            BuildHookRow("成功后", () => hookSuccess, v => hookSuccess = v),
-            BuildHookRow("结束后", () => hookComplete, v => hookComplete = v),
-            BuildHookRow("失败后", () => hookFail, v => hookFail = v)));
+            BuildHookRow("运行条件判断前", () => hookPreCond, v => hookPreCond = v),
+            BuildHookRow("判断成功后", () => hookCondOk, v => hookCondOk = v),
+            BuildHookRow("判断失败后", () => hookCondFail, v => hookCondFail = v),
+            BuildHookRow("运行前", () => hookPreRun, v => hookPreRun = v),
+            BuildHookRow("运行成功后", () => hookSuccess, v => hookSuccess = v),
+            BuildHookRow("运行失败后", () => hookFail, v => hookFail = v),
+            BuildHookRow("运行结束后", () => hookComplete, v => hookComplete = v)));
 
         var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         sp.Children.Add(GroupCard("备注（可选）", noteText));
@@ -1776,6 +1790,8 @@ public partial class MainWindow
             result = new MacroStep
             {
                 Type = "Group", Children = new ObservableCollection<MacroStep>(working),
+                PreCondAction = hookPreCond, CondSuccessAction = hookCondOk, CondFailAction = hookCondFail,
+                PreRunAction = hookPreRun,
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
             };

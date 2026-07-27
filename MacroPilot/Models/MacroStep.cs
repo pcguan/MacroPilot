@@ -83,9 +83,15 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public int JumpTimes { get; set; }
 
     // 监听动作：本身也是完整动作（可含循环/运行条件/组合，且能再挂自己的监听——递归）。
-    public MacroStep? SuccessAction { get; set; }
-    public MacroStep? CompleteAction { get; set; }
-    public MacroStep? FailAction { get; set; }
+    // 七个挂点按生命周期排序：条件判断前 → 判断成功/失败后（条件类仅在设了运行条件时触发）
+    // → 运行前 → 运行成功/失败后 → 运行结束后。旧数据只有后三个，其余为 null 自动兼容。
+    public MacroStep? PreCondAction { get; set; }       // 运行条件判断前
+    public MacroStep? CondSuccessAction { get; set; }   // 判断成功后
+    public MacroStep? CondFailAction { get; set; }      // 判断失败后
+    public MacroStep? PreRunAction { get; set; }        // 运行前
+    public MacroStep? SuccessAction { get; set; }       // 运行成功后
+    public MacroStep? CompleteAction { get; set; }      // 运行结束后
+    public MacroStep? FailAction { get; set; }          // 运行失败后
 
     // 运行条件：RunConditionType 支持 TimeRange / ImageMatch；RunConditionInvert=true 表示条件取反。
     // 时间用当天分钟数保存（0-1439），null 表示开放边界：仅开始=开始及之后，仅结束=结束及之前。
@@ -129,7 +135,20 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     // ---- 仅 UI 用，不持久化 ----
     [JsonIgnore] public bool IsGroup => Type == "Group";
     [JsonIgnore] public bool HasJump => JumpTarget >= 1;
-    [JsonIgnore] public bool HasListener => SuccessAction is not null || CompleteAction is not null || FailAction is not null;
+    [JsonIgnore] public bool HasListener { get { foreach (var _ in HookList()) return true; return false; } }
+
+    /// <summary>非空监听动作（按生命周期顺序）。所有递归遍历监听的地方（图片收集、运行页映射、
+    /// 脏对比归一…）共用本枚举，以后新增挂点只改这里，别再手写三连 if。</summary>
+    public System.Collections.Generic.IEnumerable<(string Kind, MacroStep Hook)> HookList()
+    {
+        if (PreCondAction is not null) yield return ("条件前", PreCondAction);
+        if (CondSuccessAction is not null) yield return ("条件成立", CondSuccessAction);
+        if (CondFailAction is not null) yield return ("条件不成立", CondFailAction);
+        if (PreRunAction is not null) yield return ("运行前", PreRunAction);
+        if (SuccessAction is not null) yield return ("成功", SuccessAction);
+        if (FailAction is not null) yield return ("失败", FailAction);
+        if (CompleteAction is not null) yield return ("结束", CompleteAction);
+    }
     [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);   // 与方案级同一判定
 
     private bool _isChecked, _isExpanded, _isExecuting, _isFocused;
@@ -167,6 +186,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             RunConditionRectX = RunConditionRectX, RunConditionRectY = RunConditionRectY,
             RunConditionRectW = RunConditionRectW, RunConditionRectH = RunConditionRectH,
             RunConditionThreshold = RunConditionThreshold,
+            PreCondAction = PreCondAction?.Clone(), CondSuccessAction = CondSuccessAction?.Clone(),
+            CondFailAction = CondFailAction?.Clone(), PreRunAction = PreRunAction?.Clone(),
             SuccessAction = SuccessAction?.Clone(),
             CompleteAction = CompleteAction?.Clone(),
             FailAction = FailAction?.Clone(),
@@ -185,9 +206,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         if (HasListener)
         {
             var parts = new System.Collections.Generic.List<string>();
-            if (SuccessAction is not null) parts.Add("成功");
-            if (CompleteAction is not null) parts.Add("结束");
-            if (FailAction is not null) parts.Add("失败");
+            foreach (var (kind, _) in HookList()) parts.Add(kind);
             res += "　· 监听 " + string.Join("·", parts);
         }
         // 备注不再拼到描述里——动作行模板已在最右侧单独显示备注（避免重复出现 "// 备注"）。

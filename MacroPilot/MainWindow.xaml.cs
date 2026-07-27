@@ -1081,9 +1081,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         _runTopAncestor[node] = top;
         foreach (var ch in node.Children) MapRunTree(ch, top);
-        if (node.SuccessAction != null) MapRunTree(node.SuccessAction, top);
-        if (node.CompleteAction != null) MapRunTree(node.CompleteAction, top);
-        if (node.FailAction != null) MapRunTree(node.FailAction, top);
+        foreach (var (_, hook) in node.HookList()) MapRunTree(hook, top);   // 全部七个挂点
     }
     private volatile bool _progActive;
     private volatile int _progTenths;   // 进度 ×10（0~1000）：volatile 不支持 double，用 int 存 0.1% 分辨率
@@ -1383,9 +1381,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         s.HoldUnit = -1;
         s.DurationUnit = -1;
         s.Note = string.IsNullOrEmpty(s.Note) ? "" : s.Note;
-        if (s.SuccessAction != null) NormalizeForCompare(s.SuccessAction);
-        if (s.CompleteAction != null) NormalizeForCompare(s.CompleteAction);
-        if (s.FailAction != null) NormalizeForCompare(s.FailAction);
+        foreach (var (_, hook) in s.HookList()) NormalizeForCompare(hook);   // 全部七个挂点
         foreach (var c in s.Children) NormalizeForCompare(c);
         return s;
     }

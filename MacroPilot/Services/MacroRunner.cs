@@ -196,7 +196,7 @@ public sealed class MacroRunner
             }
             if (step.IsGroup)
             {
-                if (!ShouldRun(step, out var conditionText))
+                if (!GateHooks(step, out var conditionText, ct))
                 {
                     Log?.Invoke("Info", prefix + $"{step.Display}，条件不满足，已跳过（{conditionText}）");
                 }
@@ -229,6 +229,7 @@ public sealed class MacroRunner
     private void RunGroup(MacroStep group, CancellationToken ct, int depth = 0)
     {
         string indent = new string(' ', 4 * (depth + 1));   // 逐层缩进：嵌套子组合的子动作日志层级正确，不再只有一层
+        RunHook(group.PreRunAction, "运行前", ct);          // 组合整体开跑前（不随组合自身循环重复）
         int loops = 0;
         while (!ct.IsCancellationRequested)
         {
@@ -244,7 +245,7 @@ public sealed class MacroRunner
                     if (child.Disabled) { Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：{child.Display}（已禁用，跳过）"); continue; }
                     if (child.IsGroup)   // 嵌套子组合：递归执行，其自身的循环/监听/运行条件都照常生效
                     {
-                        if (ShouldRun(child, out var reason))
+                        if (GateHooks(child, out var reason, ct))
                         {
                             Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合（{child.Children.Count} 个动作）");
                             RunGroup(child, ct, depth + 1);
@@ -260,14 +261,14 @@ public sealed class MacroRunner
             if (group.LoopCount != 0 && loops >= group.LoopCount) break;
             if (group.LoopDelayMs > 0) Wait(Jitter(group.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
         }
-        RunHook(group.SuccessAction, "成功后", ct);
-        RunHook(group.CompleteAction, "结束后", ct);
+        RunHook(group.SuccessAction, "运行成功后", ct);
+        RunHook(group.CompleteAction, "运行结束后", ct);
     }
 
     // 叶子动作：写一条"执行中"日志行 → 执行(含自身循环) → 改为执行成功/失败/已停止；并高亮该行 + 跑监听。
     private bool RunLeaf(MacroStep step, string body, CancellationToken ct)
     {
-        if (!ShouldRun(step, out var conditionText))
+        if (!GateHooks(step, out var conditionText, ct))
         {
             ActBegin?.Invoke(body);
             ActEnd?.Invoke("已跳过", "Warning");
@@ -275,6 +276,7 @@ public sealed class MacroRunner
             return false;
         }
 
+        RunHook(step.PreRunAction, "运行前", ct);
         ActBegin?.Invoke(body);
         StepStateChanged?.Invoke(step, true);
         _stepLoop = 1; _stepLoopTotal = step.LoopCount;   // 当前动作自身循环上下文
@@ -302,16 +304,16 @@ public sealed class MacroRunner
             StepStateChanged?.Invoke(step, false);
             ActEnd?.Invoke("执行失败", "Fail");
             Log?.Invoke("Error", $"执行失败：{ex.Message}");
-            RunHook(step.FailAction, "失败后", ct);
+            RunHook(step.FailAction, "运行失败后", ct);
         }
         if (ok)
         {
             StepStateChanged?.Invoke(step, false);
             Progress?.Invoke(100, StatusLine());   // 当前动作完成 → 100%
             ActEnd?.Invoke("执行成功", "Success");
-            RunHook(step.SuccessAction, "成功后", ct);
+            RunHook(step.SuccessAction, "运行成功后", ct);
         }
-        RunHook(step.CompleteAction, "结束后", ct);
+        RunHook(step.CompleteAction, "运行结束后", ct);
         return true;
     }
 
@@ -324,7 +326,7 @@ public sealed class MacroRunner
         {
             if (hook.IsGroup)
             {
-                if (ShouldRun(hook, out var reason)) { Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合（{hook.Children.Count} 个动作）"); RunGroup(hook, ct); }
+                if (GateHooks(hook, out var reason, ct)) { Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合（{hook.Children.Count} 个动作）"); RunGroup(hook, ct); }
                 else Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合条件不满足，跳过（{reason}）");
             }
             else RunLeaf(hook, $"    ↳ 监听（{kind}）：{hook.Display}", ct);
@@ -355,7 +357,16 @@ public sealed class MacroRunner
         _tplCache.Clear();
     }
 
-    private bool ShouldRun(MacroStep step, out string conditionText) => Evaluate(step, out conditionText);
+    // 运行条件门 + 条件类监听：条件判断前 → 判定 → 判断成功后/判断失败后。
+    // 条件类监听只在动作【确实设置了】运行条件时触发——没设条件时判定恒过，触发只会刷屏。
+    private bool GateHooks(MacroStep step, out string conditionText, CancellationToken ct)
+    {
+        bool hasCond = RunCondition.Has(step);
+        if (hasCond) RunHook(step.PreCondAction, "条件判断前", ct);
+        bool ok = Evaluate(step, out conditionText);
+        if (hasCond) RunHook(ok ? step.CondSuccessAction : step.CondFailAction, ok ? "判断成功后" : "判断失败后", ct);
+        return ok;
+    }
 
     /// <summary>判定一条运行条件是否放行。方案级与动作级共用，conditionText 仅在【跳过】时用于打日志。</summary>
     private bool Evaluate(IRunCondition step, out string conditionText)

@@ -61,9 +61,7 @@ public static class ImageStore
     private static void ForEach(MacroStep s, Action<MacroStep> act)
     {
         act(s);
-        if (s.SuccessAction != null) ForEach(s.SuccessAction, act);
-        if (s.CompleteAction != null) ForEach(s.CompleteAction, act);
-        if (s.FailAction != null) ForEach(s.FailAction, act);
+        foreach (var (_, hook) in s.HookList()) ForEach(hook, act);   // 全部七个挂点（枚举器统一维护）
         foreach (var c in s.Children) ForEach(c, act);
     }
 
