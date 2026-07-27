@@ -127,8 +127,10 @@ public partial class MainWindow
 
     // 在指定显示器上盖一个透明全屏覆盖层，用户点击选位（带十字准星 + 实时坐标）。
     // 返回 (设备名, nx, ny)；Esc/无选择返回 null。用物理像素精确覆盖，避开 DPI 换算。
-    // 跨屏点选：覆盖层铺满整个虚拟桌面，任意屏直接点，落点用物理光标坐标经 FromPoint 自动识别屏幕
-    // （返回 设备名+屏内百分比）。不再要求先在下拉框选屏——下拉只作手输/预览的锚定，点选后自动跟随。
+    // 跨屏点选：【每块屏一个独立覆盖窗】（复用标识屏幕的多窗模式），任意屏直接点，返回 设备名+屏内百分比。
+    // 为什么不用一个铺满虚拟桌面的大窗：AllowsTransparency 的分层窗按整窗面积合成，几千像素宽的大窗
+    // 每次挪十字线都要重合成超大表面——十字线肉眼可见地跟不上鼠标。拆成每屏一窗后各窗只有单屏大小，
+    // 十字线只在光标所在屏渲染（离开即隐藏），恢复到旧单屏点选的流畅度。
     private (string dev, double nx, double ny)? PickAnywhere(Window dialog)
     {
         (string dev, double nx, double ny)? result = null;
@@ -137,62 +139,88 @@ public partial class MainWindow
         // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用透过透明覆盖层清晰可见。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);  // SWP_NOSIZE|NOMOVE|NOACTIVATE
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
-        var (ox, oy, vw, vh) = VirtualBounds();
-        var overlay = new Window
-        {
-            WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross,
-            Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
-        };
-        var accent = (Brush)FindResource("Accent");
-        var root = new Grid();
-        var canvas = new Canvas();
-        var vLine = new Line { Stroke = accent, StrokeThickness = 1 };
-        var hLine = new Line { Stroke = accent, StrokeThickness = 1 };
-        var coord = new TextBlock
-        {
-            Foreground = Brushes.White, FontSize = 12,
-            Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3),
-        };
-        canvas.Children.Add(vLine); canvas.Children.Add(hLine); canvas.Children.Add(coord);
-        var hint = new TextBlock
-        {
-            Text = "在目标位置点击选择（可跨屏，自动识别屏幕；Esc 取消）",
-            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 28, 0, 0),
-            Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold,
-            Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
-        };
-        root.Children.Add(canvas); root.Children.Add(hint);
-        overlay.Content = root;
 
-        overlay.SourceInitialized += (_, _) =>
+        var accent = (Brush)FindResource("Accent");
+        var overlays = new List<Window>();
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        void Done() { foreach (var w in overlays) try { w.Close(); } catch { } frame.Continue = false; }
+
+        foreach (var mon in ScreenInfo.All())
         {
-            var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
-            SetWindowPos(h, HWND_TOPMOST, ox, oy, vw, vh, 0x0040); // SWP_SHOWWINDOW，铺满虚拟桌面
-        };
-        overlay.Loaded += (_, _) => { overlay.Activate(); overlay.Focus(); };
-        string lastDev = ""; string devLabel = "";   // 屏名查询缓存：别在每次 MouseMove 里枚举显示器
-        overlay.MouseMove += (_, e) =>
+            var m = mon;
+            var overlay = new Window
+            {
+                WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross,
+                Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)),
+            };
+            var root = new Grid();
+            var canvas = new Canvas { Visibility = Visibility.Collapsed };   // 光标进入本屏才显示十字线
+            // 虚线十字贯穿本屏 + 外圈光环 + 白描边中心点（与"预览位置"同一族视觉）。
+            var vLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 } };
+            var hLine = new Line { Stroke = accent, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 } };
+            var ring = new Ellipse { Width = 28, Height = 28, Stroke = accent, StrokeThickness = 1.5 };
+            var dot = new Ellipse { Width = 8, Height = 8, Fill = accent, Stroke = Brushes.White, StrokeThickness = 1.5 };
+            var coord = new TextBlock
+            {
+                Foreground = Brushes.White, FontSize = 12,
+                Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3),
+            };
+            canvas.Children.Add(vLine); canvas.Children.Add(hLine); canvas.Children.Add(ring); canvas.Children.Add(dot); canvas.Children.Add(coord);
+            root.Children.Add(canvas);
+            if (m.Primary)   // 提示条只放主屏，别每块屏都糊一条
+                root.Children.Add(new TextBlock
+                {
+                    Text = "在目标位置点击选择（可跨屏，自动识别屏幕；Esc 取消）",
+                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, 28, 0, 0),
+                    Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold,
+                    Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6),
+                });
+            overlay.Content = root;
+
+            overlay.SourceInitialized += (_, _) =>
+            {
+                var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
+                SetWindowPos(h, HWND_TOPMOST, m.Left, m.Top, m.Width, m.Height, 0x0040); // SWP_SHOWWINDOW
+            };
+            overlay.MouseEnter += (_, _) => canvas.Visibility = Visibility.Visible;
+            overlay.MouseLeave += (_, _) => canvas.Visibility = Visibility.Collapsed;
+            overlay.MouseMove += (_, e) =>
+            {
+                // 纯本地几何：百分比 = 窗内 DIP / 窗 DIP 尺寸（本窗=本屏），不查任何系统 API。
+                var p = e.GetPosition(canvas);
+                double cw = Math.Max(1.0, canvas.ActualWidth), chh = Math.Max(1.0, canvas.ActualHeight);
+                vLine.X1 = vLine.X2 = p.X; vLine.Y1 = 0; vLine.Y2 = chh;
+                hLine.Y1 = hLine.Y2 = p.Y; hLine.X1 = 0; hLine.X2 = cw;
+                Canvas.SetLeft(ring, p.X - 14); Canvas.SetTop(ring, p.Y - 14);
+                Canvas.SetLeft(dot, p.X - 4); Canvas.SetTop(dot, p.Y - 4);
+                coord.Text = $"{m.Label}  {p.X / cw * 100:0.#}% , {p.Y / chh * 100:0.#}%";
+                Canvas.SetLeft(coord, Math.Min(p.X + 18, Math.Max(0, cw - 170)));
+                Canvas.SetTop(coord, Math.Min(p.Y + 18, Math.Max(0, chh - 26)));
+            };
+            overlay.MouseLeftButtonDown += (_, _) =>
+            {
+                var (cx, cy) = ScreenInfo.CursorPos();   // 落点取物理光标坐标（精确，不受 DIP 换算影响）
+                result = ScreenInfo.FromPoint(cx, cy);
+                Done();
+            };
+            overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; Done(); } };
+            overlays.Add(overlay);
+        }
+
+        foreach (var w in overlays) w.Show();
+        // 把键盘焦点给光标所在屏的覆盖窗（Esc 才有效）；点选不依赖焦点，哪屏点了都算。
         {
-            var p = e.GetPosition(canvas);
-            vLine.X1 = vLine.X2 = p.X; vLine.Y1 = 0; vLine.Y2 = canvas.ActualHeight;
-            hLine.Y1 = hLine.Y2 = p.Y; hLine.X1 = 0; hLine.X2 = canvas.ActualWidth;
             var (cx, cy) = ScreenInfo.CursorPos();
-            var f = ScreenInfo.FromPoint(cx, cy);
-            if (f.device != lastDev) { lastDev = f.device; devLabel = ScreenInfo.ByDevice(f.device).Label; }
-            coord.Text = $"{devLabel}  {f.nx * 100:0.#}% , {f.ny * 100:0.#}%";
-            Canvas.SetLeft(coord, Math.Min(p.X + 14, Math.Max(0, canvas.ActualWidth - 170)));
-            Canvas.SetTop(coord, Math.Min(p.Y + 14, Math.Max(0, canvas.ActualHeight - 26)));
-        };
-        overlay.MouseLeftButtonDown += (_, _) =>
-        {
-            var (cx, cy) = ScreenInfo.CursorPos();
-            result = ScreenInfo.FromPoint(cx, cy);
-            overlay.Close();
-        };
-        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; overlay.Close(); } };
-        overlay.ShowDialog();
+            var dev = ScreenInfo.FromPoint(cx, cy).device;
+            var mons = ScreenInfo.All();
+            int idx = mons.FindIndex(mm => string.Equals(mm.Device, dev, StringComparison.OrdinalIgnoreCase));
+            var focusWin = overlays[Math.Clamp(idx, 0, overlays.Count - 1)];
+            focusWin.Activate(); focusWin.Focus();
+        }
+        System.Windows.Threading.Dispatcher.PushFrame(frame);   // 阻塞到点选/Esc（替代单窗 ShowDialog 的模态）
+
         // 拾取结束：把本体与编辑窗口切回前台。
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
