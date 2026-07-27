@@ -243,6 +243,83 @@ public class ModelIntegrityTests
         Assert.True(RunCondition.Has(s));
     }
 
+    // ---- 持久化往返：保存再读回，配置必须原样还在 ----
+
+    private static T RoundTrip<T>(T o)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(o);
+        return System.Text.Json.JsonSerializer.Deserialize<T>(json)!;
+    }
+
+    [Fact]
+    public void 多条运行条件序列化往返后完整保留()
+    {
+        var s = new MacroStep { Type = "KeyTap", Key = "a" };
+        s.RunConditionLogic = "Or";
+        s.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 480, EndMinute = 1080, Invert = true });
+        s.RunConditions.Add(new ConditionItem { Type = "ImageMatch", Image = "file:abc", Monitor = @"\.\DISPLAY2", RectX = 5, RectY = 6, RectW = 700, RectH = 800, Threshold = 0.85 });
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 250;
+        s.RunConditionRetryMax = 7;
+
+        var back = RoundTrip(s);
+
+        Assert.Equal("Or", back.RunConditionLogic);
+        Assert.Equal(2, back.RunConditions.Count);
+        Assert.Equal("TimeRange", back.RunConditions[0].Type);
+        Assert.Equal(480, back.RunConditions[0].StartMinute);
+        Assert.True(back.RunConditions[0].Invert);
+        Assert.Equal("ImageMatch", back.RunConditions[1].Type);
+        Assert.Equal("file:abc", back.RunConditions[1].Image);
+        Assert.Equal(700, back.RunConditions[1].RectW);
+        Assert.Equal(0.85, back.RunConditions[1].Threshold, 4);
+        Assert.True(back.RunConditionRetry);
+        Assert.Equal(250, back.RunConditionRetryIntervalMs);
+        Assert.Equal(7, back.RunConditionRetryMax);
+        Assert.True(RunCondition.Has(back));
+    }
+
+    [Fact]
+    public void 方案级多条运行条件序列化往返后完整保留()
+    {
+        var p = new MacroPlan { Name = "P" };
+        p.RunConditionLogic = "And";
+        p.RunConditions.Add(new ConditionItem { Type = "TimeRange", StartMinute = 60 });
+        var back = RoundTrip(p);
+        Assert.Single(back.RunConditions);
+        Assert.Equal(60, back.RunConditions[0].StartMinute);
+        Assert.True(RunCondition.Has(back));
+    }
+
+    [Fact]
+    public void 动作身份与跳转目标序列化往返后保留()
+    {
+        var target = new MacroStep { Type = "KeyTap", Key = "t" };
+        var id = target.Id;                       // 触发懒生成
+        var jump = new MacroStep { Type = "Jump", JumpTargetId = id, JumpTimes = 2 };
+
+        var backTarget = RoundTrip(target);
+        var backJump = RoundTrip(jump);
+
+        Assert.Equal(id, backTarget.Id);          // 身份必须持久化，否则重开后跳转就断了
+        Assert.Equal(id, backJump.JumpTargetId);
+    }
+
+    [Fact]
+    public void 监听挂点序列化往返后完整保留()
+    {
+        var s = new MacroStep { Type = "KeyTap", Key = "m" };
+        s.PreCondAction = new MacroStep { Type = "KeyTap", Key = "h1" };
+        s.PreRunAction = new MacroStep { Type = "KeyTap", Key = "h4" };
+        s.CompleteAction = new MacroStep { Type = "KeyTap", Key = "h7" };
+
+        var back = RoundTrip(s);
+        Assert.Equal("h1", back.PreCondAction!.Key);
+        Assert.Equal("h4", back.PreRunAction!.Key);
+        Assert.Equal("h7", back.CompleteAction!.Key);
+        Assert.Equal(3, back.HookList().Count());
+    }
+
     [Fact]
     public void 监听挂点为空时不算有监听()
     {

@@ -873,14 +873,14 @@ public partial class MainWindow
     /// 每条条件的具体内容在子对话框里编辑（<see cref="ShowConditionItemDialog"/>），
     /// 列表这里只展示摘要 + 编辑/删除，避免多条时把面板撑成一大坨。
     /// </summary>
-    private StackPanel BuildRunConditionPanel(
-        CheckBox enabled,
-        System.Collections.Generic.List<ConditionItem> items,
-        ComboBox logicCombo,
-        CheckBox retry,
-        TextBox retryInterval,
-        TextBox retryMax)
+    private StackPanel BuildRunConditionPanel(RunConditionEditor ed)
     {
+        var enabled = ed.Enabled;
+        var items = ed.Items;
+        var logicCombo = ed.LogicCombo;
+        var retry = ed.Retry;
+        var retryInterval = ed.RetryInterval;
+        var retryMax = ed.RetryMax;
         var detail = new StackPanel();
         enabled.Content = "启用运行条件";
 
@@ -947,6 +947,7 @@ public partial class MainWindow
             var r = ShowConditionItemDialog(null);
             if (r != null) { items.Add(r); RefreshList(); }
         };
+        ed.RefreshItems = RefreshList;   // 供回填（LoadRunCondition）在填完条件后刷新列表
         RefreshList();
 
         // ---- 重复检查（对整组条件生效）----
@@ -1047,8 +1048,11 @@ public partial class MainWindow
             bool image = typeCombo.SelectedIndex == 1;
             timeSub.Visibility = image ? Visibility.Collapsed : Visibility.Visible;
             imgSub.Visibility = image ? Visibility.Visible : Visibility.Collapsed;
-            // 图片条件要选屏：多屏时顺带把屏幕编号标出来
-            if (image && ScreenInfo.All().Count > 1) ShowIdScreens(win); else HideIdScreens(win);
+            // 图片条件要选屏：多屏时顺带把屏幕编号标出来。
+            // 必须走后台优先级——ShowIdScreens 要为每块屏建一个置顶窗口，同步做会让切换下拉明显卡顿。
+            if (image && ScreenInfo.All().Count > 1)
+                win.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() => ShowIdScreens(win)));
+            else HideIdScreens(win);
         }
         typeCombo.SelectionChanged += (_, _) => RefreshType();
 

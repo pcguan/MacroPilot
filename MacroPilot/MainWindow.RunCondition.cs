@@ -24,26 +24,27 @@ public partial class MainWindow
         public readonly CheckBox Retry = new();                            // 条件不满足时重复检查
         public readonly System.Windows.Controls.TextBox RetryInterval = new(), RetryMax = new();
         public StackPanel Panel = null!;
+        /// <summary>条件列表变更后刷新列表 UI（由 BuildRunConditionPanel 赋值）。</summary>
+        public Action RefreshItems = () => { };
     }
 
     /// <summary>建一套完整的运行条件控件并回填 source（source 为 null 即新建）。</summary>
     private RunConditionEditor BuildRunConditionEditor(IRunCondition? source)
     {
         var ed = new RunConditionEditor();
-        // 先把源对象上的条件读进编辑期副本，再建面板——面板要按条数决定"与/或"是否显示。
-        if (source != null)
-        {
-            RunCondition.Normalize(source);                                // 历史存档的单条字段并入列表
-            foreach (var it in source.RunConditions) ed.Items.Add(it.Clone());   // 副本：取消时不影响原对象
-        }
-        ed.Panel = BuildRunConditionPanel(ed.Enabled, ed.Items, ed.LogicCombo, ed.Retry, ed.RetryInterval, ed.RetryMax);
+        ed.Panel = BuildRunConditionPanel(ed);
         if (source != null) LoadRunCondition(ed, source);
         return ed;
     }
 
+    // 回填必须把条件列表也读进来：动作对话框是"先 BuildRunConditionEditor(null) 建面板、
+    // 事后再 LoadRunCondition 回填"，若只在构造路径读列表，编辑既有动作时条件会显示为空。
     private static void LoadRunCondition(RunConditionEditor ed, IRunCondition src)
     {
-        RunCondition.Normalize(src);
+        RunCondition.Normalize(src);                       // 历史存档的单条字段并入列表
+        ed.Items.Clear();
+        foreach (var it in src.RunConditions) ed.Items.Add(it.Clone());   // 副本：取消编辑时不影响原对象
+        ed.RefreshItems();
         ed.Enabled.IsChecked = RunCondition.Has(src);
         ed.LogicCombo.SelectedIndex = string.Equals(src.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         ed.Retry.IsChecked = src.RunConditionRetry;
