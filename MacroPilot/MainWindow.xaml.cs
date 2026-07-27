@@ -1915,7 +1915,18 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.S) { Save(); e.Handled = true; }
         else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z && PagePlans.Visibility == Visibility.Visible) { Undo_Click(sender, e); e.Handled = true; }
-        else if (e.Key == Key.Escape && PageRun.Visibility == Visibility.Visible) { SetNav(NavPlans, PagePlans); e.Handled = true; }   // 运行界面 ESC 直接回方案界面（运行继续在后台）
+    }
+
+    // 运行界面 ESC 回方案界面（运行继续在后台）。
+    // 必须用【隧道】事件：冒泡的 KeyDown 会被运行页里的列表控件先行消费——表现为"点了日志区能按 Esc，
+    // 点了动作列表就按不动"。隧道从 Window 往下传，先于任何子控件，谁也拦不住。
+    // 文本框里的 Esc 留给它自己（撤销输入法候选、清空等），不在这里抢。
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || PageRun.Visibility != Visibility.Visible) return;
+        if (Keyboard.FocusedElement is TextBox or System.Windows.Controls.Primitives.TextBoxBase) return;
+        SetNav(NavPlans, PagePlans);
+        e.Handled = true;
     }
 
     // 退出前：若有未保存的方案修改（增删改/排序/循环间隔等），弹框确认保存/放弃/取消。

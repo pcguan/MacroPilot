@@ -6,7 +6,7 @@
     Foreground="{DynamicResource Ink}" Background="{DynamicResource Bg}"
     ExtendsContentIntoTitleBar="True" WindowCornerPreference="Round" WindowBackdropType="None"
     TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType"
-    UseLayoutRounding="True" WindowStartupLocation="CenterScreen" KeyDown="Window_KeyDown">
+    UseLayoutRounding="True" WindowStartupLocation="CenterScreen" KeyDown="Window_KeyDown" PreviewKeyDown="Window_PreviewKeyDown">
   <Grid Background="{DynamicResource Bg}">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
