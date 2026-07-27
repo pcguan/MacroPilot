@@ -66,10 +66,17 @@ public static class ScreenMatch
     /// <summary>
     /// 在指定屏幕区域内滑窗搜索模板，返回所有相似度 ≥ threshold 的命中【中心点】（虚拟像素），
     /// 经非极大值抑制去重、并按从上到下·从左到右排序（供「点击第几个」索引）。
-    /// 早退优化：某位置差异像素超过阈值允许的上限就立刻放弃，非命中位置很便宜。
+    ///
+    /// 相似度＝【模板梯度加权】的一致像素占比：结构像素（文字/图标边缘）权重高、平坦背景权重低。
+    /// 等权的"90% 像素一致"对"平坦底+小特征"的模板会失效——特征只占 ~15% 面积时，任何一块
+    /// 颜色相近的平坦区域都能"命中"（corp-win 实测 33 个假命中）；加权后结构必须对上才算相似，
+    /// 同一截图实测恰好只命中真目标 1 个。
+    /// 扫描为逐像素（step=1）：加权指标下偏 1px 分数会跌破阈值，隔点扫描会把真目标整个漏掉
+    /// （实测真命中就落在奇数 x 上）。性能靠【结构像素优先】早退：按权重降序检查，假位置在前
+    /// 一百来个结构像素上就爆掉预算提前放弃，反而比旧的逐行扫更快。
     /// </summary>
     public static List<(int cx, int cy, double score)> FindMatches(
-        Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold, int step = 2)
+        Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold)
     {
         var result = new List<(int, int, double)>();
         if (template == null || template.Width <= 0 || template.Height <= 0) return result;
@@ -91,31 +98,67 @@ public static class ScreenMatch
         Marshal.Copy(ds.Scan0, sbuf, 0, sbuf.Length);
         template.UnlockBits(dt); shot.UnlockBits(ds); shot.Dispose();
 
-        var raw = new List<(int x, int y, double score)>();
-        long total = (long)tw * th;
-        long allowedMiss = (long)(total * (1.0 - threshold));   // 差异超过它即不可能达标
-        for (int oy = 0; oy + th <= regionH; oy += step)
+        int n = tw * th;
+        // 权重 = 1 + min(15, 亮度梯度/6)：梯度取与右/下邻的亮度差绝对值的较大者。
+        var weight = new int[n];
+        long totalW = 0;
         {
-            for (int ox = 0; ox + tw <= regionW; ox += step)
+            var lum = new float[n];
+            for (int y = 0; y < th; y++)
             {
-                long miss = 0;
-                bool ok = true;
-                for (int y = 0; y < th && ok; y++)
+                int row = y * tStride;
+                for (int x = 0; x < tw; x++)
                 {
-                    int trow = y * tStride;
-                    int srow = (oy + y) * sStride + ox * 4;
-                    for (int x = 0; x < tw; x++)
+                    int i = row + x * 4;
+                    lum[y * tw + x] = 0.114f * tbuf[i] + 0.587f * tbuf[i + 1] + 0.299f * tbuf[i + 2];   // BGRA
+                }
+            }
+            for (int y = 0; y < th; y++)
+                for (int x = 0; x < tw; x++)
+                {
+                    int i = y * tw + x;
+                    float gx = x + 1 < tw ? Math.Abs(lum[i + 1] - lum[i]) : 0;
+                    float gy = y + 1 < th ? Math.Abs(lum[i + tw] - lum[i]) : 0;
+                    int w = 1 + Math.Min(15, (int)(Math.Max(gx, gy) / 6));
+                    weight[i] = w; totalW += w;
+                }
+        }
+        // 结构像素优先：模板像素按权重降序排列（同时预取排好序的模板 BGR 与屏幕偏移，避免内层反查）。
+        var order = new int[n];
+        for (int i = 0; i < n; i++) order[i] = i;
+        Array.Sort(order, (a, b) => weight[b].CompareTo(weight[a]));
+        var wS = new int[n]; var tB = new byte[n]; var tG = new byte[n]; var tR = new byte[n]; var sOff = new int[n];
+        for (int k = 0; k < n; k++)
+        {
+            int i = order[k]; int y = i / tw, x = i % tw;
+            wS[k] = weight[i];
+            int ti = y * tStride + x * 4;
+            tB[k] = tbuf[ti]; tG[k] = tbuf[ti + 1]; tR[k] = tbuf[ti + 2];
+            sOff[k] = y * sStride + x * 4;   // 相对滑窗左上角的屏幕缓冲偏移
+        }
+
+        var raw = new List<(int x, int y, double score)>();
+        long budget = (long)(totalW * (1.0 - threshold));   // 加权差异超过它即不可能达标
+        for (int oy = 0; oy + th <= regionH; oy++)
+        {
+            int rowBase = oy * sStride;
+            for (int ox = 0; ox + tw <= regionW; ox++)
+            {
+                int baseOff = rowBase + ox * 4;
+                long pen = 0;
+                bool ok = true;
+                for (int k = 0; k < n; k++)
+                {
+                    int si = baseOff + sOff[k];
+                    if (Math.Abs(tB[k] - sbuf[si]) > Tolerance ||
+                        Math.Abs(tG[k] - sbuf[si + 1]) > Tolerance ||
+                        Math.Abs(tR[k] - sbuf[si + 2]) > Tolerance)
                     {
-                        int ti = trow + x * 4, si = srow + x * 4;
-                        if (Math.Abs(tbuf[ti] - sbuf[si]) > Tolerance ||
-                            Math.Abs(tbuf[ti + 1] - sbuf[si + 1]) > Tolerance ||
-                            Math.Abs(tbuf[ti + 2] - sbuf[si + 2]) > Tolerance)
-                        {
-                            if (++miss > allowedMiss) { ok = false; break; }
-                        }
+                        pen += wS[k];
+                        if (pen > budget) { ok = false; break; }
                     }
                 }
-                if (ok) raw.Add((ox, oy, 1.0 - (double)miss / total));
+                if (ok) raw.Add((ox, oy, 1.0 - (double)pen / totalW));
             }
         }
 

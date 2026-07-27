@@ -510,7 +510,11 @@ public sealed class MacroRunner
             throw new InvalidOperationException($"点击图片：只找到 {hits.Count} 个匹配，不足第 {idx} 个。");
 
         var (cx, cy, score) = hits[idx - 1];
-        Log?.Invoke("Info", $"点击图片：命中 {hits.Count} 个，点第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}。");
+        // 多命中时把各处坐标列出来（最多 5 个）——"点错了第几个"一眼能对出来。
+        string detail = hits.Count > 1
+            ? "（" + string.Join("、", hits.GetRange(0, Math.Min(5, hits.Count)).ConvertAll(h => $"({h.cx},{h.cy})")) + (hits.Count > 5 ? "…" : "") + "）"
+            : "";
+        Log?.Invoke("Info", $"点击图片：命中 {hits.Count} 个{detail}，点第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}。");
         ct.ThrowIfCancellationRequested();
         if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
         ct.ThrowIfCancellationRequested();
