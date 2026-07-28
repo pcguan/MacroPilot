@@ -398,7 +398,9 @@ public partial class MainWindow
             overlay.Cursor = brushy ? Cursors.None : Cursors.Cross;
             if (!brushy) brushRing.Visibility = Visibility.Collapsed;
             CommitText();
-            SyncStyle();
+            // 换工具＝用户已经不在操作刚才那个图形了，自动解除选中（否则手柄还挂在上面，
+            // 下一笔又会被"有选中就不画"的规则挡住）。SelectAnnot 内部会顺带刷新样式行。
+            SelectAnnot(null);
         }
         void SyncStyle()   // 样式区显隐：握着工具（马赛克除外）或选中了非马赛克标注时才有意义
         {
