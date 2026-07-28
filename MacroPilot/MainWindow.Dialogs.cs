@@ -77,11 +77,20 @@ public partial class MainWindow
     }
 
 
+    // 当前打开着的对话框栈（外层在前）。嵌套弹窗（编辑动作里再编辑监听动作）靠它认出"上一层是谁"：
+    // 认亲之后才能把 Owner 挂到上一层（z 序正确）、位置错开（不完全盖住）、几何记忆分层存（不逐层漂移）。
+    private readonly System.Collections.Generic.List<Window> _dlgStack = new();
+
     private Window MakeDialog(string title)
     {
+        // 兜底：清掉"建了却没 Show"的残留（构造到 ShowDialog 之间若抛异常就会留下），
+        // 否则后续对话框会认一个从没显示过的窗口当父窗口，直接卡住。
+        _dlgStack.RemoveAll(w => !w.IsVisible && !w.IsLoaded);
+        int depth = _dlgStack.Count;
+        var parent = depth > 0 ? _dlgStack[^1] : (Window)this;
         var win = new Window
         {
-            Title = title, Owner = this, Width = 460, SizeToContent = SizeToContent.Height,
+            Title = title, Owner = parent, Width = 460, SizeToContent = SizeToContent.Height,
             MaxHeight = 640,   // 初始按内容自适应，超出则内容区滚动
             WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize,
             Background = Background,
@@ -95,15 +104,23 @@ public partial class MainWindow
         win.MinWidth = 580;
         win.MinHeight = 320;
         // 记住每个对话框各自调整后的位置与大小（key = 标题），与主窗口同一套机制。
-        WindowMemory.Attach(win, "Dlg:" + title);
+        // 【嵌套层各记各的】：同名对话框套开时若共用一个 key，内层关时会把"错开后的位置"写回去，
+        // 下次外层就从那个位置开，再错开一次……每套一层漂 36px，越用越偏。
+        WindowMemory.Attach(win, "Dlg:" + title + (depth > 0 ? "#" + depth : ""));
         bool restored = WindowMemory.WasRestored(win);
         // 记住的高度可能超过初始 MaxHeight(640)，要立刻解除上限，否则窗口会被夹到 640。
         if (restored) { win.MaxWidth = double.PositiveInfinity; win.MaxHeight = double.PositiveInfinity; }
+        _dlgStack.Add(win);
+        win.Closed += (_, _) => _dlgStack.Remove(win);
+        bool nested = depth > 0;
         win.Loaded += (_, _) =>
         {
             // 用户上次调整过：尊重记住的尺寸/位置，别再按内容重算高度、也别挪到鼠标处。
-            if (restored) return;
-            PositionWindowAtCursor(win, this);
+            // 但嵌套层的【位置】一律重算成相对上一层错开——否则两层同名对话框正好完全重叠，
+            // 看起来像"上一层不见了"。
+            if (restored) { if (nested) CascadeFromOwner(win, parent); return; }
+            if (nested) CascadeFromOwner(win, parent);
+            else PositionWindowAtCursor(win, this);
             // 先按内容自适应出初始高度，加载后冻结为手动尺寸；宽高都可拖动调整
             // （嵌套监听等内容多时能拉大看全，不再锁死宽度导致文本被截断）。
             win.Height = win.ActualHeight;
@@ -2932,6 +2949,31 @@ public partial class MainWindow
     }
 
     // 把对话框定位到鼠标光标附近（限制在主窗口范围内）。
+    /// <summary>
+    /// 嵌套对话框错开摆放：相对上一层右下偏移一个标题栏的量，露出上一层的边框与标题，
+    /// 一眼看得出层级关系。越界则贴回所在屏工作区内（不会跑到屏幕外或任务栏下面）。
+    /// </summary>
+    private static void CascadeFromOwner(Window window, Window owner)
+    {
+        const double Step = 36;
+        if (double.IsNaN(owner.Left) || double.IsNaN(owner.Top)) return;
+        var dpi = VisualTreeHelper.GetDpi(owner);
+        double w = window.ActualWidth > 0 ? window.ActualWidth : window.Width;
+        double h = window.ActualHeight > 0 ? window.ActualHeight : window.Height;
+        double left = owner.Left + Step, top = owner.Top + Step;
+
+        // owner 所在屏的工作区（物理像素 → DIP）
+        int px = (int)Math.Round((owner.Left + Math.Max(0, owner.ActualWidth) / 2) * dpi.DpiScaleX);
+        int py = (int)Math.Round((owner.Top + 20) * dpi.DpiScaleY);
+        var mon = ScreenInfo.Primary();
+        foreach (var m in ScreenInfo.All()) if (m.Contains(px, py)) { mon = m; break; }
+        double wl = mon.WorkLeft / dpi.DpiScaleX, wt = mon.WorkTop / dpi.DpiScaleY;
+        double wr = mon.WorkRight / dpi.DpiScaleX, wb = mon.WorkBottom / dpi.DpiScaleY;
+        if (!double.IsNaN(w) && w > 0 && left + w > wr) left = Math.Max(wl, wr - w);
+        if (!double.IsNaN(h) && h > 0 && top + h > wb) top = Math.Max(wt, wb - h);
+        window.Left = left; window.Top = top;
+    }
+
     private static void PositionWindowAtCursor(Window window, Window? owner)
     {
         if (owner == null || !GetCursorPos(out var pt)) return;
