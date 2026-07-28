@@ -13,7 +13,7 @@
 
 | 目录 / 文件 | 内容 |
 | --- | --- |
-| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/移动图片/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；界面上「点击」「移动」各自合成一项，靠「目标」下拉分流到这几个存储类型；带稳定 `Id` 供跳转绑定）、`MacroPlan`、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或，三级共用的公共契约）、`LogEntry` |
+| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/移动图片/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；界面上「点击」「移动」各自合成一项，靠面板里的「目标位置」分流到这几个存储类型（类型行最多三级，别再往上加）；带稳定 `Id` 供跳转绑定）、`MacroPlan`、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或，三级共用的公共契约）、`LogEntry` |
 | `Input/` | `IInputBackend` 抽象（含 `MouseDown/MouseUp` 供拖动）；`Ch9329Device`（串口硬件）、`NativeInputDevice`（SendInput）、`Ch9329Scanner`（按 USB VID:PID 过滤后探测串口）、`KeyMap`、`ScreenInfo`（多屏拓扑） |
 | `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片搜索匹配、`ImageStore` 图片外置+孤儿清理、`RandomText`（逆向正则：按模式生成随机串）、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
 | `App.xaml(.cs)` | 单实例（唤起已有窗口后静默退出，**不弹模态**）+ 按需提权 + 显式建窗口 + 全局统一 ToolTip 延迟 |
@@ -69,7 +69,7 @@
 - 点击/滚动/按键/执行次数 + 重复间隔是同一套 `RepeatBlock`；存 `LoopCount`/`LoopDelayMs`/`LoopDelayUnit`。间隔仅在次数 != 1 时显示与生效；重复时必填校验。
 
 **限制区域编辑（`ClickImagePanel` / `EdgeCell`）**
-- 四边输入格的标签（左/右/上/下）**必须画在格子内部**。早先用的是 Material 那种"浮到上边框、负 margin 顶出格子外"的画法——标签画在自己控件范围之外，上方空间一被挤（窄窗导致自适应文本折行变高、出现滚动条等）就会被盖住或切掉半截，表现成"我调的是宽度，却出现上下遮挡"这种毫不相关的现象。**别再引入这类跨出自身边界的装饰**。
+- 四边输入格的标签（左/右/上/下）是 Material 描边式的：有值时缩小浮到上边框、在边框上开个缺口（靠负 margin 顶出格子）。**它画在自己控件范围之外，所以上方必须有净空**——显示器行留了 22px 下边距，且对话框 `MinWidth` 必须保证这一行四个格子完整排得下，否则挤压变形时标签会和上一行糊在一起（表现成"调宽度却出现上下遮挡"）。改这块务必同时校对这两个前提。
 - 一行里塞多个定宽控件的用 `WrapPanel`（窄了就换行），并把窗口 `MinWidth` 设到能排下最宽那一行——宽度不够时应该换行或出滚动条，不该靠裁剪收场。
 - 截图会同时记下**当时的区域**（`ClickImageOrig*` / `ConditionItem.Orig*`），供「还原到截图时的区域」按钮一键退回；导入/粘贴的图没有这个来源，按钮自动隐藏。
 

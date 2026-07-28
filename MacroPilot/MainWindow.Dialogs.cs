@@ -89,9 +89,10 @@ public partial class MainWindow
         };
         win.SetResourceReference(ForegroundProperty, "Ink");
         win.SourceInitialized += (_, _) => ThemeManager.ApplyWindowTitleBar(win, ThemeManager.EffectiveDark);
-        // 最小宽度要盖得住内容真实的最小需求（限制区域那行：标签 52 + 四个 86 宽的格子 + 卡片内边距 ≈ 500），
-        // 否则用户能把窗口拖到内容根本排不下的宽度，只能靠裁剪收场。再窄的可换行内容会自己折行。
-        win.MinWidth = 520;
+        // 最小宽度必须盖得住内容真实的最小需求，否则窗口能被拖到内容根本排不下的宽度，
+        // 只能靠裁剪收场——「限制区域」那一行尤其脆弱：四个边输入格的标签是浮在边框【外面】画的，
+        // 一旦挤压变形就会和上一行糊在一起。这一行的需求 = 标签 52 + 四格 ×86 + 卡片/对话框内边距 + 滚动条 ≈ 560。
+        win.MinWidth = 580;
         win.MinHeight = 320;
         // 记住每个对话框各自调整后的位置与大小（key = 标题），与主窗口同一套机制。
         WindowMemory.Attach(win, "Dlg:" + title);
@@ -1116,7 +1117,7 @@ public partial class MainWindow
         });
 
         // 图片出现：与「点击图片」共用同一编辑器（无"匹配第几"）
-        var img = new ClickImagePanel(this, win, withIndex: false, boxed: false);
+        var img = new ClickImagePanel(this, win, withIndex: false, boxed: false, notchBgKey: "Bg");
         var imgSub = new StackPanel();
         imgSub.Children.Add(img.Panel);
         imgSub.Children.Add(new TextBlock
@@ -1279,16 +1280,17 @@ public partial class MainWindow
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
-        // 「点击 / 移动」下再分目标：点当前位置、点某个坐标、点某张图片——原先是三个并列动作类型
-        // （点击/点击坐标/点击图片、移动/移动图片），合并后动作列表更短，选项也更贴近"要做什么 + 打哪儿"的思路。
+        // 「点击 / 移动」的目标（仅点击 / 点击坐标 / 点击图片）不再挤进上面的类型行——类型行最多三级，
+        // 再加一级又长又难扫。它作为一张卡片放在【鼠标按钮下面】，属于"这个动作怎么做"的参数。
         // 存储类型不变（MouseClick / MouseClickAt / MouseClickImage / MouseMove / MouseMoveImage），旧方案照常读。
-        var mouseTargetCombo = new ComboBox { Width = 116, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
-        var keyActionCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
+        var mouseTargetCombo = new ComboBox { Height = 32 };
+        // 键盘同理：按键 / 文本 也从类型行挪进键盘面板里的一张卡片
+        var keyActionCombo = new ComboBox { Height = 32 };
         keyActionCombo.Items.Add("按键"); keyActionCombo.Items.Add("文本"); keyActionCombo.SelectedIndex = 0;
         var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
         runActionCombo.SelectedIndex = 0;
-        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(mouseTargetCombo); typeRow.Children.Add(keyActionCombo); typeRow.Children.Add(runActionCombo);
+        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(runActionCombo);
         baseContent.Children.Add(typeRow);
 
         // 鼠标面板
@@ -1299,6 +1301,8 @@ public partial class MainWindow
         buttonCombo.Items.Add("左键"); buttonCombo.Items.Add("右键"); buttonCombo.Items.Add("中键");
         buttonCombo.SelectedIndex = 0;
         var mouseButtonPanel = SubGroup("鼠标按钮", buttonCombo);
+
+        var mouseTargetPanel = SubGroup("目标位置", mouseTargetCombo);
 
         var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs);
         holdRow.Panel.Margin = new Thickness(0, 0, 0, 0);
@@ -1330,6 +1334,11 @@ public partial class MainWindow
         var wheelText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 6), Height = 32 };
         mouseWheelPanel.Children.Add(wheelText);
         mouseWheelPanel.Children.Add(new TextBlock { Text = "以“格”为单位（一格＝常规滚一下）。两种输出方式一致；CH9329 单次上限 ±127 格。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 14) });
+
+        // 键盘方式卡（按键 / 文本）：与鼠标的「目标位置」同理，从类型行挪下来变成面板里的一个选项
+        var keyKindPanel = SubGroup("输入方式", keyActionCombo);
+        keyKindPanel.Visibility = Visibility.Collapsed;
+        baseContent.Children.Add(keyKindPanel);
 
         // 键盘面板（布局与鼠标对齐：按键 / 按住时间 / 按键次数+重复间隔 各自成独立小卡）
         var keyboardPanel = new StackPanel { Visibility = Visibility.Collapsed }; baseContent.Children.Add(keyboardPanel);
@@ -1568,6 +1577,7 @@ public partial class MainWindow
         // 界面顺序（每块都是独立小卡，关联字段在同一卡内）：
         // 鼠标按钮 → 坐标 → 按住时间 → 点击次数(+重复间隔) → 滚轮格数 → 拟人化移动（最后）
         mousePanel.Children.Add(mouseButtonPanel);
+        mousePanel.Children.Add(mouseTargetPanel);   // 紧跟在「鼠标按钮」下面
         mousePanel.Children.Add(mouseMovePanel);
         mousePanel.Children.Add(dragEndPanel);
         mousePanel.Children.Add(clickImagePanel);
@@ -1643,6 +1653,14 @@ public partial class MainWindow
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
         string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击") : "";
         string Target() => mouseTargetCombo.SelectedItem?.ToString() ?? "";
+        // 目标种类：self=当前位置 / coord=坐标 / image=图片。按语义判断，别拿显示文案去比。
+        string TargetKind()
+        {
+            var t = Target();
+            if (t.Contains("图片")) return "image";
+            if (t.Contains("坐标")) return "coord";
+            return "self";
+        }
         // 「点击」可以打当前位置/坐标/图片；「移动」只有坐标/图片（移到"当前位置"没有意义）。
         // 换动作时重建选项，并尽量保留原来选的那个。
         bool _tgtLoading = false;
@@ -1651,9 +1669,9 @@ public partial class MainWindow
             string a2 = Act();
             if (a2 is not ("点击" or "移动")) return;
             var want = a2 == "点击"
-                ? new[] { "当前位置", "坐标", "图片" }
-                : new[] { "坐标", "图片" };
-            var keep = Target();
+                ? new[] { "仅点击（当前位置）", "点击坐标", "点击图片" }
+                : new[] { "移动到坐标", "移动到图片" };
+            var keep = TargetKind();
             if (mouseTargetCombo.Items.Count == want.Length)
             {
                 bool same = true;
@@ -1663,8 +1681,13 @@ public partial class MainWindow
             _tgtLoading = true;
             mouseTargetCombo.Items.Clear();
             foreach (var t in want) mouseTargetCombo.Items.Add(t);
-            int idx = System.Array.IndexOf(want, keep);
-            mouseTargetCombo.SelectedIndex = idx >= 0 ? idx : 0;
+            int idx = 0;   // 换动作时保留同一种目标（坐标↔坐标、图片↔图片），没有对应项就落回第一个
+            for (int i = 0; i < want.Length; i++)
+            {
+                string k = want[i].Contains("图片") ? "image" : want[i].Contains("坐标") ? "coord" : "self";
+                if (k == keep) { idx = i; break; }
+            }
+            mouseTargetCombo.SelectedIndex = idx;
             _tgtLoading = false;
         }
         string KeyAct() => Dev() == "键盘" ? (keyActionCombo.SelectedItem?.ToString() ?? "按键") : "";
@@ -1673,7 +1696,7 @@ public partial class MainWindow
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、带坐标的鼠标动作。只有一块屏时不自动标（没意义），手动「标识屏幕」按钮不受影响。
-            bool coordView = Act() is "拖动" || (Act() is "点击" or "移动" && Target() != "当前位置");
+            bool coordView = Act() is "拖动" || (Act() is "点击" or "移动" && TargetKind() != "self");
             bool needScreens = (RunAct() == "激活窗口" || coordView) && ScreenInfo.All().Count > 1;
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
@@ -1683,9 +1706,9 @@ public partial class MainWindow
             deviceCombo.Visibility = t == "输入" ? Visibility.Visible : Visibility.Collapsed;
             mouseActionCombo.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
             runActionCombo.Visibility = t == "运行" ? Visibility.Visible : Visibility.Collapsed;
+            keyKindPanel.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
 
             mousePanel.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
-            keyActionCombo.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
             keyboardPanel.Visibility = d == "键盘" && KeyAct() == "按键" ? Visibility.Visible : Visibility.Collapsed;
             textPanel.Visibility = d == "键盘" && KeyAct() == "文本" ? Visibility.Visible : Visibility.Collapsed;
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
@@ -1694,10 +1717,10 @@ public partial class MainWindow
             // 点击/移动 的目标由第二个下拉决定：当前位置(仅点击) / 坐标 / 图片；拖动固定两个坐标；滚轮无目标。
             SyncTargets();
             bool isClick = a == "点击", isMove = a == "移动", isDrag = a == "拖动", isWheel = a == "滚轮";
-            mouseTargetCombo.Visibility = (isClick || isMove) && d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
-            string tgt = Target();
-            bool isClickAt = isClick && tgt == "坐标", isClickImage = isClick && tgt == "图片";
-            bool isMoveAt = isMove && tgt != "图片", isMoveImage = isMove && tgt == "图片";
+            mouseTargetPanel.Visibility = (isClick || isMove) && d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            string tgt = TargetKind();
+            bool isClickAt = isClick && tgt == "coord", isClickImage = isClick && tgt == "image";
+            bool isMoveAt = isMove && tgt != "image", isMoveImage = isMove && tgt == "image";
             bool anyImage = isClickImage || isMoveImage;
             bool coordForced = isMoveAt || isDrag || isClickAt;   // 这三种必须有坐标
             if (coordForced && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
@@ -1791,7 +1814,7 @@ public partial class MainWindow
                             if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
                         }
                     }
-                    string tgt = Target();
+                    string tgt = TargetKind();
                     if (a == "滚轮")
                     {
                         result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) };
@@ -1808,7 +1831,7 @@ public partial class MainWindow
                     }
                     else if (a == "移动")
                     {
-                        if (tgt == "图片")   // 区域内搜图 → 只把光标移到第 N 个命中处
+                        if (tgt == "image")   // 区域内搜图 → 只把光标移到第 N 个命中处
                         {
                             result = new MacroStep { Type = "MouseMoveImage" };
                             clickImage.Apply(result);   // 校验缺图会抛异常，下面统一提示
@@ -1823,13 +1846,13 @@ public partial class MainWindow
                     }
                     else if (a == "点击")
                     {
-                        if (tgt == "图片")        // 区域内搜图 → 点第 N 个
+                        if (tgt == "image")        // 区域内搜图 → 点第 N 个
                         {
                             result = new MacroStep { Type = "MouseClickImage" };
                             clickImage.Apply(result);
                             result.Humanize = humanizeMoveCheck.IsChecked == true;
                         }
-                        else if (tgt == "坐标")   // 先移动到坐标再点
+                        else if (tgt == "coord")   // 先移动到坐标再点
                         {
                             result = new MacroStep { Type = "MouseClickAt" };
                             FillMove(result);
@@ -1942,11 +1965,25 @@ public partial class MainWindow
             }
             switch (source.Type)
             {
-                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; SyncTargets(); mouseTargetCombo.SelectedItem = "坐标"; LoadMoveFields(); break;
-                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; SyncTargets(); mouseTargetCombo.SelectedItem = "当前位置"; LoadButtonFields(); break;
-                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; SyncTargets(); mouseTargetCombo.SelectedItem = "坐标"; LoadMoveFields(); LoadButtonFields(); break;
-                case "MouseClickImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; SyncTargets(); mouseTargetCombo.SelectedItem = "图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; LoadButtonFields(); break;
-                case "MouseMoveImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; SyncTargets(); mouseTargetCombo.SelectedItem = "图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; break;
+                // 存储类型 → 「动作 + 目标」：目标按下标选（点击 0 仅点击 / 1 坐标 / 2 图片；移动 0 坐标 / 1 图片），
+                // 不比对显示文案，改措辞不会连带出错。
+                case "MouseMove":
+                    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动";
+                    SyncTargets(); mouseTargetCombo.SelectedIndex = 0; LoadMoveFields(); break;
+                case "MouseClick":
+                    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击";
+                    SyncTargets(); mouseTargetCombo.SelectedIndex = 0; LoadButtonFields(); break;
+                case "MouseClickAt":
+                    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击";
+                    SyncTargets(); mouseTargetCombo.SelectedIndex = 1; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseClickImage":
+                    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击";
+                    SyncTargets(); mouseTargetCombo.SelectedIndex = 2;
+                    clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; LoadButtonFields(); break;
+                case "MouseMoveImage":
+                    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动";
+                    SyncTargets(); mouseTargetCombo.SelectedIndex = 1;
+                    clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; break;
                 case "MouseDrag":
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动";
                     coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields();
@@ -2189,57 +2226,58 @@ public partial class MainWindow
     /// 坐标块：显示器 + 屏内百分比 + 点选/预览。可复用——点击/移动各一个，拖动用两个（起点、终点）。
     /// showCheck=true 时带勾选框（勾选后才展开明细），false 则常驻展开。
     /// </summary>
-    // 限制区域的一个边输入格：标签(左/右/上/下)在格【内部】左上角，值在下方，右侧单位可点击在 % / DP(屏内像素)
-    // 之间切换并自动换算。值对外统一以「屏内像素」读写。
+    // 限制区域的一个「尖角」边输入格（对齐自动精灵）：无圆角、与相邻格贴合（-1px 让边框共享）；
+    // 标签(左/右/上/下)在空且未聚焦时作占位居中，聚焦或有值时缩小浮到上边框（Material 描边式，在边框上开缺口）。
+    // 右侧单位可点击在 % / DP(屏内像素) 间切换并自动换算。值对外统一以「屏内像素」读写。
     //
-    // 【为什么标签在格子里面】早先是 Material 那种"浮到上边框上、用底色开个缺口"的画法（负 margin 顶出格子外），
-    // 那意味着标签是画在自己控件范围【之外】的——一旦上方空间被挤（窗口变窄导致上面的自适应文本折行变高、
-    // 出现滚动条等），它就会被上一行盖住或被裁掉半截，表现成"调宽度却出现上下遮挡"这种毫不相关的现象。
-    // 现在标签完全在格子内部，不再依赖外部空间，任何尺寸变化都不会切到它。
+    // 【浮起标签是画在格子外面的】它靠负 margin 顶到上边框之上，所以【上方必须有净空】：
+    // 本格上面那一行（显示器行）留了 22px 下边距，够浮起的 8px + 标签高度；同时对话框最小宽度必须
+    // 保证这一行四个格子排得下（见 MakeDialog 的 MinWidth），否则挤压变形时标签会和上一行糊在一起。
     private sealed class EdgeCell
     {
+        private const double Float = 8;      // 浮起高度（负 margin）
+        private readonly Brush _notchBg;
         private readonly TextBox _box;
         private readonly TextBlock _lbl, _unit;
+        private readonly Border _lblBg;
         private readonly Func<int> _dim;     // 该边换算用的屏尺寸（左右=宽，上下=高）
         private bool _isDp;
         public readonly Border Root;
         public event Action? Committed;      // 失焦提交（→ 面板 EdgesToRegion）
 
-        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first)
+        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first, string notchBgKey = "Bg")
         {
-            _dim = dim;
+            _dim = dim; _notchBg = (Brush)o.FindResource(notchBgKey);
             Brush B(string k) => (Brush)o.FindResource(k);
-            _lbl = new TextBlock
-            {
-                Text = label, Foreground = B("Muted"), FontSize = 11,
-                Margin = new Thickness(10, 5, 8, 0), HorizontalAlignment = HorizontalAlignment.Left,
-            };
             _box = new TextBox
             {
                 BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0),
-                MinHeight = 0, Height = 22, Margin = new Thickness(10, 0, 30, 4), VerticalAlignment = VerticalAlignment.Bottom,
+                MinHeight = 0, Width = 40, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 0, 0, 0),
                 VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink"),
             };
-            _unit = new TextBlock
-            {
-                Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Bottom,
-                HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand,
-                Margin = new Thickness(0, 0, 8, 5), ToolTip = "点击切换 % / DP（屏内像素）",
-            };
-            var grid = new Grid { Height = 50 };
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            Grid.SetRow(_lbl, 0); Grid.SetRow(_box, 1); Grid.SetRow(_unit, 1);
-            grid.Children.Add(_lbl); grid.Children.Add(_box); grid.Children.Add(_unit);
-            // 相邻格靠 -1 共享边框连成一体；换行时首格的 -1 只是贴着容器左边，无副作用
-            Root = new Border
-            {
-                BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0),
-                Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 86, Child = grid,
-            };
+            _unit = new TextBlock { Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 8, 0), ToolTip = "点击切换 % / DP（屏内像素）" };
+            _lbl = new TextBlock { Text = label, Foreground = B("Muted") };
+            _lblBg = new Border { Child = _lbl, HorizontalAlignment = HorizontalAlignment.Left };
 
-            _box.LostFocus += (_, _) => Committed?.Invoke();
+            var grid = new Grid { Height = 42 };
+            grid.Children.Add(_box); grid.Children.Add(_unit); grid.Children.Add(_lblBg);
+            Root = new Border { BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 86, Child = grid };
+
+            _box.GotFocus += (_, _) => Render();
+            _box.LostFocus += (_, _) => { Render(); Committed?.Invoke(); };
+            _box.TextChanged += (_, _) => Render();
             _unit.MouseLeftButtonDown += (_, _) => { var px = GetPx(); _isDp = !_isDp; _unit.Text = _isDp ? "DP" : "%"; if (px is int p) SetPx(p); };
+            Render();
+        }
+
+        private void Render()
+        {
+            bool active = _box.IsFocused || !string.IsNullOrEmpty(_box.Text);
+            _lbl.FontSize = active ? 11 : 14;
+            _lblBg.VerticalAlignment = active ? VerticalAlignment.Top : VerticalAlignment.Center;
+            _lblBg.Margin = active ? new Thickness(6, -Float, 0, 0) : new Thickness(10, 0, 0, 0);
+            _lblBg.Padding = active ? new Thickness(3, 0, 3, 0) : new Thickness(0);
+            _lblBg.Background = active ? _notchBg : Brushes.Transparent;   // 浮起时遮住上边框做缺口（底色跟宿主容器一致）
         }
 
         public int? GetPx()
@@ -2251,8 +2289,9 @@ public partial class MainWindow
         public void SetPx(int px)
         {
             _box.Text = _isDp ? px.ToString() : (Math.Clamp(px / (double)Math.Max(1, _dim()), 0, 1) * 100).ToString("0.#");
+            Render();
         }
-        public void Clear() => _box.Text = "";
+        public void Clear() { _box.Text = ""; Render(); }
     }
 
     // 「点击图片」编辑块：目标图（截图 / 导入 / 复制 / 粘贴）+ 限制区域 + 相似度 + 匹配第几。
@@ -2283,7 +2322,7 @@ public partial class MainWindow
         public int Index => Math.Max(1, ParseInt(_index.Text, 1));
         public bool HasImage => Png != null && Png.Length > 0;
 
-        public ClickImagePanel(MainWindow o, Window? win = null, bool withIndex = true, bool boxed = true)
+        public ClickImagePanel(MainWindow o, Window? win = null, bool withIndex = true, bool boxed = true, string notchBgKey = "Bg")
         {
             // 宿主窗口懒解析：运行条件编辑器在对话框组装前就要构建本面板，点击时再从可视树取。
             Window Win() => win ?? Window.GetWindow(Panel)!;
@@ -2327,7 +2366,7 @@ public partial class MainWindow
             var regionDetail = new StackPanel();
             TextBlock RLabel(string t2) => new() { Text = t2, Width = 52, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
             // 显示器行（与坐标块同款）：锚定屏——手动填四边时的基准；截图/编辑区域自动识别后自动跟随。
-            var monRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 6, 0, 14) };
+            var monRow = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 6, 0, 22) };   // 22 = 给下一行浮起的标签留净空
             monRow.Children.Add(RLabel("显示器"));
             foreach (var m in ScreenInfo.All()) _monCombo.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Device });
             monRow.Children.Add(_monCombo);
@@ -2341,10 +2380,10 @@ public partial class MainWindow
                 SyncEdges();
             };
             // 区域值行：四个尖角浮标格（贴合一体）。
-            _left = new EdgeCell(o, "左", () => RegionMon().Width, true);
-            _right = new EdgeCell(o, "右", () => RegionMon().Width, false);
-            _top = new EdgeCell(o, "上", () => RegionMon().Height, false);
-            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false);
+            _left = new EdgeCell(o, "左", () => RegionMon().Width, true, notchBgKey);
+            _right = new EdgeCell(o, "右", () => RegionMon().Width, false, notchBgKey);
+            _top = new EdgeCell(o, "上", () => RegionMon().Height, false, notchBgKey);
+            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false, notchBgKey);
             foreach (var c in new[] { _left, _right, _top, _bottom }) c.Committed += EdgesToRegion;
             var cellsRow = new DockPanel { LastChildFill = true };
             var rvLabel = RLabel("区域值"); DockPanel.SetDock(rvLabel, Dock.Left); cellsRow.Children.Add(rvLabel);
