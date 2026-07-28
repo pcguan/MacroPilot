@@ -1105,28 +1105,30 @@ public partial class MainWindow
         retryTimeout.Width = 84; retryTimeout.Height = 32; if (retryTimeout.Text.Length == 0) retryTimeout.Text = "0";
         // 两行：间隔 / 上限（次数 + 时长）。都能选单位，都用 0 表示"不限 / 不等待"。
         var rrow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
-        rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+        rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Width = 60 });
         rrow.Children.Add(retryInterval);
         rrow.Children.Add(UnitBox(ed.RetryIntervalUnit, 1));
         rrow.Children.Add(new TextBlock { Text = "（0 = 立刻重判）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted") });
-        var rrow2 = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
-        rrow2.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+        // 次数上限、时长上限各占一行：两个"最多 …"挤一行读起来像一句话，容易看成一个条件
+        var rrow2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
+        rrow2.Children.Add(new TextBlock { Text = "最多次数", VerticalAlignment = VerticalAlignment.Center, Width = 60 });
         rrow2.Children.Add(retryMax);
-        rrow2.Children.Add(new TextBlock { Text = "次", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 16, 0) });
-        rrow2.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
-        rrow2.Children.Add(retryTimeout);
-        rrow2.Children.Add(UnitBox(ed.RetryTimeoutUnit, 1));
-        rrow2.Children.Add(new TextBlock { Text = "（均 0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted") });
+        rrow2.Children.Add(new TextBlock { Text = "次（0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
+        var rrow3 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
+        rrow3.Children.Add(new TextBlock { Text = "最多时长", VerticalAlignment = VerticalAlignment.Center, Width = 60 });
+        rrow3.Children.Add(retryTimeout);
+        rrow3.Children.Add(UnitBox(ed.RetryTimeoutUnit, 1));
+        rrow3.Children.Add(new TextBlock { Text = "（0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted") });
         var rnote = new TextBlock
         {
             Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 6, 0, 0),
             Text = "不勾选时条件不满足就直接跳过该动作。勾选后按间隔反复判定，等到满足才继续（等待期间可暂停 / 停止）。\n次数上限与时间上限【同时生效，先到者结束】，到达后仍不满足则跳过该动作。间隔填 0 表示判完立刻再判——图片类条件会持续占用 CPU，酌情使用。\n方案级运行条件本来就会一直等到满足，因此该勾选对它无影响，但间隔与两个上限同样生效（超出即结束本次运行）。",
         };
-        void RefreshRetry() { rrow.Visibility = rrow2.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
+        void RefreshRetry() { rrow.Visibility = rrow2.Visibility = rrow3.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
         retry.Checked += (_, _) => RefreshRetry();
         retry.Unchecked += (_, _) => RefreshRetry();
         RefreshRetry();
-        detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rrow2); detail.Children.Add(rnote);
+        detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rrow2); detail.Children.Add(rrow3); detail.Children.Add(rnote);
 
         // 勾选开关后，明细收进一个缩进 + 弱底色 + 强调左条的面板里，一眼看出属于该开关的"势力范围"。
         var detailWrap = new Border
