@@ -99,15 +99,33 @@ public static class ScreenMatch
         out double bestScore, System.Threading.CancellationToken ct)
     {
         bestScore = 0;
-        var result = new List<(int, int, double)>();
+        var empty = new List<(int cx, int cy, double score)>();
         ct.ThrowIfCancellationRequested();   // 抓屏也要时间，已取消就别开工了
-        if (template == null || template.Width <= 0 || template.Height <= 0) return result;
-        int tw = template.Width, th = template.Height;
-        if (regionW < tw || regionH < th) return result;
+        if (template == null || template.Width <= 0 || template.Height <= 0) return empty;
+        if (regionW < template.Width || regionH < template.Height) return empty;
 
         Bitmap shot;
         try { shot = CaptureRegion(regionVx, regionVy, regionW, regionH); }
-        catch { return result; }
+        catch { return empty; }
+        try { return FindIn(shot, template, threshold, out bestScore, ct, regionVx, regionVy); }
+        finally { shot.Dispose(); }
+    }
+
+    /// <summary>
+    /// 在【给定位图】里搜模板——<see cref="FindMatches"/> 的实际实现，把"抓屏"和"搜索"分开：
+    /// 于是能拿真实截图离线压测 / 回归这套算法（改它之前照例先离线验一遍），单测也不必依赖屏幕。
+    /// 返回的命中中心点已加上 offsetX/offsetY（调用方传区域在虚拟桌面上的左上角）。
+    /// </summary>
+    public static List<(int cx, int cy, double score)> FindIn(
+        Bitmap shot, Bitmap template, double threshold, out double bestScore,
+        System.Threading.CancellationToken ct = default, int offsetX = 0, int offsetY = 0)
+    {
+        bestScore = 0;
+        var result = new List<(int, int, double)>();
+        int tw = template.Width, th = template.Height;
+        int regionW = shot.Width, regionH = shot.Height;
+        int regionVx = offsetX, regionVy = offsetY;
+        if (tw <= 0 || th <= 0 || regionW < tw || regionH < th) return result;
 
         var rt = new Rectangle(0, 0, tw, th);
         var rs = new Rectangle(0, 0, regionW, regionH);
@@ -118,7 +136,7 @@ public static class ScreenMatch
         var sbuf = new byte[sStride * regionH];
         Marshal.Copy(dt.Scan0, tbuf, 0, tbuf.Length);
         Marshal.Copy(ds.Scan0, sbuf, 0, sbuf.Length);
-        template.UnlockBits(dt); shot.UnlockBits(ds); shot.Dispose();
+        template.UnlockBits(dt); shot.UnlockBits(ds);   // shot 由调用方释放（FindMatches 用完即弃，离线验证时要复用）
 
         int n = tw * th;
         // 权重 = 1 + min(15, 亮度梯度/6)：梯度取与右/下邻的亮度差绝对值的较大者。
@@ -163,11 +181,17 @@ public static class ScreenMatch
         long budget = (long)(totalW * (1.0 - threshold));                                // 加权差异超过它即不达标
         long diagBudget = (long)(totalW * (1.0 - Math.Max(0, threshold - DiagSlack)));    // 放宽一档，用于统计最高相似度
         double best = 0;
-        for (int oy = 0; oy + th <= regionH; oy++)
+        int rows = regionH - th + 1, cols = regionW - tw + 1;
+
+        // 【按行并行】：本质是 rows×cols 个互不相干的位置各算各的，天然可并行；共享的 tbuf/sbuf 全是只读。
+        // 现实数据量很吓人——2560×1440 的区域配 364×41 的模板就有 307 万个位置，单线程实测要十几秒
+        // （每个位置平均要比到上千个像素才够爆预算）。运行条件的"重复检查"会把这笔开销按次数翻倍，
+        // 用户那边就表现成"两条日志之间隔了 33 秒"。并行后按核数近似线性变快，且结果与单线程完全一致。
+        var lk = new object();
+        void ScanRow(int oy, List<(int x, int y, double score)> localHits, ref double localBest)
         {
-            ct.ThrowIfCancellationRequested();   // 每行一次：几乎零成本，却能把停止响应从"整轮搜索"降到"一行"
             int rowBase = oy * sStride;
-            for (int ox = 0; ox + tw <= regionW; ox++)
+            for (int ox = 0; ox < cols; ox++)
             {
                 int baseOff = rowBase + ox * 4;
                 long pen = 0;
@@ -185,9 +209,34 @@ public static class ScreenMatch
                 }
                 if (!ok) continue;
                 double score = 1.0 - (double)pen / totalW;
-                if (score > best) best = score;
-                if (pen <= budget) raw.Add((ox, oy, score));           // 达阈值才算命中
+                if (score > localBest) localBest = score;
+                if (pen <= budget) localHits.Add((ox, oy, score));     // 达阈值才算命中
             }
+        }
+
+        if (rows > 0 && cols > 0)
+        {
+            var po = new System.Threading.Tasks.ParallelOptions { CancellationToken = ct };
+            try
+            {
+                System.Threading.Tasks.Parallel.For(0, rows, po,
+                    () => (hits: new List<(int x, int y, double score)>(), best: 0.0),
+                    (oy, _, local) =>
+                    {
+                        double lb = local.best;
+                        ScanRow(oy, local.hits, ref lb);
+                        return (local.hits, lb);
+                    },
+                    local =>
+                    {
+                        lock (lk)
+                        {
+                            raw.AddRange(local.hits);
+                            if (local.best > best) best = local.best;
+                        }
+                    });
+            }
+            catch (AggregateException ex) when (ex.InnerException is OperationCanceledException oce) { throw oce; }
         }
         bestScore = best;
 
