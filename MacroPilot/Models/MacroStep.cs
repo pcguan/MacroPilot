@@ -8,7 +8,8 @@ namespace MacroPilot.Models;
 /// <summary>
 /// 单个动作。字段名与参考版 plans.json 完全一致（PascalCase），可直接互读。
 /// Type（对应「动作类型」层级）：
-///   输入 → 鼠标 → 移动 = MouseMove、点击 = MouseClick / MouseClickAt(带坐标)、拖动 = MouseDrag、滚轮 = MouseWheel
+///   输入 → 鼠标 → 移动 = MouseMove / MouseMoveImage(移到图片)、点击 = MouseClick / MouseClickAt(带坐标) / MouseClickImage、
+///                 拖动 = MouseDrag、滚轮 = MouseWheel
 ///   输入 → 键盘        = KeyTap
 ///   运行 → 等待 = Wait、激活窗口 = ActivateWindow、跳转 = Jump（原先挂在动作上的"执行后跳转"已剥离成它）
 ///   组合 = Group
@@ -54,7 +55,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     // 正则随机：true 则把 Text 当作【生成模式】，每次执行按它随机生成一串（如 [0-9a-z]{10}）。
     public bool TextRandom { get; set; }
 
-    // 点击图片（MouseClickImage）：在限制区域内搜索模板图，点击匹配到的第 N 个。
+    // 点击图片（MouseClickImage）/ 移动到图片（MouseMoveImage）：在限制区域内搜索模板图，定位第 N 个匹配。
     // ClickImage 存储约定同 RunConditionImage：file:hash 引用 / 旧内联 base64（由 ImageStore 统一处理）。
     public string ClickImage { get; set; } = "";
     public string ClickImageMonitor { get; set; } = "";   // 限制区域绑定的屏幕设备名
@@ -257,6 +258,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         "MouseMove" => MoveDisplay(),
         "MouseClickAt" => $"{MoveDisplay("点击")}，{ButtonCn(Button)}按住 {FormatMs(HoldMs)}",
         "MouseClickImage" => ClickImageDisplay(),
+        "MouseMoveImage" => ClickImageDisplay(true),
         "MouseDrag" => DragDisplay(),
         "MouseWheel" => $"滚轮 {Wheel} 格",
         "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
@@ -319,8 +321,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         return string.IsNullOrEmpty(t) ? "输入文本（未设置内容）" : $"输入文本「{t}」（{mode}）";
     }
 
-    // 点击图片：点击「区域内第 N 个匹配」+ 按钮 + 相似度。
-    private string ClickImageDisplay()
+    // 点击图片 / 移动图片：定位「区域内第 N 个匹配」+ 相似度（moveOnly=移动到该处不点击）。
+    private string ClickImageDisplay(bool moveOnly = false)
     {
         string region;
         if (ClickImageRectW > 0 && ClickImageRectH > 0)
@@ -331,7 +333,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         }
         else region = "全屏";
         string nth = ClickImageIndex > 1 ? $"第 {ClickImageIndex} 个" : "";
-        return $"{ButtonCn(Button)}点击图片（{region}内{nth}匹配，相似度 {ClickImageThreshold * 100:0}%）";
+        string head = moveOnly ? "移动到图片" : $"{ButtonCn(Button)}点击图片";
+        return $"{head}（{region}内{nth}匹配，相似度 {ClickImageThreshold * 100:0}%）";
     }
 
     private string WindowTargetCn()

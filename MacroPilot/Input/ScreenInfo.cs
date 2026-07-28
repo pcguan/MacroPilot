@@ -17,6 +17,12 @@ public static class ScreenInfo
         public bool Contains(int x, int y) => x >= Left && x < Right && y >= Top && y < Bottom;
         // 自定义屏幕编号：由 All() 按位置从左到右、从上到下重新赋值（1 起、连续），不依赖 \\.\DISPLAYn。
         public int Number { get; set; }
+        // 工作区（扣掉任务栏等 appbar）。覆盖层上摆浮动工具条要用它：任务栏也是置顶窗口，
+        // 摆进任务栏那条带子里会被它盖住（看起来"工具条不见了"）。默认＝整屏，由 All() 填真值。
+        public int WorkLeft { get; set; }
+        public int WorkTop { get; set; }
+        public int WorkRight { get; set; }
+        public int WorkBottom { get; set; }
         public string Label => $"屏幕 {(Number > 0 ? Number.ToString() : "?")}" + (Primary ? "（主）" : "") + $"  {Width}×{Height}";
     }
 
@@ -28,7 +34,11 @@ public static class ScreenInfo
             var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
             if (GetMonitorInfo(h, ref mi))
                 list.Add(new Monitor(mi.szDevice, mi.rcMonitor.Left, mi.rcMonitor.Top,
-                    mi.rcMonitor.Right, mi.rcMonitor.Bottom, (mi.dwFlags & MONITORINFOF_PRIMARY) != 0));
+                    mi.rcMonitor.Right, mi.rcMonitor.Bottom, (mi.dwFlags & MONITORINFOF_PRIMARY) != 0)
+                {
+                    WorkLeft = mi.rcWork.Left, WorkTop = mi.rcWork.Top,
+                    WorkRight = mi.rcWork.Right, WorkBottom = mi.rcWork.Bottom,
+                });
             return true;
         }, IntPtr.Zero);
         // 按位置从左到右、从上到下重新编号（1 起、连续），标签与"标识"浮层一致。
@@ -51,7 +61,8 @@ public static class ScreenInfo
     {
         foreach (var m in All()) if (m.Primary) return m;
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
-        return new Monitor("", 0, 0, w > 0 ? w : 1920, h > 0 ? h : 1080, true);
+        int pw = w > 0 ? w : 1920, ph = h > 0 ? h : 1080;
+        return new Monitor("", 0, 0, pw, ph, true) { WorkRight = pw, WorkBottom = ph };
     }
 
     public static Monitor ByDevice(string device)

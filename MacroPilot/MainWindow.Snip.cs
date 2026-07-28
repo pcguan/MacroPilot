@@ -121,29 +121,57 @@ public partial class MainWindow
             return (w, h);
         }
 
-        /// <summary>贴着选区摆：优先下方，放不下翻到上方，再放不下（选区占满屏）就压进选区内部右下角。</summary>
-        public void LayoutFor(double x, double y, double w, double h, double canvasW, double canvasH)
+        /// <summary>
+        /// 贴着选区摆：优先下方，放不下翻到上方，再放不下（选区占满屏）就压进选区内部右下角。
+        /// <paramref name="bounds"/> 是可摆放范围，必须传【选区所在那块屏的工作区】而不是整个画布：
+        /// ① 跨屏画布上"选区下方"可能落到另一块屏甚至屏幕之间的空档里；
+        /// ② 最大化窗口的下边缘正好压着任务栏，塞进那条带子会被任务栏（同为置顶窗口）盖住。
+        /// </summary>
+        public void LayoutFor(WRect sel, WRect bounds)
         {
             Bar.Visibility = Visibility.Visible;
             var (tw, th) = Size();
-            double bx = Math.Clamp(x + w - tw, 0, Math.Max(0, canvasW - tw));
+            double bx = Math.Clamp(sel.Right - tw, bounds.X, Math.Max(bounds.X, bounds.Right - tw));
             double by;
-            if (y + h + Gap + th <= canvasH) by = y + h + Gap;                 // 选区下方
-            else if (y - Gap - th >= 0) by = y - Gap - th;                     // 选区上方
-            else by = Math.Clamp(y + h - th - Gap, 0, Math.Max(0, canvasH - th - Gap));   // 压进选区内部
+            if (sel.Bottom + Gap + th <= bounds.Bottom) by = sel.Bottom + Gap;                 // 选区下方
+            else if (sel.Y - Gap - th >= bounds.Y) by = sel.Y - Gap - th;                      // 选区上方
+            else by = Math.Clamp(sel.Bottom - th - Gap, bounds.Y, Math.Max(bounds.Y, bounds.Bottom - th - Gap));   // 压进选区内部
             Canvas.SetLeft(Bar, bx); Canvas.SetTop(Bar, by);
         }
 
-        /// <summary>没有选区时的落位：画布底部居中。</summary>
-        public void LayoutBottomCenter(double canvasW, double canvasH)
+        /// <summary>没有选区时的落位：可摆放范围内底部居中。</summary>
+        public void LayoutBottomCenter(WRect bounds)
         {
             Bar.Visibility = Visibility.Visible;
             var (tw, th) = Size();
-            Canvas.SetLeft(Bar, Math.Max(0, (canvasW - tw) / 2));
-            Canvas.SetTop(Bar, Math.Max(0, canvasH - th - 40));
+            Canvas.SetLeft(Bar, Math.Max(bounds.X, bounds.X + (bounds.Width - tw) / 2));
+            Canvas.SetTop(Bar, Math.Max(bounds.Y, bounds.Bottom - th - 40));
         }
 
         public void Hide() => Bar.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// 画布(DIP)上某点所在那块屏的【工作区】矩形，同样换算到画布坐标系；点不在任何屏内则退回整个画布。
+    /// 覆盖层铺满整个虚拟桌面，直接拿画布边界摆浮动条会摆到别的屏或任务栏底下，见 OverlayToolbar.LayoutFor。
+    /// </summary>
+    private static WRect WorkAreaOnCanvas(WPoint p, int ox, int oy, double r, double canvasW, double canvasH)
+    {
+        foreach (var m in Input.ScreenInfo.All())
+        {
+            double x = (m.Left - ox) / r, y = (m.Top - oy) / r, w = m.Width / r, h = m.Height / r;
+            if (p.X < x || p.X > x + w || p.Y < y || p.Y > y + h) continue;
+            double ww = (m.WorkRight - m.WorkLeft) / r, wh = (m.WorkBottom - m.WorkTop) / r;
+            return ww > 1 && wh > 1 ? new WRect((m.WorkLeft - ox) / r, (m.WorkTop - oy) / r, ww, wh) : new WRect(x, y, w, h);
+        }
+        return new WRect(0, 0, canvasW, canvasH);
+    }
+
+    /// <summary>当前光标位置换算到覆盖层画布(DIP)坐标。</summary>
+    private static WPoint CursorOnCanvas(int ox, int oy, double r)
+    {
+        var (cx, cy) = Input.ScreenInfo.CursorPos();
+        return new WPoint((cx - ox) / r, (cy - oy) / r);
     }
 
     private (byte[] png, int vx, int vy, int w, int h)? CaptureTargetImage(Window dialog)
@@ -268,7 +296,9 @@ public partial class MainWindow
         void LayoutToolbar()
         {
             if (!pick.Has || pick.W < 2 || pick.H < 2) { toolbar.Hide(); return; }
-            toolbar.LayoutFor(pick.X, pick.Y, pick.W, pick.H, snapImg.ActualWidth, snapImg.ActualHeight);
+            var selR = new WRect(pick.X, pick.Y, pick.W, pick.H);
+            var mid = new WPoint(selR.X + selR.Width / 2, selR.Y + selR.Height / 2);
+            toolbar.LayoutFor(selR, WorkAreaOnCanvas(mid, ox, oy, PixPerDip(), snapImg.ActualWidth, snapImg.ActualHeight));
         }
         void LayoutAnnotSel()
         {

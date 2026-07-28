@@ -343,7 +343,12 @@
       </Style>
 
       <Style x:Key="{x:Type TextBox}" TargetType="{x:Type TextBox}">
-        <Setter Property="Padding" Value="8,4" />
+        <!-- 字号与按钮/下拉一致(14)；【垂直内边距必须为 0】：框高多是写死的 30/32，
+             上下各留 4 的话可用高度只剩 20，中文行盒放不下就会被裁掉一截（看起来"字被遮住"）。
+             垂直方向交给 VerticalContentAlignment=Center 居中，怎么变高都不会切字。 -->
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="Padding" Value="10,0" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="BorderBrush" Value="{DynamicResource Line}" />
         <Setter Property="BorderThickness" Value="1" />
@@ -385,6 +390,7 @@
       <Style x:Key="BareTextBox" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
         <Setter Property="Padding" Value="10,0,0,0" />
       </Style>
       <Style x:Key="StepperButton" TargetType="{x:Type RepeatButton}">
@@ -462,7 +468,8 @@
 
       <Style x:Key="{x:Type ComboBox}" TargetType="{x:Type ComboBox}">
         <Setter Property="Height" Value="34" />
-        <Setter Property="Padding" Value="8,4" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Padding" Value="10,0" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Foreground" Value="{DynamicResource Ink}" />
         <Setter Property="Template">
@@ -485,6 +492,7 @@
       <!-- 可编辑 ComboBox：含 PART_EditableTextBox，支持输入过滤。右侧放下拉箭头，其余为文本框。 -->
       <Style x:Key="EditableComboBox" TargetType="{x:Type ComboBox}">
         <Setter Property="Height" Value="34" />
+        <Setter Property="FontSize" Value="14" />
         <Setter Property="Foreground" Value="{DynamicResource Ink}" />
         <Setter Property="IsEditable" Value="True" />
         <Setter Property="Template">
@@ -519,7 +527,8 @@
 
       <Style x:Key="{x:Type ComboBoxItem}" TargetType="{x:Type ComboBoxItem}">
         <Setter Property="Foreground" Value="{DynamicResource Ink}" />
-        <Setter Property="Padding" Value="8,5" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Padding" Value="10,6" />
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="{x:Type ComboBoxItem}">

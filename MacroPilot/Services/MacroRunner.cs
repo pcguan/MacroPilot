@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
 using MacroPilot.Input;
@@ -557,6 +557,7 @@ public sealed class MacroRunner
                 break;
             // 点击图片 = 在限制区域内搜模板 → 取第 N 个命中 → 移到其中心 → 点击。找不到/不足 N 个则本步失败（走失败监听、不中断方案）。
             case "MouseClickImage": ClickImage(step, ct); break;
+            case "MouseMoveImage": MoveToImage(step, ct); break;
             case "TextInput": TypeText(step, ct); break;
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
             // 跳转动作：上报给 RunTop，在当前顶层步骤结束后跳到目标序号（在组合内/监听里执行也生效）。
@@ -663,11 +664,28 @@ public sealed class MacroRunner
         return ok;
     }
 
-    // 点击图片：区域内搜模板 → 第 N 个命中 → 移到中心 → 点击。
+    // 点击图片：定位 → 移到中心 → 点击。移动图片：只定位 + 移动，不点击（两者共用 LocateImage）。
     private void ClickImage(MacroStep step, CancellationToken ct)
     {
+        var (cx, cy) = LocateImage(step, "点击图片", ct);
+        ct.ThrowIfCancellationRequested();
+        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
+        ct.ThrowIfCancellationRequested();
+        _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
+    }
+
+    private void MoveToImage(MacroStep step, CancellationToken ct)
+    {
+        var (cx, cy) = LocateImage(step, "移动图片", ct);
+        ct.ThrowIfCancellationRequested();
+        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
+    }
+
+    // 区域内搜模板 → 返回第 N 个命中的中心点。label 只用于日志/报错措辞。
+    private (int cx, int cy) LocateImage(MacroStep step, string label, CancellationToken ct)
+    {
         var bytes = ImageStore.Bytes(step.ClickImage);
-        if (bytes == null) throw new InvalidOperationException("点击图片：未设置模板图片。");
+        if (bytes == null) throw new InvalidOperationException($"{label}：未设置模板图片。");
 
         // 限制区域：屏内相对像素 → 按该屏当前位置还原绝对区域；未设区域则搜整块绑定屏（默认主屏；
         // 绑定屏在本机不存在时 ByDevice 已回退主屏——常见于方案导入自别的主机）。
@@ -681,7 +699,7 @@ public sealed class MacroRunner
             rx = Math.Max(rx, mon.Left); ry = Math.Max(ry, mon.Top);
             rw = right - rx; rh = bottom - ry;
             if (rw <= 0 || rh <= 0)
-                throw new InvalidOperationException("点击图片：限制区域不在当前屏幕范围内（方案可能导入自分辨率不同的主机），请重新设置限制区域。");
+                throw new InvalidOperationException($"{label}：限制区域不在当前屏幕范围内（方案可能导入自分辨率不同的主机），请重新设置限制区域。");
         }
         else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
 
@@ -693,22 +711,19 @@ public sealed class MacroRunner
 
         if (hits.Count == 0)
             throw new InvalidOperationException(best > 0
-                ? $"点击图片：区域内未找到匹配（最高相似度 {best:0.00} / 阈值 {thr:0.00}）。"
-                : $"点击图片：区域内未找到匹配（最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}）。");
+                ? $"{label}：区域内未找到匹配（最高相似度 {best:0.00} / 阈值 {thr:0.00}）。"
+                : $"{label}：区域内未找到匹配（最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}）。");
         int idx = Math.Max(1, step.ClickImageIndex);
         if (idx > hits.Count)
-            throw new InvalidOperationException($"点击图片：只找到 {hits.Count} 个匹配，不足第 {idx} 个。");
+            throw new InvalidOperationException($"{label}：只找到 {hits.Count} 个匹配，不足第 {idx} 个。");
 
         var (cx, cy, score) = hits[idx - 1];
         // 多命中时把各处坐标列出来（最多 5 个）——"点错了第几个"一眼能对出来。
         string detail = hits.Count > 1
             ? "（" + string.Join("、", hits.GetRange(0, Math.Min(5, hits.Count)).ConvertAll(h => $"({h.cx},{h.cy})")) + (hits.Count > 5 ? "…" : "") + "）"
             : "";
-        Log?.Invoke("Info", $"点击图片：命中 {hits.Count} 个{detail}，点第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}。");
-        ct.ThrowIfCancellationRequested();
-        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
-        ct.ThrowIfCancellationRequested();
-        _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
+        Log?.Invoke("Info", $"{label}：命中 {hits.Count} 个{detail}，取第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}。");
+        return (cx, cy);
     }
 
     // 落点偏移：在目标点周围半径 radius 像素的圆盘内均匀随机取一点（clamp 回目标所在屏），0=精确命中。

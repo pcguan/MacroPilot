@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -705,6 +705,8 @@ public partial class MainWindow
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         System.Threading.Thread.Sleep(120);
+        // 自动框窗用的窗口矩形表：必须在【覆盖层显示之前】枚举（覆盖层置顶后只会命中它自己）。
+        var winRects = EnumWindowRects();
         var (ox, oy, vw, vh) = VirtualBounds();
         var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
 
@@ -719,7 +721,13 @@ public partial class MainWindow
         var canvas = new Canvas();
         var box = new System.Windows.Shapes.Rectangle { Stroke = accent, StrokeThickness = 2, Fill = new SolidColorBrush(Color.FromArgb(0x18, 0x8A, 0x78, 0x60)), IsHitTestVisible = false };
         var sizeLbl = new TextBlock { Foreground = Brushes.White, FontSize = 12, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(6, 3, 6, 3), IsHitTestVisible = false };
-        canvas.Children.Add(box); canvas.Children.Add(sizeLbl);
+        // 没有既有区域时的自动框窗高亮（与截图覆盖层同款虚线框）
+        var autoBox = new System.Windows.Shapes.Rectangle
+        {
+            Stroke = accent, StrokeThickness = 2, StrokeDashArray = new DoubleCollection { 4, 3 },
+            Fill = new SolidColorBrush(Color.FromArgb(0x18, 0x8A, 0x78, 0x60)), Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+        };
+        canvas.Children.Add(autoBox); canvas.Children.Add(box); canvas.Children.Add(sizeLbl);
         // 四角缩放手柄（纯视觉，命中判定由下方几何算，不依赖控件命中）
         var handles = new System.Windows.Shapes.Rectangle[4];
         for (int i = 0; i < 4; i++)
@@ -752,16 +760,21 @@ public partial class MainWindow
         void Layout()
         {
             pick.Clamp(snapImg.ActualWidth, snapImg.ActualHeight);
+            var vis = pick.Has ? Visibility.Visible : Visibility.Collapsed;   // 自动框窗阶段先不画 0 尺寸的空框
+            box.Visibility = vis; sizeLbl.Visibility = vis;
             Canvas.SetLeft(box, pick.X); Canvas.SetTop(box, pick.Y); box.Width = pick.W; box.Height = pick.H;
             double[] hx = { pick.X, pick.X + pick.W, pick.X, pick.X + pick.W };
             double[] hy = { pick.Y, pick.Y, pick.Y + pick.H, pick.Y + pick.H };
-            for (int i = 0; i < 4; i++) { Canvas.SetLeft(handles[i], hx[i] - 6); Canvas.SetTop(handles[i], hy[i] - 6); }
+            for (int i = 0; i < 4; i++) { handles[i].Visibility = vis; Canvas.SetLeft(handles[i], hx[i] - 6); Canvas.SetTop(handles[i], hy[i] - 6); }
             double r = R();
             int px = ox + (int)Math.Round(pick.X * r), py = oy + (int)Math.Round(pick.Y * r);
             sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(pick.W * r)}×{(int)Math.Round(pick.H * r)}";
             Canvas.SetLeft(sizeLbl, pick.X); Canvas.SetTop(sizeLbl, Math.Max(0, pick.Y - 24));
-            if (pick.Has && pick.W >= 2 && pick.H >= 2) toolbar.LayoutFor(pick.X, pick.Y, pick.W, pick.H, snapImg.ActualWidth, snapImg.ActualHeight);
-            else toolbar.LayoutBottomCenter(snapImg.ActualWidth, snapImg.ActualHeight);   // 还没框选也要够得着取消/完成
+            var area = WorkAreaOnCanvas(
+                pick.Has ? new System.Windows.Point(pick.X + pick.W / 2, pick.Y + pick.H / 2) : CursorOnCanvas(ox, oy, r),
+                ox, oy, r, snapImg.ActualWidth, snapImg.ActualHeight);
+            if (pick.Has && pick.W >= 2 && pick.H >= 2) toolbar.LayoutFor(new System.Windows.Rect(pick.X, pick.Y, pick.W, pick.H), area);
+            else toolbar.LayoutBottomCenter(area);   // 还没框选也要够得着取消/完成
         }
         // 回退：每次改动（拖拽一次 / 键盘微调一次）前压一份矩形快照，撤销即还原上一份。
         var hist = new List<(double x, double y, double w, double h, bool has)>();
@@ -779,6 +792,14 @@ public partial class MainWindow
         // 之后正确尺寸到位也不再重算——表现成"有数据却要重新手动画框"。
         // 改为：用户第一次上手（按下鼠标/键盘微调）之前，每轮尺寸变化都从【原始虚拟像素】重新推导。
         bool touched = false;
+        // 没有既有区域时，与截图覆盖层同款：悬停自动框住窗口，点一下＝采用它，拖拽＝自己画框（拖了就等于放弃自动识别）。
+        bool autoPickable = !(curW is int w0 && w0 > 0 && curH is int h0 && h0 > 0);
+        System.Windows.Rect? autoCandidate = null;
+        System.Windows.Point downPt = default;
+        bool dragMoved = false;
+        const double DragSlop = 4;
+        const string HintAdjust = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· Ctrl+Z 回退 · 回车确定 · Esc 取消";
+        if (autoPickable) hint.Text = "还没有区域：移动到目标窗口上会自动框选，点一下即采用 · 也可直接拖拽自己框 · Esc 取消";
         void SyncFromCur()
         {
             if (touched || snapImg.ActualWidth < 1 || snapImg.ActualHeight < 1) return;
@@ -788,7 +809,7 @@ public partial class MainWindow
                 pick.X = ((curVx ?? ox) - ox) / r; pick.Y = ((curVy ?? oy) - oy) / r;
                 pick.W = cW / r; pick.H = cH / r; pick.Has = true;   // 有区域→画出既有框（可拖动/调边界）
             }
-            else { pick.X = pick.Y = pick.W = pick.H = 0; pick.Has = false; }   // 无区域→自行拖拽画
+            else { pick.X = pick.Y = pick.W = pick.H = 0; pick.Has = false; }   // 无区域→自动框窗 / 自行拖拽画
             Layout();
         }
         snapImg.SizeChanged += (_, _) => SyncFromCur();
@@ -798,20 +819,65 @@ public partial class MainWindow
         overlay.MouseLeftButtonDown += (_, e) =>
         {
             if (toolbar.HitTest(e.GetPosition(toolbar.Bar))) return;   // 点在工具条上交给按钮
+            var p = e.GetPosition(snapImg);
             touched = true;   // 用户上手后初始框停止跟随布局重算
             PushHist();       // 本次拖拽前的状态，供回退
-            pick.Begin(e.GetPosition(snapImg));
+            downPt = p; dragMoved = false;
+            pick.Begin(p);    // 两种意图都先保留：松手时按位移判定是"点选窗口"还是"自己画框"
             overlay.CaptureMouse(); e.Handled = true;
-            Layout();
+            if (!autoPickable) Layout();
         };
         overlay.MouseMove += (_, e) =>
         {
             var p = e.GetPosition(snapImg);
-            if (!pick.Dragging) { overlay.Cursor = RectPicker.CursorFor(pick.HitTest(p)); return; }
-            pick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight);
+            if (pick.Dragging)
+            {
+                if (!dragMoved && (Math.Abs(p.X - downPt.X) > DragSlop || Math.Abs(p.Y - downPt.Y) > DragSlop))
+                {
+                    dragMoved = true;                 // 开始拖拽＝放弃自动识别
+                    autoCandidate = null;
+                    autoBox.Visibility = Visibility.Collapsed;
+                }
+                if (dragMoved || !autoPickable) { pick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight); Layout(); }
+                return;
+            }
+            if (pick.Has || !autoPickable) { overlay.Cursor = RectPicker.CursorFor(pick.HitTest(p)); return; }
+            // 还没有区域：高亮光标下最上层的那个窗口，点一下即采用
+            overlay.Cursor = Cursors.Cross;
+            double r = R();
+            var hitR = HitWindow(winRects, ox + (int)Math.Round(p.X * r), oy + (int)Math.Round(p.Y * r));
+            if (hitR is { } wr)
+            {
+                double bx = (wr.X - ox) / r, by = (wr.Y - oy) / r, bw = wr.Width / r, bh = wr.Height / r;
+                autoCandidate = new System.Windows.Rect(bx, by, bw, bh);
+                Canvas.SetLeft(autoBox, bx); Canvas.SetTop(autoBox, by);
+                autoBox.Width = bw; autoBox.Height = bh; autoBox.Visibility = Visibility.Visible;
+                sizeLbl.Visibility = Visibility.Visible;
+                sizeLbl.Text = $"({(int)wr.X}, {(int)wr.Y})  {(int)wr.Width}×{(int)wr.Height}";
+                Canvas.SetLeft(sizeLbl, bx); Canvas.SetTop(sizeLbl, Math.Max(0, by - 24));
+            }
+            else { autoCandidate = null; autoBox.Visibility = Visibility.Collapsed; sizeLbl.Visibility = Visibility.Collapsed; }
+        };
+        overlay.MouseLeftButtonUp += (_, _) =>
+        {
+            if (!pick.Dragging) return;
+            pick.End();
+            overlay.ReleaseMouseCapture();
+            if (autoPickable)
+            {
+                if (!dragMoved && autoCandidate is { } wr)
+                { pick.X = wr.X; pick.Y = wr.Y; pick.W = wr.Width; pick.H = wr.Height; pick.Has = true; }   // 一次点击→采用高亮窗口
+                if (pick.W >= 2 && pick.H >= 2)
+                {
+                    autoPickable = false;
+                    autoCandidate = null;
+                    autoBox.Visibility = Visibility.Collapsed;
+                    hint.Text = HintAdjust;
+                }
+                else pick.Has = false;   // 空点一下：继续留在自动识别阶段
+            }
             Layout();
         };
-        overlay.MouseLeftButtonUp += (_, _) => { if (pick.Dragging) { pick.End(); overlay.ReleaseMouseCapture(); } };
 
         // 结果在【窗口仍显示时】就地算好并存起来——关窗后 snapImg.ActualWidth 会变 0、R() 失真，
         // 那正是"编辑后回来区域没变/不对"的根因。
@@ -863,9 +929,9 @@ public partial class MainWindow
         var row = new DockPanel { Margin = new Thickness(0, 4, 0, 4), LastChildFill = true };
         var lbl = new TextBlock { Text = label, Width = 100, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
         DockPanel.SetDock(lbl, Dock.Left); row.Children.Add(lbl);
-        var clearBtn = new Button { Content = "清除", Width = 56, Height = 30, Margin = new Thickness(8, 0, 0, 0) };
+        var clearBtn = new Button { Content = "清除", Width = 56, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         DockPanel.SetDock(clearBtn, Dock.Right); row.Children.Add(clearBtn);
-        var setBtn = new Button { Content = "设置", Width = 56, Height = 30, Margin = new Thickness(8, 0, 0, 0) };
+        var setBtn = new Button { Content = "设置", Width = 56, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         DockPanel.SetDock(setBtn, Dock.Right); row.Children.Add(setBtn);
         // 摘要自动换行（不再 … 截断）：配置复杂的监听动作描述很长，让它多行显示看全，与外层文本一致。
         var summary = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("Muted") };
@@ -906,7 +972,7 @@ public partial class MainWindow
         logicCombo.Items.Clear();
         logicCombo.Items.Add(new ComboBoxItem { Content = "全部满足（与）", Tag = "And" });
         logicCombo.Items.Add(new ComboBoxItem { Content = "任一满足（或）", Tag = "Or" });
-        logicCombo.Height = 30; logicCombo.Width = 150;
+        logicCombo.Height = 32; logicCombo.Width = 150;
         if (logicCombo.SelectedIndex < 0) logicCombo.SelectedIndex = 0;
         var logicRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
         logicRow.Children.Add(new TextBlock { Text = "满足方式", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
@@ -916,7 +982,7 @@ public partial class MainWindow
         // ---- 条件列表 ----
         var listPanel = new StackPanel();
         detail.Children.Add(listPanel);
-        var addBtn = new Button { Content = "添加条件", Height = 30, MinWidth = 88, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 0) };
+        var addBtn = new Button { Content = "添加条件", Height = 32, MinWidth = 88, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 0) };
         detail.Children.Add(addBtn);
         var emptyNote = new TextBlock
         {
@@ -971,8 +1037,8 @@ public partial class MainWindow
         // ---- 重复检查（对整组条件生效）----
         retry.Content = "条件不满足时重复检查，直到满足";
         retry.Margin = new Thickness(0, 14, 0, 0);
-        retryInterval.Width = 84; retryInterval.Height = 30; retryInterval.Text = "1000";
-        retryMax.Width = 74; retryMax.Height = 30; retryMax.Text = "0";
+        retryInterval.Width = 84; retryInterval.Height = 32; retryInterval.Text = "1000";
+        retryMax.Width = 74; retryMax.Height = 32; retryMax.Text = "0";
         var rrow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
         rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
         rrow.Children.Add(retryInterval);
@@ -1204,7 +1270,7 @@ public partial class MainWindow
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("点击坐标"); mouseActionCombo.Items.Add("点击图片");
-        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
+        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("移动图片"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
         var keyActionCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         keyActionCombo.Items.Add("按键"); keyActionCombo.Items.Add("文本"); keyActionCombo.SelectedIndex = 0;
@@ -1571,7 +1637,7 @@ public partial class MainWindow
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、带坐标的鼠标动作。只有一块屏时不自动标（没意义），手动「标识屏幕」按钮不受影响。
-            bool coordView = Act() is "移动" or "拖动" or "点击坐标" or "点击图片";
+            bool coordView = Act() is "移动" or "拖动" or "点击坐标" or "点击图片" or "移动图片";
             bool needScreens = (RunAct() == "激活窗口" || coordView) && ScreenInfo.All().Count > 1;
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
@@ -1591,6 +1657,8 @@ public partial class MainWindow
             jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
             // 点击=纯点击（无坐标）；点击坐标=先移动到坐标再点；点击图片=区域内搜图再点。移动/拖动/点击坐标必须有坐标。
             bool isMove = a == "移动", isClick = a == "点击", isClickAt = a == "点击坐标", isClickImage = a == "点击图片", isDrag = a == "拖动", isWheel = a == "滚轮";
+            bool isMoveImage = a == "移动图片";                 // 与点击图片同一套图片设置，只是到位后不点击
+            bool anyImage = isClickImage || isMoveImage;
             bool coordForced = isMove || isDrag || isClickAt;   // 这三种强制有坐标
             if (coordForced && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
             coordCheck.IsEnabled = false;   // 坐标显隐完全由动作类型决定，勾选框不再交互
@@ -1603,11 +1671,11 @@ public partial class MainWindow
             bool anyClick = isClick || isClickAt || isClickImage;
             mouseButtonPanel.Visibility = anyClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
             mouseMovePanel.Visibility = coordForced ? Visibility.Visible : Visibility.Collapsed;   // 纯点击/点击图片无坐标块
-            clickImagePanel.Visibility = isClickImage ? Visibility.Visible : Visibility.Collapsed;
+            clickImagePanel.Visibility = anyImage ? Visibility.Visible : Visibility.Collapsed;
             mouseHoldPanel.Visibility = anyClick ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = isWheel ? Visibility.Visible : Visibility.Collapsed;
             // 拟人化在会发生移动到目标时有意义：点击坐标/移动/拖动/点击图片（落点偏移已并入坐标块，仅坐标块场景有）。
-            humanizePanel.Visibility = coordForced || isClickImage ? Visibility.Visible : Visibility.Collapsed;
+            humanizePanel.Visibility = coordForced || anyImage ? Visibility.Visible : Visibility.Collapsed;
 
             bool hasRepeat = anyClick || isWheel;
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
@@ -1714,6 +1782,13 @@ public partial class MainWindow
                         FillButton(result);
                         mouseRepeat.Apply(result);
                         ApplyHoldDefault();
+                    }
+                    else if (a == "移动图片")   // 区域内搜图 → 只把光标移到第 N 个命中处
+                    {
+                        result = new MacroStep { Type = "MouseMoveImage" };
+                        clickImage.Apply(result);   // 校验缺图会抛异常，下面统一提示
+                        result.Humanize = humanizeMoveCheck.IsChecked == true;
+                        result.LoopCount = 1;       // 与「移动」一致：没有次数概念
                     }
                     else if (a == "点击图片")   // 区域内搜图 → 点第 N 个
                     {
@@ -1828,6 +1903,7 @@ public partial class MainWindow
                 case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; LoadButtonFields(); break;
                 case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击坐标"; LoadMoveFields(); LoadButtonFields(); break;
                 case "MouseClickImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; LoadButtonFields(); break;
+                case "MouseMoveImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; break;
                 case "MouseDrag":
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动";
                     coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields();
@@ -2088,14 +2164,14 @@ public partial class MainWindow
         {
             _dim = dim; _notchBg = (Brush)o.FindResource(notchBgKey);
             Brush B(string k) => (Brush)o.FindResource(k);
-            _box = new TextBox { BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Width = 30, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 0, 0, 0), VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink") };
+            _box = new TextBox { BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Width = 38, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 0, 0, 0), VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink") };
             _unit = new TextBlock { Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 8, 0), ToolTip = "点击切换 % / DP（屏内像素）" };
             _lbl = new TextBlock { Text = label, Foreground = B("Muted") };
             _lblBg = new Border { Child = _lbl, HorizontalAlignment = HorizontalAlignment.Left };
 
             var grid = new Grid { Height = 40 };
             grid.Children.Add(_box); grid.Children.Add(_unit); grid.Children.Add(_lblBg);
-            Root = new Border { BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 74, Child = grid };
+            Root = new Border { BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 82, Child = grid };
 
             _box.GotFocus += (_, _) => Render();
             _box.LostFocus += (_, _) => { Render(); Committed?.Invoke(); };
@@ -2107,7 +2183,7 @@ public partial class MainWindow
         private void Render()
         {
             bool active = _box.IsFocused || !string.IsNullOrEmpty(_box.Text);
-            _lbl.FontSize = active ? 10 : 13;
+            _lbl.FontSize = active ? 11 : 14;
             _lblBg.VerticalAlignment = active ? VerticalAlignment.Top : VerticalAlignment.Center;
             _lblBg.Margin = active ? new Thickness(6, -8, 0, 0) : new Thickness(10, 0, 0, 0);
             _lblBg.Padding = active ? new Thickness(3, 0, 3, 0) : new Thickness(0);
@@ -2138,17 +2214,17 @@ public partial class MainWindow
         private readonly Border _thumbBorder;
         private readonly TextBlock _imgStatus, _regionHint;
         // 锚定屏下拉：手动调参（填四边）时指定基准屏；截图/编辑区域自动识别后自动跟随。
-        private readonly ComboBox _monCombo = new() { Height = 30, VerticalAlignment = VerticalAlignment.Center };
+        private readonly ComboBox _monCombo = new() { Height = 32, VerticalAlignment = VerticalAlignment.Center };
         // 限制区域四边（尖角浮标输入格，值内部统一为屏内像素）：左/右/上/下。构造时 new（需 dim 委托）。
         private EdgeCell _left = null!, _right = null!, _top = null!, _bottom = null!;
         // 相似度阈值：复用运行条件那套百分比文本框（越高越严格），默认 90。
-        private readonly TextBox _thrText = new() { Width = 64, Height = 30, Text = "90" };
-        private readonly TextBox _index = new() { Text = "1", Width = 64, Height = 30 };
+        private readonly TextBox _thrText = new() { Width = 68, Height = 32, Text = "90" };
+        private readonly TextBox _index = new() { Text = "1", Width = 68, Height = 32 };
         private readonly Button _previewBtn;
         private bool _syncing;   // 防"区域→四边框→区域"回填递归
         public readonly Border Panel;
 
-        public double Threshold => Math.Clamp(ParseInt(_thrText.Text, 90) / 100.0, 0.1, 1.0);
+        public double Threshold => Math.Clamp(ParseInt(_thrText.Text, 90), 10, 100) / 100.0;
         public int Index => Math.Max(1, ParseInt(_index.Text, 1));
         public bool HasImage => Png != null && Png.Length > 0;
 
@@ -2245,6 +2321,7 @@ public partial class MainWindow
             // —— 相似度阈值（复用运行条件风格：百分比文本框）——
             var thrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
             thrRow.Children.Add(new TextBlock { Text = "相似度阈值(%)", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+            NumericBox(_thrText, 10, 100, 90);   // 相似度是百分比，填不进 100 以上
             thrRow.Children.Add(_thrText);
             thrRow.Children.Add(new TextBlock { Text = "（越高越严格）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)o.FindResource("Muted"), FontSize = 12, Margin = new Thickness(8, 0, 0, 0) });
             inner.Children.Add(thrRow);
@@ -2252,6 +2329,7 @@ public partial class MainWindow
             // —— 匹配第几（标签 + 输入框同一行）——
             var idxRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
             idxRow.Children.Add(new TextBlock { Text = "匹配第几个", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+            NumericBox(_index, 1, 999, 1);
             idxRow.Children.Add(_index);
             if (withIndex)
             {
@@ -2410,7 +2488,7 @@ public partial class MainWindow
 
         public void Apply(MacroStep s)
         {
-            if (!HasImage) throw new InvalidOperationException("请先设置「点击图片」的目标图片（截图 / 导入 / 粘贴）。");
+            if (!HasImage) throw new InvalidOperationException("请先设置目标图片（截图 / 导入 / 粘贴）。");
             s.ClickImage = ImageStore.Ref(Png!);
             s.ClickImageMonitor = Monitor; s.ClickImageRectX = RelX; s.ClickImageRectY = RelY; s.ClickImageRectW = W; s.ClickImageRectH = H;
             s.ClickImageThreshold = Threshold; s.ClickImageIndex = Index;

@@ -2553,6 +2553,21 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         return cur as T;
     }
     private static int ParseInt(string? s, int def) => int.TryParse((s ?? "").Trim(), out var v) ? v : def;
+
+    /// <summary>
+    /// 把一个文本框约束成整数输入：只收数字、失焦时夹到 [min,max] 并回写。
+    /// 光有取值时 Clamp 不够——框里还留着 150 而实际按 100 执行，用户以为设的是 150。
+    /// </summary>
+    private static void NumericBox(TextBox box, int min, int max, int def)
+    {
+        box.PreviewTextInput += (_, e) => { foreach (var c in e.Text) if (!char.IsDigit(c)) { e.Handled = true; return; } };
+        DataObject.AddPastingHandler(box, (_, e) =>
+        {
+            var t = e.DataObject.GetData(typeof(string)) as string ?? "";
+            foreach (var c in t) if (!char.IsDigit(c)) { e.CancelCommand(); return; }
+        });
+        box.LostFocus += (_, _) => box.Text = Math.Clamp(ParseInt(box.Text, def), min, max).ToString();
+    }
     private static double ParseDouble(string? s, double def) => double.TryParse((s ?? "").Trim(), out var v) ? v : def;
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
     private static string? TagOf(Selector cb) => (cb.SelectedItem as ComboBoxItem)?.Tag as string;
