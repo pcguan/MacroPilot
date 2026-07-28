@@ -336,7 +336,8 @@ public partial class MainWindow
         {
             var old = selAnnot;
             selAnnot = a;
-            if (old != null && !ReferenceEquals(old, a)) AddVisual(old);
+            // 只重绘仍在列表里的旧选中项：已被删除的不能再画回去（否则留下撤销也删不掉的残影）
+            if (old != null && !ReferenceEquals(old, a) && annots.Contains(old)) AddVisual(old);
             if (a != null) AddVisual(a);
             LayoutAnnotSel();
         }
@@ -372,7 +373,6 @@ public partial class MainWindow
             AddVisual(a);
             annots.Add(a);
             PushAdd(a);
-            SelectAnnot(a);
         }
         void StartText(WPoint p)
         {
@@ -485,23 +485,30 @@ public partial class MainWindow
         }
 
         // ---- 撤销：每一步（新增 / 改动 / 删除）压一个回滚闭包 ----
+        // 【删除必须先摘选中、且不能走 SelectAnnot】：SelectAnnot 会给"上一个选中项"重绘一遍高亮，
+        // 而这时它已经被删了 —— 视觉元素又被加回画布，且它已不在 annots 里，再撤销也删不掉
+        // （表现就是"撤销到底还剩几个图形赖着不走"）。
+        void Detach(Annot a)
+        {
+            if (ReferenceEquals(selAnnot, a)) { selAnnot = null; LayoutAnnotSel(); }
+            foreach (var v in a.Visuals) canvas.Children.Remove(v);
+            a.Visuals.Clear();
+        }
         void PushAdd(Annot a) => undoStack.Add(() =>
         {
-            foreach (var v in a.Visuals) canvas.Children.Remove(v);
+            Detach(a);
             annots.Remove(a);
-            if (selAnnot == a) SelectAnnot(null);
         });
         void PushGeom(Annot a, WPoint oa, WPoint ob, List<WPoint>? opn) => undoStack.Add(() =>
         {
             a.A = oa; a.B = ob; if (opn != null) a.Pen = opn;
             AddVisual(a);
-            if (selAnnot == a) LayoutAnnotSel();
+            if (ReferenceEquals(selAnnot, a)) LayoutAnnotSel();
         });
         void PushDelete(Annot a, int idx) => undoStack.Add(() =>
         {
             annots.Insert(Math.Min(idx, annots.Count), a);
-            AddVisual(a);
-            SelectAnnot(a);
+            SelectAnnot(a);   // 内部会 AddVisual
         });
         void Undo()
         {
@@ -514,35 +521,47 @@ public partial class MainWindow
         undoBtn.Click += (_, _) => Undo();
 
         // ---- 标注命中判定 ----
-        // 【只认边框，不认内部】：点在图形【轮廓】上才算命中它（选中 / 拖动），图形内部永远留给"接着画新图形"。
-        // 这样在一个矩形里再画一个矩形不会变成把外面那个拖走，也就不需要再为"有没有握着工具"分情况。
+        // 两段式，与常见画图工具一致：
+        //   ① 没选中它时：**只认轮廓**——点边框才选中它，图形内部不响应（内部留给"接着画新图形"）；
+        //   ② 选中之后：**内部＝整体移动、边/角＝缩放**（与选区框同一套语义，光标也一致）；点它以外的地方＝退出选中。
+        // 于是"画新图形"与"编辑已有图形"永远互斥：有选中就不画，要画先点空白退出选中。
         const double HitTol = 7;
-        // 返回 "new"（没命中）/ "move"（抓轮廓整体移动）/ 缩放手柄名 / 箭头端点 "a"|"b"
+        var scratch = new RectPicker();
+        // 返回 "new"（没命中）/ "select"（未选中态点到轮廓）/ "move" / 缩放抓取名 / 箭头端点 "a"|"b"
         string AnnotHit(Annot a, WPoint p)
         {
             bool sel = ReferenceEquals(a, selAnnot);
             if (a.Boxy)
             {
                 var b = a.Bounds;
-                if (sel) { var hh = Services.HitGeometry.HandleHit(b, p, HitTol); if (hh.Length > 0) return hh; }   // 手柄优先于轮廓
-                bool onEdge = a.Kind == "ellipse" ? Services.HitGeometry.NearEllipseOutline(b, p, HitTol) : Services.HitGeometry.NearRectOutline(b, p, HitTol);
-                return onEdge ? "move" : "new";
+                if (!sel)
+                {
+                    bool onEdge = a.Kind == "ellipse"
+                        ? Services.HitGeometry.NearEllipseOutline(b, p, HitTol)
+                        : Services.HitGeometry.NearRectOutline(b, p, HitTol);
+                    return onEdge ? "select" : "new";
+                }
+                scratch.X = b.X; scratch.Y = b.Y; scratch.W = b.Width; scratch.H = b.Height; scratch.Has = true;
+                return scratch.HitTest(p);   // 角/边→缩放，内部→move，外面→new
             }
             if (a.Kind == "arrow")
             {
                 if (sel && Math.Abs(p.X - a.A.X) <= HitTol && Math.Abs(p.Y - a.A.Y) <= HitTol) return "a";
                 if (sel && Math.Abs(p.X - a.B.X) <= HitTol && Math.Abs(p.Y - a.B.Y) <= HitTol) return "b";
-                return Services.HitGeometry.DistToSegment(p, a.A, a.B) <= HitTol ? "move" : "new";
+                if (Services.HitGeometry.DistToSegment(p, a.A, a.B) > HitTol) return "new";
+                return sel ? "move" : "select";
             }
             if (a.Kind == "pen")
             {
                 if (a.Pen is { Count: > 0 })
                     for (int i = 1; i < a.Pen.Count; i++)
-                        if (Services.HitGeometry.DistToSegment(p, a.Pen[i - 1], a.Pen[i]) <= HitTol) return "move";
+                        if (Services.HitGeometry.DistToSegment(p, a.Pen[i - 1], a.Pen[i]) <= HitTol)
+                            return sel ? "move" : "select";
                 return "new";
             }
             var bb = a.Bounds;   // 文字：本身就是一团字，整块都算它
-            return p.X >= bb.X - 2 && p.X <= bb.Right + 2 && p.Y >= bb.Y - 2 && p.Y <= bb.Bottom + 2 ? "move" : "new";
+            if (p.X < bb.X - 2 || p.X > bb.Right + 2 || p.Y < bb.Y - 2 || p.Y > bb.Bottom + 2) return "new";
+            return sel ? "move" : "select";
         }
         Annot? HitAnnot(WPoint p)
         {
@@ -557,17 +576,16 @@ public partial class MainWindow
         WPoint editDown = default, origA = default, origB = default;
         List<WPoint>? origPen = null;
         var boxPick = new RectPicker();
-        bool BeginAnnotEdit(Annot a, WPoint p)
+        bool BeginAnnotEdit(Annot a, WPoint p, string hit)
         {
-            string hit = AnnotHit(a, p);
-            if (hit == "new") return false;
+            if (hit is "new" or "select") return false;
             editing = a; editGrab = hit; editDown = p;
             origA = a.A; origB = a.B; origPen = a.Pen?.ToList();
             if (a.Boxy)
             {
                 var b = a.Bounds;
                 boxPick.X = b.X; boxPick.Y = b.Y; boxPick.W = b.Width; boxPick.H = b.Height; boxPick.Has = true;
-                boxPick.BeginWith(p, hit);   // 必须用我们算出来的 hit：轮廓上按下是 move，而 RectPicker 自己会判成"边"
+                boxPick.BeginWith(p, hit);   // 用调用方已判好的 hit，别让 RectPicker 自己再判一次
             }
             return true;
         }
@@ -616,25 +634,29 @@ public partial class MainWindow
         {
             var p = e.GetPosition(snapImg);
             if (toolbar.HitTest(e.GetPosition(toolbar.Bar))) return;   // 点在工具条上交给按钮
-            // ① 已选中的标注：手柄→改大小，轮廓→整体拖动（按下即开拖，选中和拖动是同一个手势的两段）
-            if (selAnnot != null && AnnotHit(selAnnot, p) != "new" && BeginAnnotEdit(selAnnot, p))
-            { overlay.CaptureMouse(); return; }
-            // ② 其它标注的【轮廓】：点中即选中并可直接拖走。握着绘制工具时同样有效——
-            //    因为只认轮廓，图形内部照样能接着画新的，不存在歧义。
+            // ① 有选中项时，它独占整个图形范围：内部＝整体移动、边/角＝缩放
+            if (selAnnot != null)
+            {
+                string hs = AnnotHit(selAnnot, p);
+                if (hs != "new" && BeginAnnotEdit(selAnnot, p, hs)) { overlay.CaptureMouse(); return; }
+                // 点到它以外 → 这一下【只负责退出选中】（顺手改选另一个图形）：不画新的、也不动截图选区。
+                // 「有选中就不画」是硬规则，想画先点空白退出选中。
+                SelectAnnot(HitAnnot(p));
+                return;
+            }
+            // ② 没有选中项：点某个图形的轮廓＝选中它（只选中，不拖动）
             var hitA = HitAnnot(p);
-            if (hitA != null) { SelectAnnot(hitA); BeginAnnotEdit(hitA, p); overlay.CaptureMouse(); return; }
-            // ③ 握着工具：画新的
+            if (hitA != null) { SelectAnnot(hitA); return; }
+            // ③ 握着工具：画新的（此时必然无选中，内部/外部都能画）
             if (tool.Length > 0)
             {
-                SelectAnnot(null);
                 if (tool == "text") { StartText(p); return; }
                 drawing = new Annot { Kind = tool, A = p, B = p };
                 if (tool == "pen") drawing.Pen = new List<WPoint> { p };
                 overlay.CaptureMouse();
                 return;
             }
-            // ④ 指针模式点空白：回到选区调整
-            SelectAnnot(null);
+            // ④ 指针模式点空白：调整截图选区
             downPt = p; dragMoved = false;
             pick.Begin(p);                 // 先按"可能要拖拽"起手；若最终判定是点击，松手时用候选窗口覆盖
             overlay.CaptureMouse();
@@ -651,13 +673,13 @@ public partial class MainWindow
                 AddVisual(drawing);
                 return;
             }
-            // 光标反馈（握着工具时也要给）：选中项的手柄→双向箭头、轮廓→四向移动；其它标注的轮廓→手型（可点选）
+            // 光标反馈（握着工具时也要给）：选中项内部→四向移动、边/角→对应缩放；其它图形的轮廓→手型（可点选）
             if (!pick.Dragging)
             {
                 if (selAnnot != null)
                 {
                     string hs = AnnotHit(selAnnot, p);
-                    if (hs is "a" or "b" or "move") { overlay.Cursor = Cursors.SizeAll; return; }
+                    if (hs is "a" or "b") { overlay.Cursor = Cursors.SizeAll; return; }
                     if (hs != "new") { overlay.Cursor = RectPicker.CursorFor(hs); return; }
                 }
                 if (HitAnnot(p) != null) { overlay.Cursor = Cursors.Hand; return; }
@@ -709,7 +731,7 @@ public partial class MainWindow
                 overlay.ReleaseMouseCapture();
                 bool tiny = drawing.Kind != "pen" && Math.Abs(drawing.B.X - drawing.A.X) < 3 && Math.Abs(drawing.B.Y - drawing.A.Y) < 3;
                 if (tiny) foreach (var v in drawing.Visuals) canvas.Children.Remove(v);
-                else { annots.Add(drawing); PushAdd(drawing); SelectAnnot(drawing); }   // 画完即选中，可继续调整
+                else { annots.Add(drawing); PushAdd(drawing); }   // 画完【不选中】：好接着画下一个；要改它就点它的边框
                 drawing = null;
                 return;
             }
@@ -765,8 +787,8 @@ public partial class MainWindow
             {
                 e.Handled = true;
                 var a = selAnnot; int idx = annots.IndexOf(a);
-                foreach (var v in a.Visuals) canvas.Children.Remove(v);
-                annots.Remove(a); SelectAnnot(null);
+                Detach(a);            // 同样不能走 SelectAnnot：它会把刚删掉的图形重绘回画布
+                annots.Remove(a);
                 if (idx >= 0) PushDelete(a, idx);
                 return;
             }
