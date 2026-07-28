@@ -950,7 +950,7 @@ public partial class MainWindow
         return outv;
     }
 
-    private FrameworkElement BuildHookRow(string label, Func<MacroStep?> get, Action<MacroStep?> set)
+    private FrameworkElement BuildHookRow(Window owner, string label, Func<MacroStep?> get, Action<MacroStep?> set)
     {
         var row = new DockPanel { Margin = new Thickness(0, 4, 0, 4), LastChildFill = true };
         var lbl = new TextBlock { Text = label, Width = 100, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
@@ -984,9 +984,8 @@ public partial class MainWindow
         {
             var s = get();
             if (s == null) return;
-            _clip = s.Clone();
+            SetClip(s.Clone());   // 走 SetClip 才会通知其它挂点行刷新"粘贴"按钮
             ShowToast("已复制监听动作");
-            Refresh();
         };
         pasteBtn.Click += (_, _) =>
         {
@@ -997,6 +996,10 @@ public partial class MainWindow
             copy.JumpTargetId = ""; copy.JumpTarget = 0; copy.JumpTimes = 0;   // 跳转对监听是 no-op，贴过来更没意义
             set(copy); Refresh();
         };
+        // 剪贴板是全局的：在别处（动作列表 / 另一个挂点）复制后，本行的"粘贴"要立刻可用。
+        // 只在构造时判一次的话，先建好的行永远是灰的——这正是"复制了却粘不到别的挂点"的原因。
+        ClipChanged += Refresh;
+        owner.Closed += (_, _) => ClipChanged -= Refresh;
         Refresh();
         return row;
     }
@@ -1700,13 +1703,13 @@ public partial class MainWindow
             var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(GroupCard("事件监听",
                 hookNote,
-                BuildHookRow("运行条件判断前", () => hookPreCond, v => hookPreCond = v),
-                BuildHookRow("判断成功后", () => hookCondOk, v => hookCondOk = v),
-                BuildHookRow("判断失败后", () => hookCondFail, v => hookCondFail = v),
-                BuildHookRow("运行前", () => hookPreRun, v => hookPreRun = v),
-                BuildHookRow("运行成功后", () => hookSuccess, v => hookSuccess = v),
-                BuildHookRow("运行失败后", () => hookFail, v => hookFail = v),
-                BuildHookRow("运行结束后", () => hookComplete, v => hookComplete = v)));
+                BuildHookRow(win, "运行条件判断前", () => hookPreCond, v => hookPreCond = v),
+                BuildHookRow(win, "判断成功后", () => hookCondOk, v => hookCondOk = v),
+                BuildHookRow(win, "判断失败后", () => hookCondFail, v => hookCondFail = v),
+                BuildHookRow(win, "运行前", () => hookPreRun, v => hookPreRun = v),
+                BuildHookRow(win, "运行成功后", () => hookSuccess, v => hookSuccess = v),
+                BuildHookRow(win, "运行失败后", () => hookFail, v => hookFail = v),
+                BuildHookRow(win, "运行结束后", () => hookComplete, v => hookComplete = v)));
 
             sp.Children.Add(GroupCard("备注（可选）", noteText));
         }
@@ -2193,13 +2196,13 @@ public partial class MainWindow
         var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
         sp.Children.Add(GroupCard("事件监听",
             hookNote,
-            BuildHookRow("运行条件判断前", () => hookPreCond, v => hookPreCond = v),
-            BuildHookRow("判断成功后", () => hookCondOk, v => hookCondOk = v),
-            BuildHookRow("判断失败后", () => hookCondFail, v => hookCondFail = v),
-            BuildHookRow("运行前", () => hookPreRun, v => hookPreRun = v),
-            BuildHookRow("运行成功后", () => hookSuccess, v => hookSuccess = v),
-            BuildHookRow("运行失败后", () => hookFail, v => hookFail = v),
-            BuildHookRow("运行结束后", () => hookComplete, v => hookComplete = v)));
+            BuildHookRow(win, "运行条件判断前", () => hookPreCond, v => hookPreCond = v),
+            BuildHookRow(win, "判断成功后", () => hookCondOk, v => hookCondOk = v),
+            BuildHookRow(win, "判断失败后", () => hookCondFail, v => hookCondFail = v),
+            BuildHookRow(win, "运行前", () => hookPreRun, v => hookPreRun = v),
+            BuildHookRow(win, "运行成功后", () => hookSuccess, v => hookSuccess = v),
+            BuildHookRow(win, "运行失败后", () => hookFail, v => hookFail = v),
+            BuildHookRow(win, "运行结束后", () => hookComplete, v => hookComplete = v)));
 
         var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         sp.Children.Add(GroupCard("备注（可选）", noteText));

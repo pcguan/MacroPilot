@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -32,6 +32,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private MacroPlan? _plan;
     private MacroStep? _step;
     private MacroStep? _clip;
+    /// <summary>动作剪贴板变化通知：谁的"粘贴"按钮要跟着变灰/变亮就订阅它（如监听动作那几行）。</summary>
+    private event Action? ClipChanged;
+    /// <summary>改剪贴板一律走这里——直接赋值的话，已经建好的粘贴按钮不会重新判定可用状态。</summary>
+    private void SetClip(MacroStep? s) { _clip = s; ClipChanged?.Invoke(); }
     private MacroPlan? _clipPlan;
     private MacroRunner? _runner;
     private IInputBackend? _backend;
@@ -772,7 +776,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void StepCopy_Click(object sender, RoutedEventArgs e)
     {
         var target = _focusedStep ?? _step;
-        if (target != null) { _clip = target.Clone(); ShowToast("已复制动作"); }
+        if (target != null) { SetClip(target.Clone()); ShowToast("已复制动作"); }
     }
     private void StepPaste_Click(object sender, RoutedEventArgs e)
     {
@@ -2176,7 +2180,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         RefreshIndices(); MarkDirty();
     }
     private void ChildCopy_Click(object sender, RoutedEventArgs e)
-    { if ((sender as FrameworkElement)?.DataContext is MacroStep c) { SetFocusedStep(c); _clip = c.Clone(); ShowToast("已复制动作"); } }
+    { if ((sender as FrameworkElement)?.DataContext is MacroStep c) { SetFocusedStep(c); SetClip(c.Clone()); ShowToast("已复制动作"); } }
     private void ChildPaste_Click(object sender, RoutedEventArgs e)
     { if ((sender as FrameworkElement)?.DataContext is MacroStep c) { SetFocusedStep(c); StepPaste_Click(this, EmptyArgs); } }
 
