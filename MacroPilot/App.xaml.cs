@@ -1,8 +1,9 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Security.Principal;
 using System.Threading;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Controls;
 using MacroPilot.Models;
 using MacroPilot.Services;
@@ -63,6 +64,15 @@ public partial class App : Application
         ToolTipService.BetweenShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(350));
         ToolTipService.ShowDurationProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(20000));
         ToolTipService.ShowOnDisabledProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(true));
+
+        // 下拉框【收起状态下滚轮不改选项】：滚一下页面就把「左键」变成「中键」是最容易误操作的一种，
+        // 而且改完毫无察觉。展开状态照常滚（那是在翻列表，不是在改值）。
+        // 用类处理器一次性覆盖全应用的 ComboBox——包括代码里 new 出来的、以后新加的。
+        EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ComboBox), UIElement.PreviewMouseWheelEvent,
+            new MouseWheelEventHandler((sender, ev) =>
+            {
+                if (sender is System.Windows.Controls.ComboBox { IsDropDownOpen: false }) ev.Handled = true;
+            }), true);
 
         DispatcherUnhandledException += (_, ev) => { LogCrash(ev.Exception); ev.Handled = true; };
         AppDomain.CurrentDomain.UnhandledException += (_, ev) => LogCrash(ev.ExceptionObject as Exception);

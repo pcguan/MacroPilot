@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -68,10 +68,20 @@ public static class WindowActivator
     /// </summary>
     public static bool Activate(int pid, string process, string title, out string matchedTitle)
     {
-        matchedTitle = "";
+        var found = Find(pid, process, title);
+        matchedTitle = found?.Title ?? "";
+        return found != null && ForceForeground(found.Hwnd);
+    }
+
+    /// <summary>
+    /// 按 <see cref="Activate"/> 的同一套优先级找目标窗口但【不激活】，返回命中的窗口信息（找不到返回 null）。
+    /// 拖动窗口这类需要句柄/矩形的场景用它，别再各写一份匹配逻辑。
+    /// </summary>
+    public static WinInfo? Find(int pid, string process, string title)
+    {
         string proc = NormalizeProcess(process);
         string ttl = (title ?? "").Trim();
-        if (pid <= 0 && proc.Length == 0 && ttl.Length == 0) return false;
+        if (pid <= 0 && proc.Length == 0 && ttl.Length == 0) return null;
 
         var windows = ListTopWindows();
         bool ProcOk(WinInfo w) => proc.Length == 0 || string.Equals(NormalizeProcess(w.Process), proc, StringComparison.OrdinalIgnoreCase);
@@ -100,9 +110,18 @@ public static class WindowActivator
             foreach (var w in windows)
                 if (ProcOk(w) && TitleLike(w)) { found = w; break; }
 
-        if (found == null) return false;
-        matchedTitle = found.Title;
-        return ForceForeground(found.Hwnd);
+        return found;
+    }
+
+    /// <summary>窗口的可见边框矩形（DWM 实际边界，扣掉 GetWindowRect 会带上的不可见阴影边距）。</summary>
+    public static bool TryGetFrameRect(IntPtr hwnd, out int x, out int y, out int w, out int h)
+    {
+        x = y = w = h = 0;
+        if (hwnd == IntPtr.Zero) return false;
+        if (DwmGetWindowAttribute(hwnd, 9 /*DWMWA_EXTENDED_FRAME_BOUNDS*/, out RECT rc, Marshal.SizeOf<RECT>()) != 0
+            && !GetWindowRect(hwnd, out rc)) return false;
+        x = rc.Left; y = rc.Top; w = rc.Right - rc.Left; h = rc.Bottom - rc.Top;
+        return w > 0 && h > 0;
     }
 
     // 去掉 .exe 后缀、转小写、trim，便于匹配。
@@ -175,5 +194,8 @@ public static class WindowActivator
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
     [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT value, int size);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
 }

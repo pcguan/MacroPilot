@@ -1302,7 +1302,8 @@ public partial class MainWindow
         buttonCombo.SelectedIndex = 0;
         var mouseButtonPanel = SubGroup("鼠标按钮", buttonCombo);
 
-        var mouseTargetPanel = SubGroup("目标位置", mouseTargetCombo);
+        var mouseTargetTitle = new TextBlock { Text = "点击类型", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) };
+        var mouseTargetPanel = SubGroup(null, mouseTargetTitle, mouseTargetCombo);
 
         var holdRow = new TimeInputRow(this, _doc.DefaultHoldMs);
         holdRow.Panel.Margin = new Thickness(0, 0, 0, 0);
@@ -1312,6 +1313,17 @@ public partial class MainWindow
         var coord = new CoordBlock(this, win, "设置坐标（先移动到该位置再执行）", showCheck: true, withOffset: true);
         var mouseMovePanel = coord.Panel;
         var coordCheck = coord.Enabled;
+        // 拖动方式：坐标拖动（起点→终点）/ 拖动窗口（激活目标窗口后把它的左上角拖到终点）
+        var dragModeCombo = new ComboBox { Height = 32 };
+        dragModeCombo.Items.Add("坐标拖动（起点 → 终点）"); dragModeCombo.Items.Add("拖动窗口（把窗口拖到终点）");
+        dragModeCombo.SelectedIndex = 0;
+        var dragModePanel = SubGroup("拖动类型", dragModeCombo,
+            new TextBlock
+            {
+                Text = "拖动窗口：先激活选定的窗口，再按住它的标题栏拖动，使窗口【左上角】落在终点坐标。",
+                Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+            });
+
         // 拖动终点：始终展开、无勾选框
         var dragEnd = new CoordBlock(this, win, "终点坐标", showCheck: false);
         var dragEndPanel = dragEnd.Panel;
@@ -1578,6 +1590,7 @@ public partial class MainWindow
         // 鼠标按钮 → 坐标 → 按住时间 → 点击次数(+重复间隔) → 滚轮格数 → 拟人化移动（最后）
         mousePanel.Children.Add(mouseButtonPanel);
         mousePanel.Children.Add(mouseTargetPanel);   // 紧跟在「鼠标按钮」下面
+        mousePanel.Children.Add(dragModePanel);
         mousePanel.Children.Add(mouseMovePanel);
         mousePanel.Children.Add(dragEndPanel);
         mousePanel.Children.Add(clickImagePanel);
@@ -1703,6 +1716,7 @@ public partial class MainWindow
         void UpdatePanels()
         {
             string t = Cat(), d = Dev(), a = Act(), ra = RunAct();
+            bool dragWindow = a == "拖动" && dragModeCombo.SelectedIndex == 1;   // 拖动窗口模式（起点是窗口自己，不用坐标）
             deviceCombo.Visibility = t == "输入" ? Visibility.Visible : Visibility.Collapsed;
             mouseActionCombo.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
             runActionCombo.Visibility = t == "运行" ? Visibility.Visible : Visibility.Collapsed;
@@ -1712,27 +1726,31 @@ public partial class MainWindow
             keyboardPanel.Visibility = d == "键盘" && KeyAct() == "按键" ? Visibility.Visible : Visibility.Collapsed;
             textPanel.Visibility = d == "键盘" && KeyAct() == "文本" ? Visibility.Visible : Visibility.Collapsed;
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
-            windowPanel.Visibility = ra == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
+            // 窗口选择框：激活窗口动作用它，「拖动窗口」也复用同一个（一个对话框只编辑一个动作，不会打架）
+            windowPanel.Visibility = ra == "激活窗口" || (a == "拖动" && dragWindow) ? Visibility.Visible : Visibility.Collapsed;
             jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
             // 点击/移动 的目标由第二个下拉决定：当前位置(仅点击) / 坐标 / 图片；拖动固定两个坐标；滚轮无目标。
             SyncTargets();
             bool isClick = a == "点击", isMove = a == "移动", isDrag = a == "拖动", isWheel = a == "滚轮";
             mouseTargetPanel.Visibility = (isClick || isMove) && d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            mouseTargetTitle.Text = isMove ? "移动类型" : "点击类型";
+            dragModePanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;
             string tgt = TargetKind();
             bool isClickAt = isClick && tgt == "coord", isClickImage = isClick && tgt == "image";
             bool isMoveAt = isMove && tgt != "image", isMoveImage = isMove && tgt == "image";
             bool anyImage = isClickImage || isMoveImage;
-            bool coordForced = isMoveAt || isDrag || isClickAt;   // 这三种必须有坐标
+            bool coordForced = isMoveAt || (isDrag && !dragWindow) || isClickAt;   // 这三种必须有起点坐标（拖动窗口的"起点"是窗口自己）
             if (coordForced && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
             coordCheck.IsEnabled = false;   // 坐标显隐完全由动作类型决定，勾选框不再交互
             coordCheck.Content = isMoveAt ? "坐标（移动到该位置，必须设置）"
                                : isDrag ? "起点坐标（在此按下鼠标键）"
                                : "坐标（移动到该位置再点击）";
             dragEndPanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;   // 拖动才有终点
+            dragEnd.SetTitle(dragWindow ? "终点坐标（窗口左上角落在这里）" : "终点坐标");
 
             // 点击（无论打哪儿）都要按钮 + 按住时间；滚轮/移动不要。
             bool anyClick = isClick;
-            mouseButtonPanel.Visibility = anyClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
+            mouseButtonPanel.Visibility = anyClick || isDrag ? Visibility.Visible : Visibility.Collapsed;   // 拖动窗口也要选用哪个键按住标题栏
             mouseMovePanel.Visibility = coordForced ? Visibility.Visible : Visibility.Collapsed;   // 纯点击/点击图片无坐标块
             clickImagePanel.Visibility = anyImage ? Visibility.Visible : Visibility.Collapsed;
             mouseHoldPanel.Visibility = anyClick ? Visibility.Visible : Visibility.Collapsed;
@@ -1756,6 +1774,7 @@ public partial class MainWindow
         deviceCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseTargetCombo.SelectionChanged += (_, _) => { if (!_tgtLoading) UpdatePanels(); };
+        dragModeCombo.SelectionChanged += (_, _) => UpdatePanels();
         runActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         keyActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         buttonCombo.SelectionChanged += (_, _) => UpdatePanels();   // 切「仅移动」要收起按住时间/次数
@@ -1822,11 +1841,22 @@ public partial class MainWindow
                     }
                     else if (a == "拖动")
                     {
-                        // 拖动 = 移到起点 → 按下 → 移到终点 → 松开。起点存 MoveXxx，终点存 DragEndXxx。
+                        // 坐标拖动 = 移到起点 → 按下 → 移到终点 → 松开（起点存 MoveXxx，终点存 DragEndXxx）。
+                        // 拖动窗口 = 激活 Target* 指定的窗口 → 按住标题栏 → 拖到"左上角落在终点"的位置。
                         result = new MacroStep { Type = "MouseDrag", Button = ButtonToInternal(buttonCombo.SelectedItem?.ToString() ?? "左键") };
-                        FillMove(result);
+                        if (dragModeCombo.SelectedIndex == 1)
+                        {
+                            if (selPid <= 0 && selProc.Length == 0 && selTitle.Length == 0)
+                                throw new InvalidOperationException("请从列表选择要拖动的窗口。");
+                            if (selProc == WindowActivator.DesktopSentinel)
+                                throw new InvalidOperationException("桌面不能拖动，请选择一个普通窗口。");
+                            result.DragMode = "Window";
+                            result.TargetProcess = selProc; result.TargetTitle = selTitle; result.TargetPid = selPid;
+                        }
+                        else FillMove(result);
                         var (devE, nxE, nyE) = dragEnd.Read();
                         result.DragEndMonitor = devE; result.DragEndNormX = nxE; result.DragEndNormY = nyE;
+                        result.Humanize = humanizeMoveCheck.IsChecked == true;
                         result.LoopCount = 1;
                     }
                     else if (a == "移动")
@@ -1986,6 +2016,9 @@ public partial class MainWindow
                     clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; break;
                 case "MouseDrag":
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动";
+                    dragModeCombo.SelectedIndex = source.DragMode == "Window" ? 1 : 0;
+                    if (source.DragMode == "Window")
+                    { selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); }
                     coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields();
                     dragEnd.Write(source.DragEndMonitor, source.DragEndNormX, source.DragEndNormY);
                     break;
@@ -2619,6 +2652,10 @@ public partial class MainWindow
         private readonly TextBlock _status;
         private readonly Border _wrap;
         public readonly CheckBox Enabled = new() { VerticalAlignment = VerticalAlignment.Center };
+        private TextBlock? _titleText;   // showCheck=false 时标题是普通文本（此时 Enabled 根本不在可视树里）
+
+        /// <summary>改标题：勾选框式与纯文本式都要覆盖到，否则 showCheck=false 的块改了没反应。</summary>
+        public void SetTitle(string t) { Enabled.Content = t; if (_titleText != null) _titleText.Text = t; }
         public readonly Border Panel;
 
         public CoordBlock(MainWindow o, Window win, string title, bool showCheck, bool withOffset = false)
@@ -2640,6 +2677,7 @@ public partial class MainWindow
             {
                 Enabled.IsChecked = true;
                 var t = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+                _titleText = t;
                 DockPanel.SetDock(t, Dock.Left); header.Children.Add(t);
             }
 

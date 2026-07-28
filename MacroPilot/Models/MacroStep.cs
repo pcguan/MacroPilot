@@ -37,6 +37,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public double MoveNormX { get; set; }
     public double MoveNormY { get; set; }
     // MouseDrag 的终点：起点复用上面的 MoveMonitor/MoveNormX/MoveNormY。
+    // DragMode：""=坐标拖动（起点→终点）；"Window"=拖动窗口（先激活 Target* 指定的窗口，再把它的左上角拖到终点）。
+    public string DragMode { get; set; } = "";
     public string DragEndMonitor { get; set; } = "";
     public double DragEndNormX { get; set; }
     public double DragEndNormY { get; set; }
@@ -203,7 +205,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             Type = Type, Button = Button, Key = Key, Modifier = Modifier,
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
-            DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
+            DragMode = DragMode, DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
             Text = Text, TextMode = TextMode, TextCharDelayMs = TextCharDelayMs, TextRandom = TextRandom,
             ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
             ClickImageRectX = ClickImageRectX, ClickImageRectY = ClickImageRectY, ClickImageRectW = ClickImageRectW, ClickImageRectH = ClickImageRectH,
@@ -312,10 +314,12 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             int i = dev.LastIndexOf('\\');
             return i >= 0 ? dev[(i + 1)..] : dev;
         }
-        string from = string.IsNullOrEmpty(MoveMonitor) ? Pct(MoveNormX, MoveNormY) : $"{Short(MoveMonitor)}（{Pct(MoveNormX, MoveNormY)}）";
-        string to = string.IsNullOrEmpty(DragEndMonitor) || DragEndMonitor == MoveMonitor
+        string to = string.IsNullOrEmpty(DragEndMonitor)
             ? $"（{Pct(DragEndNormX, DragEndNormY)}）"
             : $"{Short(DragEndMonitor)}（{Pct(DragEndNormX, DragEndNormY)}）";
+        if (DragMode == "Window") return $"拖动窗口 {WindowTargetCn()} → 左上角到 {to}" + MoveSuffix();
+        string from = string.IsNullOrEmpty(MoveMonitor) ? Pct(MoveNormX, MoveNormY) : $"{Short(MoveMonitor)}（{Pct(MoveNormX, MoveNormY)}）";
+        if (DragEndMonitor == MoveMonitor) to = $"（{Pct(DragEndNormX, DragEndNormY)}）";
         return $"{ButtonCn(Button)}拖动 {from} → {to}" + MoveSuffix();
     }
 

@@ -534,6 +534,9 @@ public sealed class MacroRunner
             case "MouseMove": MoveToStepTarget(step, ct); break;
             // 拖动 = 移到起点 → 按下 → 移到终点（可拟人化）→ 松开。
             // 按下后、松开前各留一小段，太快会被目标程序识别成一次点击而不是拖动。
+            case "MouseDrag" when step.DragMode == "Window":
+                DragWindow(step, ct);
+                break;
             case "MouseDrag":
                 MoveToStepTarget(step, ct);          // 起点（MoveMonitor/MoveNormX/Y）
                 ct.ThrowIfCancellationRequested();
@@ -662,6 +665,41 @@ public sealed class MacroRunner
         }
         catch { }
         return ok;
+    }
+
+    /// <summary>
+    /// 拖动窗口：先激活目标窗口 → 按住它的标题栏 → 拖到"窗口左上角落在终点坐标"的位置 → 松开。
+    /// 走真实鼠标拖拽（而不是 SetWindowPos 直接搬），这样对方程序收到的是正常的拖窗手势，
+    /// 贴边吸附、多显示器 DPI 切换等系统行为都能照常发生。
+    /// </summary>
+    private void DragWindow(MacroStep step, CancellationToken ct)
+    {
+        var win = WindowActivator.Find(step.TargetPid, step.TargetProcess, step.TargetTitle)
+                  ?? throw new InvalidOperationException($"拖动窗口：没找到目标窗口（{step.TargetProcess}.exe PID {step.TargetPid}）。");
+        WindowActivator.ActivateHwnd(win.Hwnd);
+        Wait(120, ct);   // 等激活动画/重绘落定，否则按下时窗口可能还没到前台
+
+        if (!WindowActivator.TryGetFrameRect(win.Hwnd, out int wx, out int wy, out int ww, out int wh))
+            throw new InvalidOperationException("拖动窗口：读不到窗口位置。");
+        // 抓点取标题栏中部偏左：正中央常被标签页/工具栏占着，太靠右又容易压到关闭按钮
+        int grabX = wx + Math.Min(Math.Max(40, ww / 4), Math.Max(40, ww - 80));
+        int grabY = wy + Math.Min(16, Math.Max(6, wh / 20));
+
+        var (ex, ey) = ScreenInfo.Resolve(step.DragEndMonitor, step.DragEndNormX, step.DragEndNormY);
+        (ex, ey) = ApplyOffset(ex, ey, step.ClickOffset);
+        int tx = grabX + (ex - wx), ty = grabY + (ey - wy);   // 抓点要移动的位移 = 窗口左上角要移动的位移
+
+        _backend.MouseMove(grabX, grabY);
+        ct.ThrowIfCancellationRequested();
+        _backend.MouseDown(step.Button);
+        try
+        {
+            Wait(60, ct);
+            if (step.Humanize) MoveHumanized(tx, ty, ct); else _backend.MouseMove(tx, ty);
+            Wait(60, ct);
+        }
+        finally { _backend.MouseUp(step.Button); }
+        Log?.Invoke("Info", $"拖动窗口：({wx}, {wy}) → ({ex}, {ey})。");
     }
 
     // 点击图片：定位 → 移到中心 → 点击。移动图片：只定位 + 移动，不点击（两者共用 LocateImage）。
