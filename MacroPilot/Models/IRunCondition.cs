@@ -1,4 +1,4 @@
-namespace MacroPilot.Models;
+﻿namespace MacroPilot.Models;
 
 /// <summary>
 /// 运行条件的公共契约：方案级（<see cref="MacroPlan"/>）与动作级（<see cref="MacroStep"/>）都实现它，
@@ -130,7 +130,9 @@ public static class RunCondition
               .Append(it.Image).Append(',').Append(it.Monitor).Append(',')
               .Append(it.RectX).Append(',').Append(it.RectY).Append(',')
               .Append(it.RectW).Append(',').Append(it.RectH).Append(',')
-              .Append(it.Threshold.ToString("0.####")).Append(';');
+              .Append(it.Threshold.ToString("0.####")).Append(',')
+              .Append(it.OrigMonitor).Append(',').Append(it.OrigRectX).Append(',').Append(it.OrigRectY).Append(',')
+              .Append(it.OrigRectW).Append(',').Append(it.OrigRectH).Append(';');
         return sb.ToString();
     }
 

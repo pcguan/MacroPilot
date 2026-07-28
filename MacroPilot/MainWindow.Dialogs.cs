@@ -89,7 +89,9 @@ public partial class MainWindow
         };
         win.SetResourceReference(ForegroundProperty, "Ink");
         win.SourceInitialized += (_, _) => ThemeManager.ApplyWindowTitleBar(win, ThemeManager.EffectiveDark);
-        win.MinWidth = 460;
+        // 最小宽度要盖得住内容真实的最小需求（限制区域那行：标签 52 + 四个 86 宽的格子 + 卡片内边距 ≈ 500），
+        // 否则用户能把窗口拖到内容根本排不下的宽度，只能靠裁剪收场。再窄的可换行内容会自己折行。
+        win.MinWidth = 520;
         win.MinHeight = 320;
         // 记住每个对话框各自调整后的位置与大小（key = 标题），与主窗口同一套机制。
         WindowMemory.Attach(win, "Dlg:" + title);
@@ -1114,7 +1116,7 @@ public partial class MainWindow
         });
 
         // 图片出现：与「点击图片」共用同一编辑器（无"匹配第几"）
-        var img = new ClickImagePanel(this, win, withIndex: false, boxed: false, notchBgKey: "Bg");
+        var img = new ClickImagePanel(this, win, withIndex: false, boxed: false);
         var imgSub = new StackPanel();
         imgSub.Children.Add(img.Panel);
         imgSub.Children.Add(new TextBlock
@@ -2152,48 +2154,57 @@ public partial class MainWindow
     /// 坐标块：显示器 + 屏内百分比 + 点选/预览。可复用——点击/移动各一个，拖动用两个（起点、终点）。
     /// showCheck=true 时带勾选框（勾选后才展开明细），false 则常驻展开。
     /// </summary>
-    // 限制区域的一个「尖角」边输入格（对齐自动精灵）：无圆角、与相邻格贴合（-1px 让边框共享）；
-    // 标签(左/右/上/下)在空且未聚焦时作占位居中，聚焦或有值时缩小浮到上边框（Material 描边式，用 Bg 底色在边框上开缺口）；
-    // 右侧单位可点击在 % / DP(屏内像素) 间切换并自动换算。值对外统一以「屏内像素」读写。
+    // 限制区域的一个边输入格：标签(左/右/上/下)在格【内部】左上角，值在下方，右侧单位可点击在 % / DP(屏内像素)
+    // 之间切换并自动换算。值对外统一以「屏内像素」读写。
+    //
+    // 【为什么标签在格子里面】早先是 Material 那种"浮到上边框上、用底色开个缺口"的画法（负 margin 顶出格子外），
+    // 那意味着标签是画在自己控件范围【之外】的——一旦上方空间被挤（窗口变窄导致上面的自适应文本折行变高、
+    // 出现滚动条等），它就会被上一行盖住或被裁掉半截，表现成"调宽度却出现上下遮挡"这种毫不相关的现象。
+    // 现在标签完全在格子内部，不再依赖外部空间，任何尺寸变化都不会切到它。
     private sealed class EdgeCell
     {
-        private readonly Brush _notchBg;
         private readonly TextBox _box;
         private readonly TextBlock _lbl, _unit;
-        private readonly Border _lblBg;
         private readonly Func<int> _dim;     // 该边换算用的屏尺寸（左右=宽，上下=高）
         private bool _isDp;
         public readonly Border Root;
         public event Action? Committed;      // 失焦提交（→ 面板 EdgesToRegion）
 
-        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first, string notchBgKey = "Bg")
+        public EdgeCell(MainWindow o, string label, Func<int> dim, bool first)
         {
-            _dim = dim; _notchBg = (Brush)o.FindResource(notchBgKey);
+            _dim = dim;
             Brush B(string k) => (Brush)o.FindResource(k);
-            _box = new TextBox { BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Width = 38, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(10, 0, 0, 0), VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink") };
-            _unit = new TextBlock { Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 8, 0), ToolTip = "点击切换 % / DP（屏内像素）" };
-            _lbl = new TextBlock { Text = label, Foreground = B("Muted") };
-            _lblBg = new Border { Child = _lbl, HorizontalAlignment = HorizontalAlignment.Left };
+            _lbl = new TextBlock
+            {
+                Text = label, Foreground = B("Muted"), FontSize = 11,
+                Margin = new Thickness(10, 5, 8, 0), HorizontalAlignment = HorizontalAlignment.Left,
+            };
+            _box = new TextBox
+            {
+                BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0),
+                MinHeight = 0, Height = 22, Margin = new Thickness(10, 0, 30, 4), VerticalAlignment = VerticalAlignment.Bottom,
+                VerticalContentAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Left, Foreground = B("Ink"),
+            };
+            _unit = new TextBlock
+            {
+                Text = "%", Foreground = B("Muted"), VerticalAlignment = VerticalAlignment.Bottom,
+                HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 0, 8, 5), ToolTip = "点击切换 % / DP（屏内像素）",
+            };
+            var grid = new Grid { Height = 50 };
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            Grid.SetRow(_lbl, 0); Grid.SetRow(_box, 1); Grid.SetRow(_unit, 1);
+            grid.Children.Add(_lbl); grid.Children.Add(_box); grid.Children.Add(_unit);
+            // 相邻格靠 -1 共享边框连成一体；换行时首格的 -1 只是贴着容器左边，无副作用
+            Root = new Border
+            {
+                BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0),
+                Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 86, Child = grid,
+            };
 
-            var grid = new Grid { Height = 40 };
-            grid.Children.Add(_box); grid.Children.Add(_unit); grid.Children.Add(_lblBg);
-            Root = new Border { BorderBrush = B("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(0), Margin = new Thickness(first ? 0 : -1, 0, 0, 0), MinWidth = 82, Child = grid };
-
-            _box.GotFocus += (_, _) => Render();
-            _box.LostFocus += (_, _) => { Render(); Committed?.Invoke(); };
-            _box.TextChanged += (_, _) => Render();
+            _box.LostFocus += (_, _) => Committed?.Invoke();
             _unit.MouseLeftButtonDown += (_, _) => { var px = GetPx(); _isDp = !_isDp; _unit.Text = _isDp ? "DP" : "%"; if (px is int p) SetPx(p); };
-            Render();
-        }
-
-        private void Render()
-        {
-            bool active = _box.IsFocused || !string.IsNullOrEmpty(_box.Text);
-            _lbl.FontSize = active ? 11 : 14;
-            _lblBg.VerticalAlignment = active ? VerticalAlignment.Top : VerticalAlignment.Center;
-            _lblBg.Margin = active ? new Thickness(6, -8, 0, 0) : new Thickness(10, 0, 0, 0);
-            _lblBg.Padding = active ? new Thickness(3, 0, 3, 0) : new Thickness(0);
-            _lblBg.Background = active ? _notchBg : Brushes.Transparent;   // 浮起时遮住上边框做缺口（底色跟宿主容器一致）
         }
 
         public int? GetPx()
@@ -2205,9 +2216,8 @@ public partial class MainWindow
         public void SetPx(int px)
         {
             _box.Text = _isDp ? px.ToString() : (Math.Clamp(px / (double)Math.Max(1, _dim()), 0, 1) * 100).ToString("0.#");
-            Render();
         }
-        public void Clear() { _box.Text = ""; Render(); }
+        public void Clear() => _box.Text = "";
     }
 
     // 「点击图片」编辑块：目标图（截图 / 导入 / 复制 / 粘贴）+ 限制区域 + 相似度 + 匹配第几。
@@ -2216,6 +2226,9 @@ public partial class MainWindow
         public byte[]? Png;
         public string Monitor = "";
         public int RelX, RelY, W, H;                 // 限制区域屏内相对像素（W/H=0 表示全屏）
+        // 截图那一刻的区域，供「还原到截图区域」；W/H=0 表示这张图不是截来的（导入/粘贴），没有可还原的原始区域
+        public string OrigMonitor = "";
+        public int OrigX, OrigY, OrigW, OrigH;
         private readonly System.Windows.Controls.Image _thumb = new() { MaxWidth = 220, MaxHeight = 150, Stretch = System.Windows.Media.Stretch.Uniform };
         private readonly Border _thumbBorder;
         private readonly TextBlock _imgStatus, _regionHint;
@@ -2227,6 +2240,7 @@ public partial class MainWindow
         private readonly TextBox _thrText = new() { Width = 68, Height = 32, Text = "90" };
         private readonly TextBox _index = new() { Text = "1", Width = 68, Height = 32 };
         private readonly Button _previewBtn;
+        private readonly Button _restoreBtn;
         private bool _syncing;   // 防"区域→四边框→区域"回填递归
         public readonly Border Panel;
 
@@ -2234,7 +2248,7 @@ public partial class MainWindow
         public int Index => Math.Max(1, ParseInt(_index.Text, 1));
         public bool HasImage => Png != null && Png.Length > 0;
 
-        public ClickImagePanel(MainWindow o, Window? win = null, bool withIndex = true, bool boxed = true, string notchBgKey = "Bg")
+        public ClickImagePanel(MainWindow o, Window? win = null, bool withIndex = true, bool boxed = true)
         {
             // 宿主窗口懒解析：运行条件编辑器在对话框组装前就要构建本面板，点击时再从可视树取。
             Window Win() => win ?? Window.GetWindow(Panel)!;
@@ -2246,7 +2260,7 @@ public partial class MainWindow
             // —— 图片（截图 / 导入 / 复制 / 粘贴，对齐自动精灵图标行）——
             var imgHeader = new DockPanel { LastChildFill = false };
             imgHeader.Children.Add(new TextBlock { Text = "图片", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Width = 64 });
-            var shotBtn = MkIcon("", "截图：框选屏幕截取目标图（并自动把限制区域设为截图位置）");
+            var shotBtn = MkIcon("", "截图：框选屏幕截取目标图（并自动把限制区域设为截图位置）");   // 剪刀，与系统截图工具同款
             var importBtn = MkIcon("", "导入：从本地图片文件导入");
             var copyBtn = MkIcon("", "复制：把当前目标图复制到剪贴板");
             var pasteBtn = MkIcon("", "粘贴：从剪贴板粘贴图片");
@@ -2261,6 +2275,8 @@ public partial class MainWindow
 
             // —— 限制区域（风格与坐标块一致：标题+操作图标行 → 强调左条缩进块内：显示器行 / 区域值行 / 提示）——
             var editBtn = MkIcon("", "编辑区域：在屏幕上拖动·缩放调整搜索范围");
+            _restoreBtn = MkIcon("", "还原到截图时的区域（手动调过限制区域后可一键退回）");   // 与截图区域重新对齐
+            var restoreBtn = _restoreBtn;
             _previewBtn = MkIcon("", "预览：在屏幕上白框回显当前区域");
             var clearBtn = MkIcon("", "清除限制区域（改为搜索整块主屏）");
             var idBtn = MkIcon("", "标识屏幕（在各屏显示编号，帮你分清下拉对应哪块屏）");
@@ -2269,7 +2285,7 @@ public partial class MainWindow
             var regionTitle = new TextBlock { Text = "限制区域（只在此范围内搜索）", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
             DockPanel.SetDock(regionTitle, Dock.Left); regionHeader.Children.Add(regionTitle);
             var regionBtns = new StackPanel { Orientation = Orientation.Horizontal };
-            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(_previewBtn); regionBtns.Children.Add(clearBtn); regionBtns.Children.Add(idBtn);
+            regionBtns.Children.Add(editBtn); regionBtns.Children.Add(restoreBtn); regionBtns.Children.Add(_previewBtn); regionBtns.Children.Add(clearBtn); regionBtns.Children.Add(idBtn);
             DockPanel.SetDock(regionBtns, Dock.Right); regionHeader.Children.Add(regionBtns);
             inner.Children.Add(regionHeader);
 
@@ -2290,14 +2306,15 @@ public partial class MainWindow
                 SyncEdges();
             };
             // 区域值行：四个尖角浮标格（贴合一体）。
-            _left = new EdgeCell(o, "左", () => RegionMon().Width, true, notchBgKey);
-            _right = new EdgeCell(o, "右", () => RegionMon().Width, false, notchBgKey);
-            _top = new EdgeCell(o, "上", () => RegionMon().Height, false, notchBgKey);
-            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false, notchBgKey);
+            _left = new EdgeCell(o, "左", () => RegionMon().Width, true);
+            _right = new EdgeCell(o, "右", () => RegionMon().Width, false);
+            _top = new EdgeCell(o, "上", () => RegionMon().Height, false);
+            _bottom = new EdgeCell(o, "下", () => RegionMon().Height, false);
             foreach (var c in new[] { _left, _right, _top, _bottom }) c.Committed += EdgesToRegion;
-            var cellsRow = new DockPanel { LastChildFill = false };
-            cellsRow.Children.Add(RLabel("区域值"));
-            var cells = new StackPanel { Orientation = Orientation.Horizontal };
+            var cellsRow = new DockPanel { LastChildFill = true };
+            var rvLabel = RLabel("区域值"); DockPanel.SetDock(rvLabel, Dock.Left); cellsRow.Children.Add(rvLabel);
+            // WrapPanel：宽度不够就换行，而不是把最后一格挤出可视区
+            var cells = new WrapPanel { Orientation = Orientation.Horizontal };
             cells.Children.Add(_left.Root); cells.Children.Add(_right.Root); cells.Children.Add(_top.Root); cells.Children.Add(_bottom.Root);
             cellsRow.Children.Add(cells);
             regionDetail.Children.Add(cellsRow);
@@ -2311,6 +2328,12 @@ public partial class MainWindow
                 Margin = new Thickness(2, 10, 0, 0), Child = regionDetail,
             });
             clearBtn.Click += (_, _) => { Monitor = ""; RelX = RelY = W = H = 0; Refresh(); SyncEdges(); };
+            restoreBtn.Click += (_, _) =>
+            {
+                if (OrigW <= 0 || OrigH <= 0) return;
+                Monitor = OrigMonitor; RelX = OrigX; RelY = OrigY; W = OrigW; H = OrigH;
+                Refresh(); SyncEdges();
+            };
             copyBtn.Click += (_, _) =>
             {
                 if (!HasImage) return;
@@ -2325,7 +2348,7 @@ public partial class MainWindow
             };
 
             // —— 相似度阈值（复用运行条件风格：百分比文本框）——
-            var thrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
+            var thrRow = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 16, 0, 0) };
             thrRow.Children.Add(new TextBlock { Text = "相似度阈值(%)", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
             NumericBox(_thrText, 10, 100, 90);   // 相似度是百分比，填不进 100 以上
             thrRow.Children.Add(_thrText);
@@ -2333,7 +2356,7 @@ public partial class MainWindow
             inner.Children.Add(thrRow);
 
             // —— 匹配第几（标签 + 输入框同一行）——
-            var idxRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
+            var idxRow = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
             idxRow.Children.Add(new TextBlock { Text = "匹配第几个", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
             NumericBox(_index, 1, 999, 1);
             idxRow.Children.Add(_index);
@@ -2355,6 +2378,7 @@ public partial class MainWindow
                     var (dev, _, _) = ScreenInfo.FromPoint(c.vx, c.vy);
                     var mon = ScreenInfo.ByDevice(dev);
                     Png = c.png; Monitor = dev; RelX = c.vx - mon.Left; RelY = c.vy - mon.Top; W = c.w; H = c.h;   // 截图自动填充限制区域
+                    OrigMonitor = Monitor; OrigX = RelX; OrigY = RelY; OrigW = W; OrigH = H;                        // 记下原始区域供一键还原
                     Refresh(); SyncEdges();
                 }
             };
@@ -2432,6 +2456,10 @@ public partial class MainWindow
                 ? $"屏幕 {ScreenInfo.ByDevice(Monitor).Label}：{W}×{H}px（四边可切 % / DP，直接改）"
                 : "未限制（搜索整块主屏）。可手动填四边，或用截图 / 编辑区域设定。";
             _previewBtn.IsEnabled = hasRegion;
+            // 没有截图过（导入/粘贴的图）就没有"原始区域"可还原；当前就等于原始区域时按钮变灰
+            bool hasOrig = OrigW > 0 && OrigH > 0;
+            _restoreBtn.Visibility = hasOrig ? Visibility.Visible : Visibility.Collapsed;
+            _restoreBtn.IsEnabled = hasOrig && !(Monitor == OrigMonitor && RelX == OrigX && RelY == OrigY && W == OrigW && H == OrigH);
         }
 
         private ScreenInfo.Monitor RegionMon() => ScreenInfo.ByDevice(string.IsNullOrEmpty(Monitor) ? ScreenInfo.Primary().Device : Monitor);
@@ -2468,6 +2496,7 @@ public partial class MainWindow
         {
             Png = ImageStore.Bytes(s.ClickImage);
             Monitor = s.ClickImageMonitor; RelX = s.ClickImageRectX; RelY = s.ClickImageRectY; W = s.ClickImageRectW; H = s.ClickImageRectH;
+            OrigMonitor = s.ClickImageOrigMonitor; OrigX = s.ClickImageOrigRectX; OrigY = s.ClickImageOrigRectY; OrigW = s.ClickImageOrigRectW; OrigH = s.ClickImageOrigRectH;
             _thrText.Text = ((int)Math.Round(Math.Clamp(s.ClickImageThreshold, 0.1, 1.0) * 100)).ToString();
             _index.Text = Math.Max(1, s.ClickImageIndex).ToString();
             Refresh(); SyncEdges();
@@ -2478,6 +2507,7 @@ public partial class MainWindow
         {
             Png = ImageStore.Bytes(src.Image);
             Monitor = src.Monitor; RelX = src.RectX; RelY = src.RectY; W = src.RectW; H = src.RectH;
+            OrigMonitor = src.OrigMonitor; OrigX = src.OrigRectX; OrigY = src.OrigRectY; OrigW = src.OrigRectW; OrigH = src.OrigRectH;
             _thrText.Text = ((int)Math.Round(Math.Clamp(src.Threshold > 0 ? src.Threshold : 0.9, 0.1, 1.0) * 100)).ToString();
             _index.Text = "1";
             Refresh(); SyncEdges();
@@ -2490,6 +2520,7 @@ public partial class MainWindow
             dst.Monitor = Monitor; dst.RectX = RelX; dst.RectY = RelY;
             dst.RectW = W; dst.RectH = H;
             dst.Threshold = Threshold;
+            dst.OrigMonitor = OrigMonitor; dst.OrigRectX = OrigX; dst.OrigRectY = OrigY; dst.OrigRectW = OrigW; dst.OrigRectH = OrigH;
         }
 
         public void Apply(MacroStep s)
@@ -2498,6 +2529,8 @@ public partial class MainWindow
             s.ClickImage = ImageStore.Ref(Png!);
             s.ClickImageMonitor = Monitor; s.ClickImageRectX = RelX; s.ClickImageRectY = RelY; s.ClickImageRectW = W; s.ClickImageRectH = H;
             s.ClickImageThreshold = Threshold; s.ClickImageIndex = Index;
+            s.ClickImageOrigMonitor = OrigMonitor; s.ClickImageOrigRectX = OrigX; s.ClickImageOrigRectY = OrigY;
+            s.ClickImageOrigRectW = OrigW; s.ClickImageOrigRectH = OrigH;
         }
     }
 

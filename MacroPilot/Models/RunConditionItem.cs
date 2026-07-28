@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace MacroPilot.Models;
 
@@ -27,6 +27,13 @@ public sealed class ConditionItem : IConditionData
     public int RectH { get; set; }
     public double Threshold { get; set; } = 0.9;
 
+    // 截图那一刻的原始区域（用户之后手动改了限制区域还能一键还原回来）。W/H=0 表示没有原始记录。
+    public string OrigMonitor { get; set; } = "";
+    public int OrigRectX { get; set; }
+    public int OrigRectY { get; set; }
+    public int OrigRectW { get; set; }
+    public int OrigRectH { get; set; }
+
     /// <summary>本条是否配置完整（判定与 UI 共用一套口径）。</summary>
     [JsonIgnore]
     public bool IsValid =>
@@ -38,6 +45,7 @@ public sealed class ConditionItem : IConditionData
         Type = Type, Invert = Invert, StartMinute = StartMinute, EndMinute = EndMinute,
         Image = Image, Monitor = Monitor,
         RectX = RectX, RectY = RectY, RectW = RectW, RectH = RectH, Threshold = Threshold,
+        OrigMonitor = OrigMonitor, OrigRectX = OrigRectX, OrigRectY = OrigRectY, OrigRectW = OrigRectW, OrigRectH = OrigRectH,
     };
 
     /// <summary>一句话描述，供条件列表显示。</summary>
@@ -86,4 +94,9 @@ public interface IConditionData
     int RectW { get; set; }
     int RectH { get; set; }
     double Threshold { get; set; }
+    string OrigMonitor { get; set; }
+    int OrigRectX { get; set; }
+    int OrigRectY { get; set; }
+    int OrigRectW { get; set; }
+    int OrigRectH { get; set; }
 }

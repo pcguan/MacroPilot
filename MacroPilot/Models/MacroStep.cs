@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Collections.Specialized;
 using System.Text.Json.Serialization;
@@ -65,6 +65,12 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public int ClickImageRectH { get; set; }
     public double ClickImageThreshold { get; set; } = 0.9;  // 相似度阈值 0.1~1.0（默认 90%）
     public int ClickImageIndex { get; set; } = 1;           // 命中多个时点击第几个（1 起，按从上到下、从左到右）
+    // 截图那一刻的原始区域：用户手动调过限制区域后可一键还原回来。W/H=0 表示没有原始记录。
+    public string ClickImageOrigMonitor { get; set; } = "";
+    public int ClickImageOrigRectX { get; set; }
+    public int ClickImageOrigRectY { get; set; }
+    public int ClickImageOrigRectW { get; set; }
+    public int ClickImageOrigRectH { get; set; }
     // 禁用：true 则执行时整步跳过（组合/嵌套组合同理）。持久化；UI 用勾选框切换（绑 Enabled）。
     private bool _disabled;
     public bool Disabled { get => _disabled; set { if (_disabled != value) { _disabled = value; Raise(nameof(Disabled)); Raise(nameof(Enabled)); } } }
@@ -202,6 +208,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
             ClickImageRectX = ClickImageRectX, ClickImageRectY = ClickImageRectY, ClickImageRectW = ClickImageRectW, ClickImageRectH = ClickImageRectH,
             ClickImageThreshold = ClickImageThreshold, ClickImageIndex = ClickImageIndex,
+            ClickImageOrigMonitor = ClickImageOrigMonitor, ClickImageOrigRectX = ClickImageOrigRectX, ClickImageOrigRectY = ClickImageOrigRectY,
+            ClickImageOrigRectW = ClickImageOrigRectW, ClickImageOrigRectH = ClickImageOrigRectH,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
             Id = Id, JumpTargetId = JumpTargetId, JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
