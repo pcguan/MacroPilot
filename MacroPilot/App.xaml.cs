@@ -68,10 +68,21 @@ public partial class App : Application
         // 下拉框【收起状态下滚轮不改选项】：滚一下页面就把「左键」变成「中键」是最容易误操作的一种，
         // 而且改完毫无察觉。展开状态照常滚（那是在翻列表，不是在改值）。
         // 用类处理器一次性覆盖全应用的 ComboBox——包括代码里 new 出来的、以后新加的。
+        //
+        // 【光吞掉不行】：只置 Handled 的话事件也到不了外层 ScrollViewer，表现为"鼠标停在下拉框上时
+        // 整个窗口滚不动，得把鼠标挪开才行"。所以吞掉之后要把这一下【转交给父元素】继续冒泡。
         EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ComboBox), UIElement.PreviewMouseWheelEvent,
             new MouseWheelEventHandler((sender, ev) =>
             {
-                if (sender is System.Windows.Controls.ComboBox { IsDropDownOpen: false }) ev.Handled = true;
+                if (sender is not System.Windows.Controls.ComboBox cb || cb.IsDropDownOpen) return;
+                ev.Handled = true;
+                var parent = System.Windows.Media.VisualTreeHelper.GetParent(cb) as UIElement ?? cb.Parent as UIElement;
+                // 转发的是冒泡版 MouseWheelEvent（不是 Preview），不会再被本处理器接住，无递归风险
+                parent?.RaiseEvent(new MouseWheelEventArgs(ev.MouseDevice, ev.Timestamp, ev.Delta)
+                {
+                    RoutedEvent = UIElement.MouseWheelEvent,
+                    Source = cb,
+                });
             }), true);
 
         DispatcherUnhandledException += (_, ev) => { LogCrash(ev.Exception); ev.Handled = true; };
