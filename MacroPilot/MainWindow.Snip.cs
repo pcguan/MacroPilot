@@ -35,7 +35,11 @@ public partial class MainWindow
         public WPoint A, B;
         public List<WPoint>? Pen;                 // 画笔轨迹
         public string Text = "";
+        public Color Color = AnnotColor;          // 每个标注各自的颜色
+        public double Thick = 4;                  // 描边粗细（DIP）；文字用它换算字号；马赛克不用
         public readonly List<UIElement> Visuals = new();   // 预览用的 WPF 元素（撤销/重画时从画布移除）
+
+        public double FontSize => Math.Max(12, Thick * 4);   // 文字没有描边，粗细档位改成字号
 
         /// <summary>矩形语义的标注（A/B 就是对角）：可用 8 向手柄调整大小。其余只能整体移动或拖端点。</summary>
         public bool Boxy => Kind is "rect" or "ellipse" or "mosaic";
@@ -64,7 +68,32 @@ public partial class MainWindow
         }
     }
 
-    private static readonly Color AnnotColor = Color.FromRgb(0xFF, 0x3B, 0x30);   // 标注统一红色（截图工具惯例）
+    private static readonly Color AnnotColor = Color.FromRgb(0xFF, 0x3B, 0x30);   // 标注默认红色（截图工具惯例）
+    private static readonly double[] AnnotThicks = { 2, 4, 7 };                   // 细 / 中 / 粗
+    private static readonly Color[] AnnotPalette =
+    {
+        Color.FromRgb(0xFF, 0x3B, 0x30), Color.FromRgb(0xFF, 0x95, 0x00), Color.FromRgb(0xFF, 0xCC, 0x00),
+        Color.FromRgb(0x34, 0xC7, 0x59), Color.FromRgb(0x0A, 0x84, 0xFF), Color.FromRgb(0xFF, 0xFF, 0xFF),
+    };
+
+    /// <summary>
+    /// 箭头轮廓：尾细头宽的实心多边形（尾 → 杆 → 三角头 → 杆 → 尾），WPF 预览与 GDI 烧录共用同一份几何。
+    /// 旧版是"一条线 + 两根头翼"，看起来像手绘草稿；成熟截图工具都是这种收尾渐宽的实心箭头。
+    /// </summary>
+    private static WPoint[] ArrowPolygon(WPoint a, WPoint b, double thick)
+    {
+        double dx = b.X - a.X, dy = b.Y - a.Y;
+        double len = Math.Sqrt(dx * dx + dy * dy);
+        if (len < 1) return Array.Empty<WPoint>();
+        double ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+        double headHalf = Math.Max(4, thick * 2.4);              // 箭头最宽处的一半
+        double headLen = Math.Min(len * 0.55, headHalf * 2.0);   // 头部长度（短箭头按比例缩，不会只剩一个头）
+        double bodyHalf = Math.Min(headHalf * 0.45, Math.Max(1.2, thick * 0.85));   // 杆与头交界处
+        double tailHalf = Math.Max(0.6, thick * 0.3);            // 尾端最细处
+        var c = new WPoint(b.X - ux * headLen, b.Y - uy * headLen);
+        WPoint Off(WPoint o, double s) => new(o.X + nx * s, o.Y + ny * s);
+        return new[] { Off(a, tailHalf), Off(c, bodyHalf), Off(c, headHalf), b, Off(c, -headHalf), Off(c, -bodyHalf), Off(a, -tailHalf) };
+    }
 
     /// <summary>
     /// 覆盖层上的深色图标工具条（截图 / 编辑限制区域共用，保证两处一致）。
@@ -90,20 +119,28 @@ public partial class MainWindow
             canvas.Children.Add(Bar);
         }
 
-        public Button Add(string tip, UIElement glyph, Action? onClick = null)
+        public Button Add(string tip, UIElement glyph, Action? onClick = null, Panel? host = null, double width = 30)
         {
             var b = new Button
             {
-                Content = glyph, Width = 30, Height = 28, Margin = new Thickness(1, 0, 1, 0), ToolTip = tip,
+                Content = glyph, Width = width, Height = 28, Margin = new Thickness(1, 0, 1, 0), ToolTip = tip,
                 Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.White, Cursor = Cursors.Hand,
                 Template = FlatButtonTemplate(),
             };
             if (onClick != null) b.Click += (_, _) => onClick();
-            _row.Children.Add(b);
+            (host ?? _row).Children.Add(b);
             return b;
         }
 
-        public void Sep() => _row.Children.Add(new Border { Width = 1, Margin = new Thickness(5, 4, 5, 4), Background = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF)) });
+        /// <summary>插入一段可整体显隐的子分组（样式区只在选了工具 / 选中标注时才出现，平时不占地方）。</summary>
+        public StackPanel AddGroup()
+        {
+            var g = new StackPanel { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed };
+            _row.Children.Add(g);
+            return g;
+        }
+
+        public void Sep(Panel? host = null) => (host ?? _row).Children.Add(new Border { Width = 1, Margin = new Thickness(5, 4, 5, 4), Background = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF)) });
 
         public bool HitTest(WPoint pInBar) => Bar.IsVisible && Bar.InputHitTest(pInBar) != null;
 
@@ -243,19 +280,26 @@ public partial class MainWindow
         TextBox? textEditor = null;    // 文字工具的输入框
 
         // 选中标注的装饰（虚线包围盒 + 手柄）：与选区手柄分开，颜色也不同，避免看混。
+        // 选中提示：矩形类不画虚线框（贴轮廓的手柄已经够了，多一圈外扩虚线反而显得图形变大了）；
+        // 画笔/文字没有可拖的手柄，才用一圈【正好贴着包围盒】的虚线；箭头则用一条沿轴线的虚线。
         var selBox = new Rectangle
         {
             Stroke = Brushes.White, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 },
             Visibility = Visibility.Collapsed, IsHitTestVisible = false,
         };
-        Panel.SetZIndex(selBox, 90);
-        canvas.Children.Add(selBox);
+        var selLine = new Line
+        {
+            Stroke = Brushes.White, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 },
+            Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+        };
+        Panel.SetZIndex(selBox, 90); Panel.SetZIndex(selLine, 90);
+        canvas.Children.Add(selBox); canvas.Children.Add(selLine);
         var annotHandles = new Rectangle[8];
         for (int i = 0; i < 8; i++)
         {
             annotHandles[i] = new Rectangle
             {
-                Width = 8, Height = 8, Fill = Brushes.White, Stroke = new SolidColorBrush(AnnotColor), StrokeThickness = 1.5,
+                Width = 8, Height = 8, Fill = Brushes.White, Stroke = new SolidColorBrush(Color.FromArgb(0x99, 0, 0, 0)), StrokeThickness = 1,
                 Visibility = Visibility.Collapsed, IsHitTestVisible = false,
             };
             Panel.SetZIndex(annotHandles[i], 90);
@@ -265,13 +309,43 @@ public partial class MainWindow
         // ---- 工具条（选好区域后出现，跟随选区）----
         var toolbar = new OverlayToolbar(canvas);
         var toolBtns = new Dictionary<string, Button>();
+        var styleGroup = toolbar.AddGroup();       // 粗细 + 颜色（只在握着工具或选中标注时出现）
+        int thickIdx = 1;                          // 默认"中"
+        var curColor = AnnotColor;
+        var thickBtns = new List<Button>();
+        var colorBtns = new List<Button>();
+        Brush SelBg() => new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
+        void SyncStyleBtns()
+        {
+            for (int i = 0; i < thickBtns.Count; i++) thickBtns[i].Background = i == thickIdx ? SelBg() : Brushes.Transparent;
+            for (int i = 0; i < colorBtns.Count; i++) colorBtns[i].Background = AnnotPalette[i] == curColor ? SelBg() : Brushes.Transparent;
+        }
+        // 样式对【当前选中的标注】立即生效（并可撤销），没选中就只影响接下来要画的
+        void ApplyStyle()
+        {
+            var a = selAnnot;
+            if (a == null || a.Kind == "mosaic") { SyncStyleBtns(); return; }
+            var oc = a.Color; double ot = a.Thick;
+            a.Color = curColor; a.Thick = AnnotThicks[thickIdx];
+            if (oc != a.Color || Math.Abs(ot - a.Thick) > 0.01)
+                PushStyle(a, oc, ot);
+            AddVisual(a); LayoutAnnotSel(); SyncStyleBtns();
+        }
         void SetTool(string t)
         {
             tool = tool == t ? "" : t;                       // 再点一次同一个工具＝取消，回到选区调整
             foreach (var kv in toolBtns)
                 kv.Value.Background = kv.Key == tool ? new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0x3B, 0x30)) : Brushes.Transparent;
-            overlay.Cursor = tool.Length == 0 ? Cursors.Cross : Cursors.Pen;
+            // 画标注时也用十字光标：笔形光标的"笔尖"落点看不准，画不准位置
+            overlay.Cursor = Cursors.Cross;
             CommitText();
+            SyncStyle();
+        }
+        void SyncStyle()   // 样式区显隐：握着工具（马赛克除外）或选中了非马赛克标注时才有意义
+        {
+            bool show = (tool.Length > 0 && tool != "mosaic") || (selAnnot != null && selAnnot.Kind != "mosaic");
+            styleGroup.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            LayoutToolbar();
         }
         Button ToolBtn(string kind, string tip, UIElement glyph)
         {
@@ -286,6 +360,27 @@ public partial class MainWindow
         ToolBtn("pen", "画笔（会画进目标图）", GlyphPen());
         ToolBtn("mosaic", "马赛克（会画进目标图）", GlyphMosaic());
         ToolBtn("text", "文字（会画进目标图）", GlyphText());
+
+        // —— 样式：粗细三档 + 六色 ——
+        toolbar.Sep(styleGroup);
+        for (int i = 0; i < AnnotThicks.Length; i++)
+        {
+            int idx = i;
+            string tip = i == 0 ? "细" : i == 1 ? "中" : "粗";
+            var b = toolbar.Add(tip + "（也会应用到当前选中的标注）", GlyphDot(4 + i * 3, Brushes.White),
+                () => { thickIdx = idx; ApplyStyle(); }, styleGroup, 26);
+            thickBtns.Add(b);
+        }
+        toolbar.Sep(styleGroup);
+        for (int i = 0; i < AnnotPalette.Length; i++)
+        {
+            var c = AnnotPalette[i];
+            var b = toolbar.Add("颜色（也会应用到当前选中的标注）", GlyphDot(13, new SolidColorBrush(c)),
+                () => { curColor = c; ApplyStyle(); }, styleGroup, 24);
+            colorBtns.Add(b);
+        }
+        SyncStyleBtns();
+
         toolbar.Sep();
         var undoBtn = ToolBtn("", "撤销上一步标注（Ctrl+Z）", GlyphUndo());
         toolbar.Sep();
@@ -302,27 +397,39 @@ public partial class MainWindow
         }
         void LayoutAnnotSel()
         {
+            selBox.Visibility = Visibility.Collapsed;
+            selLine.Visibility = Visibility.Collapsed;
             if (selAnnot == null)
             {
-                selBox.Visibility = Visibility.Collapsed;
                 foreach (var h in annotHandles) h.Visibility = Visibility.Collapsed;
                 return;
             }
             var b = selAnnot.Bounds;
-            selBox.Visibility = Visibility.Visible;
-            Canvas.SetLeft(selBox, b.X - 3); Canvas.SetTop(selBox, b.Y - 3);
-            selBox.Width = Math.Max(0, b.Width + 6); selBox.Height = Math.Max(0, b.Height + 6);
-            // 矩形语义 → 8 向手柄；箭头 → 两个端点；画笔/文字 → 只能整体移动，不给手柄
             WPoint[] pts;
             if (selAnnot.Boxy)
+            {
+                // 手柄【正好落在轮廓上】，不外扩——外扩会让人觉得选中后图形变大了
                 pts = new[]
                 {
                     new WPoint(b.X, b.Y), new WPoint(b.X + b.Width / 2, b.Y), new WPoint(b.Right, b.Y),
                     new WPoint(b.X, b.Y + b.Height / 2), new WPoint(b.Right, b.Y + b.Height / 2),
                     new WPoint(b.X, b.Bottom), new WPoint(b.X + b.Width / 2, b.Bottom), new WPoint(b.Right, b.Bottom),
                 };
-            else if (selAnnot.Kind == "arrow") pts = new[] { selAnnot.A, selAnnot.B };
-            else pts = Array.Empty<WPoint>();
+            }
+            else if (selAnnot.Kind == "arrow")
+            {
+                selLine.X1 = selAnnot.A.X; selLine.Y1 = selAnnot.A.Y;
+                selLine.X2 = selAnnot.B.X; selLine.Y2 = selAnnot.B.Y;
+                selLine.Visibility = Visibility.Visible;             // 沿箭头本身的虚线，不是方框
+                pts = new[] { selAnnot.A, selAnnot.B };
+            }
+            else
+            {
+                selBox.Visibility = Visibility.Visible;              // 画笔 / 文字：虚线贴着包围盒
+                Canvas.SetLeft(selBox, b.X); Canvas.SetTop(selBox, b.Y);
+                selBox.Width = Math.Max(0, b.Width); selBox.Height = Math.Max(0, b.Height);
+                pts = Array.Empty<WPoint>();
+            }
             for (int i = 0; i < annotHandles.Length; i++)
             {
                 bool on = i < pts.Length;
@@ -338,8 +445,21 @@ public partial class MainWindow
             selAnnot = a;
             // 只重绘仍在列表里的旧选中项：已被删除的不能再画回去（否则留下撤销也删不掉的残影）
             if (old != null && !ReferenceEquals(old, a) && annots.Contains(old)) AddVisual(old);
-            if (a != null) AddVisual(a);
+            if (a != null)
+            {
+                AddVisual(a);
+                if (a.Kind != "mosaic")   // 样式按钮跟着显示选中项当前的颜色/粗细
+                {
+                    curColor = a.Color;
+                    int bi = 0;
+                    for (int i = 1; i < AnnotThicks.Length; i++)
+                        if (Math.Abs(AnnotThicks[i] - a.Thick) < Math.Abs(AnnotThicks[bi] - a.Thick)) bi = i;
+                    thickIdx = bi;
+                }
+            }
             LayoutAnnotSel();
+            SyncStyleBtns();
+            SyncStyle();
         }
         void LayoutSel()
         {
@@ -369,7 +489,7 @@ public partial class MainWindow
             canvas.Children.Remove(textEditor);
             textEditor = null;
             if (t.Trim().Length == 0) return;
-            var a = new Annot { Kind = "text", A = pos, B = pos, Text = t };
+            var a = new Annot { Kind = "text", A = pos, B = pos, Text = t, Color = curColor, Thick = AnnotThicks[thickIdx] };
             AddVisual(a);
             annots.Add(a);
             PushAdd(a);
@@ -379,8 +499,8 @@ public partial class MainWindow
             CommitText();
             textEditor = new TextBox
             {
-                MinWidth = 120, FontSize = 16, Foreground = new SolidColorBrush(AnnotColor), CaretBrush = new SolidColorBrush(AnnotColor),
-                Background = new SolidColorBrush(Color.FromArgb(0x28, 0, 0, 0)), BorderBrush = new SolidColorBrush(AnnotColor), BorderThickness = new Thickness(1),
+                MinWidth = 120, FontSize = Math.Max(12, AnnotThicks[thickIdx] * 4), Foreground = new SolidColorBrush(curColor), CaretBrush = new SolidColorBrush(curColor),
+                Background = new SolidColorBrush(Color.FromArgb(0x28, 0, 0, 0)), BorderBrush = new SolidColorBrush(curColor), BorderThickness = new Thickness(1),
                 AcceptsReturn = false, Padding = new Thickness(2, 0, 2, 0),
             };
             Canvas.SetLeft(textEditor, p.X); Canvas.SetTop(textEditor, p.Y);
@@ -394,90 +514,52 @@ public partial class MainWindow
         {
             foreach (var v in a.Visuals) canvas.Children.Remove(v);
             a.Visuals.Clear();
-            var brush = new SolidColorBrush(AnnotColor);
-            // 选中态：自身描边加粗，底下再垫一圈白色轮廓当高亮——「点边框选中它」得有看得见的反馈。
-            // 【不用 DropShadow 之类的效果】：分层窗（AllowsTransparency）整窗 CPU 光栅化，
-            // 大图形上每帧算一次模糊，拖动时立刻发涩。垫一层几何图形是零成本的。
-            bool on = ReferenceEquals(a, selAnnot);
-            double sw = on ? 3.5 : 2, swThin = on ? 4 : 2.5;
-            var glow = Brushes.White;
+            var brush = new SolidColorBrush(a.Color);
+            // 选中态【不改图形本身的样子】：不加粗、不加白色光晕（那样看起来像描了一圈脏边）。
+            // 选中反馈全交给贴着轮廓的白色小手柄（LayoutAnnotSel），与成熟截图工具一致。
             double x1 = Math.Min(a.A.X, a.B.X), y1 = Math.Min(a.A.Y, a.B.Y);
             double w = Math.Abs(a.B.X - a.A.X), h = Math.Abs(a.B.Y - a.A.Y);
-            // 同一份几何画两遍：先白色粗描边(垫底)，再红色正常描边
-            void Twice(Func<Brush, double, Shape> make, double thick)
-            {
-                if (on)
-                {
-                    var g = make(glow, thick + 3);
-                    g.Opacity = 0.9; a.Visuals.Add(g);
-                }
-                a.Visuals.Add(make(brush, thick));
-            }
             switch (a.Kind)
             {
                 case "rect":
-                    Twice((st, t) =>
-                    {
-                        var rc = new Rectangle { Stroke = st, StrokeThickness = t, Width = w, Height = h, IsHitTestVisible = false };
-                        Canvas.SetLeft(rc, x1); Canvas.SetTop(rc, y1); return rc;
-                    }, sw);
+                    var rc = new Rectangle { Stroke = brush, StrokeThickness = a.Thick, Width = w, Height = h, IsHitTestVisible = false };
+                    Canvas.SetLeft(rc, x1); Canvas.SetTop(rc, y1); a.Visuals.Add(rc);
                     break;
                 case "ellipse":
-                    Twice((st, t) =>
-                    {
-                        var el = new Ellipse { Stroke = st, StrokeThickness = t, Width = w, Height = h, IsHitTestVisible = false };
-                        Canvas.SetLeft(el, x1); Canvas.SetTop(el, y1); return el;
-                    }, sw);
+                    var el = new Ellipse { Stroke = brush, StrokeThickness = a.Thick, Width = w, Height = h, IsHitTestVisible = false };
+                    Canvas.SetLeft(el, x1); Canvas.SetTop(el, y1); a.Visuals.Add(el);
                     break;
                 case "arrow":
-                    foreach (var seg in ArrowSegments(a.A, a.B))
+                    var pts = ArrowPolygon(a.A, a.B, a.Thick);
+                    if (pts.Length > 0)
                     {
-                        var s1 = seg.Item1; var s2 = seg.Item2;
-                        Twice((st, t) => new Line
-                        {
-                            X1 = s1.X, Y1 = s1.Y, X2 = s2.X, Y2 = s2.Y, Stroke = st, StrokeThickness = t,
-                            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false,
-                        }, swThin);
+                        var poly = new Polygon { Fill = brush, IsHitTestVisible = false };
+                        foreach (var pt in pts) poly.Points.Add(pt);
+                        a.Visuals.Add(poly);
                     }
                     break;
                 case "pen":
                     if (a.Pen is { Count: > 1 })
-                        Twice((st, t) =>
+                    {
+                        var pl = new Polyline
                         {
-                            var pl = new Polyline
-                            {
-                                Stroke = st, StrokeThickness = t, StrokeLineJoin = PenLineJoin.Round,
-                                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false,
-                            };
-                            foreach (var pt in a.Pen!) pl.Points.Add(pt);
-                            return pl;
-                        }, swThin);
+                            Stroke = brush, StrokeThickness = a.Thick, StrokeLineJoin = PenLineJoin.Round,
+                            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false,
+                        };
+                        foreach (var pt in a.Pen) pl.Points.Add(pt);
+                        a.Visuals.Add(pl);
+                    }
                     break;
                 case "mosaic":
                     // 实时块化预览：从冻结快照里裁出该区域 → 按块尺寸缩小（缩小即块内均色）→ 最近邻放大回原尺寸，
                     // 与确认时 GDI 烧录用的是同一个块尺寸，所见即所得。
                     var mo = MosaicPreview(snapSrc, x1, y1, w, h, PixPerDip());
                     if (mo != null) { Canvas.SetLeft(mo, x1); Canvas.SetTop(mo, y1); a.Visuals.Add(mo); }
-                    if (on)   // 马赛克本身没有描边，选中时补一圈框当「边框」
-                        Twice((st, t) =>
-                        {
-                            var mb = new Rectangle { Stroke = st, StrokeThickness = t, Width = w, Height = h, IsHitTestVisible = false };
-                            Canvas.SetLeft(mb, x1); Canvas.SetTop(mb, y1); return mb;
-                        }, 2);
                     break;
                 case "text":
-                    var tb = new TextBlock { Text = a.Text, Foreground = brush, FontSize = 16, IsHitTestVisible = false };
+                    var tb = new TextBlock { Text = a.Text, Foreground = brush, FontSize = a.FontSize, IsHitTestVisible = false };
                     tb.Measure(new WSize(double.PositiveInfinity, double.PositiveInfinity));
                     a.B = new WPoint(a.A.X + tb.DesiredSize.Width + 4, a.A.Y + tb.DesiredSize.Height);   // 供选中/命中判定用的包围盒
-                    if (on)   // 文字没有描边可加粗，选中时在底下垫一个白框
-                    {
-                        var bgb = new Rectangle
-                        {
-                            Stroke = glow, StrokeThickness = 2, Width = Math.Max(2, a.B.X - a.A.X), Height = Math.Max(2, a.B.Y - a.A.Y),
-                            IsHitTestVisible = false, Opacity = 0.9,
-                        };
-                        Canvas.SetLeft(bgb, a.A.X); Canvas.SetTop(bgb, a.A.Y); a.Visuals.Add(bgb);
-                    }
                     Canvas.SetLeft(tb, a.A.X + 2); Canvas.SetTop(tb, a.A.Y); a.Visuals.Add(tb);
                     break;
             }
@@ -502,6 +584,12 @@ public partial class MainWindow
         void PushGeom(Annot a, WPoint oa, WPoint ob, List<WPoint>? opn) => undoStack.Add(() =>
         {
             a.A = oa; a.B = ob; if (opn != null) a.Pen = opn;
+            AddVisual(a);
+            if (ReferenceEquals(selAnnot, a)) LayoutAnnotSel();
+        });
+        void PushStyle(Annot a, Color oc, double ot) => undoStack.Add(() =>
+        {
+            a.Color = oc; a.Thick = ot;
             AddVisual(a);
             if (ReferenceEquals(selAnnot, a)) LayoutAnnotSel();
         });
@@ -651,7 +739,7 @@ public partial class MainWindow
             if (tool.Length > 0)
             {
                 if (tool == "text") { StartText(p); return; }
-                drawing = new Annot { Kind = tool, A = p, B = p };
+                drawing = new Annot { Kind = tool, A = p, B = p, Color = curColor, Thick = AnnotThicks[thickIdx] };
                 if (tool == "pen") drawing.Pen = new List<WPoint> { p };
                 overlay.CaptureMouse();
                 return;
@@ -683,7 +771,7 @@ public partial class MainWindow
                     if (hs != "new") { overlay.Cursor = RectPicker.CursorFor(hs); return; }
                 }
                 if (HitAnnot(p) != null) { overlay.Cursor = Cursors.Hand; return; }
-                if (tool.Length > 0) { overlay.Cursor = Cursors.Pen; return; }
+                if (tool.Length > 0) { overlay.Cursor = Cursors.Cross; return; }   // 画标注也用十字，落点看得准
             }
             if (tool.Length > 0) return;
             if (pick.Dragging)
@@ -876,10 +964,6 @@ public partial class MainWindow
     {
         float S(double dip) => (float)(dip * r);
         System.Drawing.PointF P(WPoint p) => new((float)((p.X - selX) * r), (float)((p.Y - selY) * r));
-        var color = System.Drawing.Color.FromArgb(AnnotColor.R, AnnotColor.G, AnnotColor.B);
-        using var pen = new System.Drawing.Pen(color, Math.Max(1f, S(2.5)))
-        { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
-        using var brush = new System.Drawing.SolidBrush(color);
 
         // 马赛克走 LockBits 直接改像素，与 Graphics 不能同时持有同一张位图 → 遇到马赛克先收起画笔，
         // 画完再开新的。按标注顺序处理，叠放次序与预览一致。
@@ -896,6 +980,11 @@ public partial class MainWindow
         {
             foreach (var a in annots)
             {
+                // 颜色/粗细逐个标注取（每个都可以不一样），别再用全局常量
+                var color = System.Drawing.Color.FromArgb(a.Color.R, a.Color.G, a.Color.B);
+                using var pen = new System.Drawing.Pen(color, Math.Max(1f, S(a.Thick)))
+                { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
+                using var brush = new System.Drawing.SolidBrush(color);
                 var p1 = P(a.A); var p2 = P(a.B);
                 float x = Math.Min(p1.X, p2.X), y = Math.Min(p1.Y, p2.Y);
                 float w = Math.Abs(p2.X - p1.X), h = Math.Abs(p2.Y - p1.Y);
@@ -904,7 +993,13 @@ public partial class MainWindow
                     case "rect": if (w > 0 && h > 0) G().DrawRectangle(pen, x, y, w, h); break;
                     case "ellipse": if (w > 0 && h > 0) G().DrawEllipse(pen, x, y, w, h); break;
                     case "arrow":
-                        foreach (var seg in ArrowSegments(a.A, a.B)) G().DrawLine(pen, P(seg.Item1), P(seg.Item2));
+                        var ap = ArrowPolygon(a.A, a.B, a.Thick);
+                        if (ap.Length > 0)
+                        {
+                            var gp = new System.Drawing.PointF[ap.Length];
+                            for (int i = 0; i < ap.Length; i++) gp[i] = P(ap[i]);
+                            G().FillPolygon(brush, gp);      // 实心多边形，与预览同一份几何
+                        }
                         break;
                     case "pen":
                         if (a.Pen is { Count: > 1 })
@@ -915,7 +1010,7 @@ public partial class MainWindow
                         }
                         break;
                     case "text":
-                        using (var font = new System.Drawing.Font("Microsoft YaHei UI", Math.Max(6f, S(12)), System.Drawing.GraphicsUnit.Pixel))
+                        using (var font = new System.Drawing.Font("Microsoft YaHei UI", Math.Max(6f, S(a.FontSize * 0.75)), System.Drawing.GraphicsUnit.Pixel))
                             G().DrawString(a.Text, font, brush, P(a.A));
                         break;
                     case "mosaic":
@@ -964,22 +1059,6 @@ public partial class MainWindow
             Marshal.Copy(buf, 0, data.Scan0, buf.Length);
         }
         finally { bmp.UnlockBits(data); }
-    }
-
-    // 箭头 = 主干 + 两条头翼，返回若干线段（WPF 预览与 GDI 烧录共用同一份几何）。
-    private static List<(WPoint, WPoint)> ArrowSegments(WPoint a, WPoint b)
-    {
-        var segs = new List<(WPoint, WPoint)> { (a, b) };
-        double dx = b.X - a.X, dy = b.Y - a.Y;
-        double len = Math.Sqrt(dx * dx + dy * dy);
-        if (len < 1) return segs;
-        double ux = dx / len, uy = dy / len;
-        double head = Math.Min(16, len * 0.35);
-        const double ang = 0.45;   // 头翼张角（弧度）
-        double c = Math.Cos(ang), s = Math.Sin(ang);
-        segs.Add((b, new WPoint(b.X - head * (ux * c - uy * s), b.Y - head * (uy * c + ux * s))));
-        segs.Add((b, new WPoint(b.X - head * (ux * c + uy * s), b.Y - head * (uy * c - ux * s))));
-        return segs;
     }
 
     // ---- 窗口矩形枚举（自动框选）----
@@ -1050,6 +1129,7 @@ public partial class MainWindow
         g.Children.Add(uni);
         return g;
     }
+    private static UIElement GlyphDot(double size, Brush fill) => new Ellipse { Width = size, Height = size, Fill = fill };
     private static UIElement GlyphText() => new TextBlock { Text = "T", Foreground = Ice, FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = new FontFamily("Segoe UI") };
     private static UIElement GlyphUndo() => new Path
     {
