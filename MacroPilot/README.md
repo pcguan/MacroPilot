@@ -13,7 +13,7 @@
 
 | 目录 / 文件 | 内容 |
 | --- | --- |
-| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/移动图片/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；带稳定 `Id` 供跳转绑定）、`MacroPlan`、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或，三级共用的公共契约）、`LogEntry` |
+| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/移动图片/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；界面上「点击」「移动」各自合成一项，靠「目标」下拉分流到这几个存储类型；带稳定 `Id` 供跳转绑定）、`MacroPlan`、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或，三级共用的公共契约）、`LogEntry` |
 | `Input/` | `IInputBackend` 抽象（含 `MouseDown/MouseUp` 供拖动）；`Ch9329Device`（串口硬件）、`NativeInputDevice`（SendInput）、`Ch9329Scanner`（按 USB VID:PID 过滤后探测串口）、`KeyMap`、`ScreenInfo`（多屏拓扑） |
 | `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片搜索匹配、`ImageStore` 图片外置+孤儿清理、`RandomText`（逆向正则：按模式生成随机串）、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
 | `App.xaml(.cs)` | 单实例（唤起已有窗口后静默退出，**不弹模态**）+ 按需提权 + 显式建窗口 + 全局统一 ToolTip 延迟 |

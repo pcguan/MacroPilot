@@ -1277,15 +1277,18 @@ public partial class MainWindow
         var deviceCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         deviceCombo.Items.Add("鼠标"); deviceCombo.Items.Add("键盘"); deviceCombo.SelectedIndex = 0;
         var mouseActionCombo = new ComboBox { Width = 124, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
-        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("点击坐标"); mouseActionCombo.Items.Add("点击图片");
-        mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("移动图片"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
+        mouseActionCombo.Items.Add("点击"); mouseActionCombo.Items.Add("移动"); mouseActionCombo.Items.Add("拖动"); mouseActionCombo.Items.Add("滚轮");
         mouseActionCombo.SelectedIndex = 0;
+        // 「点击 / 移动」下再分目标：点当前位置、点某个坐标、点某张图片——原先是三个并列动作类型
+        // （点击/点击坐标/点击图片、移动/移动图片），合并后动作列表更短，选项也更贴近"要做什么 + 打哪儿"的思路。
+        // 存储类型不变（MouseClick / MouseClickAt / MouseClickImage / MouseMove / MouseMoveImage），旧方案照常读。
+        var mouseTargetCombo = new ComboBox { Width = 116, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         var keyActionCombo = new ComboBox { Width = 100, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         keyActionCombo.Items.Add("按键"); keyActionCombo.Items.Add("文本"); keyActionCombo.SelectedIndex = 0;
         var runActionCombo = new ComboBox { Width = 108, Height = 32, Margin = new Thickness(8, 0, 0, 0), Visibility = Visibility.Collapsed };
         runActionCombo.Items.Add("等待"); runActionCombo.Items.Add("激活窗口"); runActionCombo.Items.Add("跳转");
         runActionCombo.SelectedIndex = 0;
-        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(keyActionCombo); typeRow.Children.Add(runActionCombo);
+        typeRow.Children.Add(typeCombo); typeRow.Children.Add(deviceCombo); typeRow.Children.Add(mouseActionCombo); typeRow.Children.Add(mouseTargetCombo); typeRow.Children.Add(keyActionCombo); typeRow.Children.Add(runActionCombo);
         baseContent.Children.Add(typeRow);
 
         // 鼠标面板
@@ -1639,13 +1642,38 @@ public partial class MainWindow
         string Cat() => typeCombo.SelectedItem?.ToString() ?? "输入";
         string Dev() => Cat() == "输入" ? (deviceCombo.SelectedItem?.ToString() ?? "鼠标") : "";
         string Act() => Dev() == "鼠标" ? (mouseActionCombo.SelectedItem?.ToString() ?? "点击") : "";
+        string Target() => mouseTargetCombo.SelectedItem?.ToString() ?? "";
+        // 「点击」可以打当前位置/坐标/图片；「移动」只有坐标/图片（移到"当前位置"没有意义）。
+        // 换动作时重建选项，并尽量保留原来选的那个。
+        bool _tgtLoading = false;
+        void SyncTargets()
+        {
+            string a2 = Act();
+            if (a2 is not ("点击" or "移动")) return;
+            var want = a2 == "点击"
+                ? new[] { "当前位置", "坐标", "图片" }
+                : new[] { "坐标", "图片" };
+            var keep = Target();
+            if (mouseTargetCombo.Items.Count == want.Length)
+            {
+                bool same = true;
+                for (int i = 0; i < want.Length; i++) if (!Equals(mouseTargetCombo.Items[i], want[i])) { same = false; break; }
+                if (same) return;
+            }
+            _tgtLoading = true;
+            mouseTargetCombo.Items.Clear();
+            foreach (var t in want) mouseTargetCombo.Items.Add(t);
+            int idx = System.Array.IndexOf(want, keep);
+            mouseTargetCombo.SelectedIndex = idx >= 0 ? idx : 0;
+            _tgtLoading = false;
+        }
         string KeyAct() => Dev() == "键盘" ? (keyActionCombo.SelectedItem?.ToString() ?? "按键") : "";
         string RunAct() => Cat() == "运行" ? (runActionCombo.SelectedItem?.ToString() ?? "等待") : "";
 
         void SyncIdScreens()
         {
             // 需要选屏的两种：激活窗口、带坐标的鼠标动作。只有一块屏时不自动标（没意义），手动「标识屏幕」按钮不受影响。
-            bool coordView = Act() is "移动" or "拖动" or "点击坐标" or "点击图片" or "移动图片";
+            bool coordView = Act() is "拖动" || (Act() is "点击" or "移动" && Target() != "当前位置");
             bool needScreens = (RunAct() == "激活窗口" || coordView) && ScreenInfo.All().Count > 1;
             if (needScreens) ShowIdScreens(win); else HideIdScreens(win);
         }
@@ -1663,20 +1691,24 @@ public partial class MainWindow
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
             windowPanel.Visibility = ra == "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
             jumpPanel.Visibility = ra == "跳转" ? Visibility.Visible : Visibility.Collapsed;
-            // 点击=纯点击（无坐标）；点击坐标=先移动到坐标再点；点击图片=区域内搜图再点。移动/拖动/点击坐标必须有坐标。
-            bool isMove = a == "移动", isClick = a == "点击", isClickAt = a == "点击坐标", isClickImage = a == "点击图片", isDrag = a == "拖动", isWheel = a == "滚轮";
-            bool isMoveImage = a == "移动图片";                 // 与点击图片同一套图片设置，只是到位后不点击
+            // 点击/移动 的目标由第二个下拉决定：当前位置(仅点击) / 坐标 / 图片；拖动固定两个坐标；滚轮无目标。
+            SyncTargets();
+            bool isClick = a == "点击", isMove = a == "移动", isDrag = a == "拖动", isWheel = a == "滚轮";
+            mouseTargetCombo.Visibility = (isClick || isMove) && d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            string tgt = Target();
+            bool isClickAt = isClick && tgt == "坐标", isClickImage = isClick && tgt == "图片";
+            bool isMoveAt = isMove && tgt != "图片", isMoveImage = isMove && tgt == "图片";
             bool anyImage = isClickImage || isMoveImage;
-            bool coordForced = isMove || isDrag || isClickAt;   // 这三种强制有坐标
+            bool coordForced = isMoveAt || isDrag || isClickAt;   // 这三种必须有坐标
             if (coordForced && coordCheck.IsChecked != true) coordCheck.IsChecked = true;
             coordCheck.IsEnabled = false;   // 坐标显隐完全由动作类型决定，勾选框不再交互
-            coordCheck.Content = isMove ? "坐标（移动到该位置，必须设置）"
+            coordCheck.Content = isMoveAt ? "坐标（移动到该位置，必须设置）"
                                : isDrag ? "起点坐标（在此按下鼠标键）"
                                : "坐标（移动到该位置再点击）";
             dragEndPanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;   // 拖动才有终点
 
-            // 任意点击变体（点击/点击坐标/点击图片）都要按钮 + 按住时间；滚轮/移动不要。
-            bool anyClick = isClick || isClickAt || isClickImage;
+            // 点击（无论打哪儿）都要按钮 + 按住时间；滚轮/移动不要。
+            bool anyClick = isClick;
             mouseButtonPanel.Visibility = anyClick || isDrag ? Visibility.Visible : Visibility.Collapsed;
             mouseMovePanel.Visibility = coordForced ? Visibility.Visible : Visibility.Collapsed;   // 纯点击/点击图片无坐标块
             clickImagePanel.Visibility = anyImage ? Visibility.Visible : Visibility.Collapsed;
@@ -1700,6 +1732,7 @@ public partial class MainWindow
         typeCombo.SelectionChanged += (_, _) => UpdatePanels();
         deviceCombo.SelectionChanged += (_, _) => UpdatePanels();
         mouseActionCombo.SelectionChanged += (_, _) => UpdatePanels();
+        mouseTargetCombo.SelectionChanged += (_, _) => { if (!_tgtLoading) UpdatePanels(); };
         runActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         keyActionCombo.SelectionChanged += (_, _) => UpdatePanels();
         buttonCombo.SelectionChanged += (_, _) => UpdatePanels();   // 切「仅移动」要收起按住时间/次数
@@ -1746,8 +1779,10 @@ public partial class MainWindow
                         m.HoldMs = holdRow.GetMs();
                         m.HoldUnit = holdRow.UnitIndex;
                     }
-                    // 动作类型 → 存储类型：点击=MouseClick(纯)、点击坐标=MouseClickAt、点击图片=MouseClickImage、
-                    //           移动=MouseMove、拖动=MouseDrag、滚轮=MouseWheel。旧方案照常可读。
+                    // 「动作 + 目标」→ 存储类型（存储沿用原来的类型名，旧方案零迁移）：
+                    //   点击 + 当前位置/坐标/图片 → MouseClick / MouseClickAt / MouseClickImage
+                    //   移动 + 坐标/图片          → MouseMove / MouseMoveImage
+                    //   拖动 → MouseDrag、滚轮 → MouseWheel
                     void ApplyHoldDefault()
                     {
                         if (holdRow.SetAsDefault)
@@ -1756,16 +1791,11 @@ public partial class MainWindow
                             if (_doc.DefaultHoldMs != ms) { _doc.DefaultHoldMs = ms; settingsChanged = true; }
                         }
                     }
+                    string tgt = Target();
                     if (a == "滚轮")
                     {
                         result = new MacroStep { Type = "MouseWheel", Wheel = ParseInt(wheelText.Text, 0) };
                         mouseRepeat.Apply(result);
-                    }
-                    else if (a == "移动")
-                    {
-                        result = new MacroStep { Type = "MouseMove" };
-                        FillMove(result);
-                        result.LoopCount = 1;   // 移动没有次数概念
                     }
                     else if (a == "拖动")
                     {
@@ -1776,33 +1806,38 @@ public partial class MainWindow
                         result.DragEndMonitor = devE; result.DragEndNormX = nxE; result.DragEndNormY = nyE;
                         result.LoopCount = 1;
                     }
-                    else if (a == "点击")   // 纯点击，不涉及坐标
+                    else if (a == "移动")
                     {
-                        result = new MacroStep { Type = "MouseClick" };
-                        FillButton(result);
-                        mouseRepeat.Apply(result);
-                        ApplyHoldDefault();
+                        if (tgt == "图片")   // 区域内搜图 → 只把光标移到第 N 个命中处
+                        {
+                            result = new MacroStep { Type = "MouseMoveImage" };
+                            clickImage.Apply(result);   // 校验缺图会抛异常，下面统一提示
+                            result.Humanize = humanizeMoveCheck.IsChecked == true;
+                        }
+                        else
+                        {
+                            result = new MacroStep { Type = "MouseMove" };
+                            FillMove(result);
+                        }
+                        result.LoopCount = 1;   // 移动没有次数概念
                     }
-                    else if (a == "点击坐标")   // 必须设坐标：先移动再点击
+                    else if (a == "点击")
                     {
-                        result = new MacroStep { Type = "MouseClickAt" };
-                        FillMove(result);
-                        FillButton(result);
-                        mouseRepeat.Apply(result);
-                        ApplyHoldDefault();
-                    }
-                    else if (a == "移动图片")   // 区域内搜图 → 只把光标移到第 N 个命中处
-                    {
-                        result = new MacroStep { Type = "MouseMoveImage" };
-                        clickImage.Apply(result);   // 校验缺图会抛异常，下面统一提示
-                        result.Humanize = humanizeMoveCheck.IsChecked == true;
-                        result.LoopCount = 1;       // 与「移动」一致：没有次数概念
-                    }
-                    else if (a == "点击图片")   // 区域内搜图 → 点第 N 个
-                    {
-                        result = new MacroStep { Type = "MouseClickImage" };
-                        clickImage.Apply(result);   // 校验缺图会抛异常，下面统一提示
-                        result.Humanize = humanizeMoveCheck.IsChecked == true;
+                        if (tgt == "图片")        // 区域内搜图 → 点第 N 个
+                        {
+                            result = new MacroStep { Type = "MouseClickImage" };
+                            clickImage.Apply(result);
+                            result.Humanize = humanizeMoveCheck.IsChecked == true;
+                        }
+                        else if (tgt == "坐标")   // 先移动到坐标再点
+                        {
+                            result = new MacroStep { Type = "MouseClickAt" };
+                            FillMove(result);
+                        }
+                        else                      // 当前位置：纯点击，不涉及坐标
+                        {
+                            result = new MacroStep { Type = "MouseClick" };
+                        }
                         FillButton(result);
                         mouseRepeat.Apply(result);
                         ApplyHoldDefault();
@@ -1907,11 +1942,11 @@ public partial class MainWindow
             }
             switch (source.Type)
             {
-                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; LoadMoveFields(); break;
-                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; LoadButtonFields(); break;
-                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击坐标"; LoadMoveFields(); LoadButtonFields(); break;
-                case "MouseClickImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; LoadButtonFields(); break;
-                case "MouseMoveImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; break;
+                case "MouseMove":     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; SyncTargets(); mouseTargetCombo.SelectedItem = "坐标"; LoadMoveFields(); break;
+                case "MouseClick":    typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; SyncTargets(); mouseTargetCombo.SelectedItem = "当前位置"; LoadButtonFields(); break;
+                case "MouseClickAt":  typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; SyncTargets(); mouseTargetCombo.SelectedItem = "坐标"; LoadMoveFields(); LoadButtonFields(); break;
+                case "MouseClickImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "点击"; SyncTargets(); mouseTargetCombo.SelectedItem = "图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; LoadButtonFields(); break;
+                case "MouseMoveImage": typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "移动"; SyncTargets(); mouseTargetCombo.SelectedItem = "图片"; clickImage.Load(source); humanizeMoveCheck.IsChecked = source.Humanize; break;
                 case "MouseDrag":
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动";
                     coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields();
