@@ -1,4 +1,6 @@
-﻿using MacroPilot.Models;
+﻿using System.Threading;
+using MacroPilot.Models;
+using MacroPilot.Services;
 using Xunit;
 using static MacroPilot.Tests.Harness;
 
@@ -159,6 +161,74 @@ public class RunConditionTests
         Assert.True(r.LogHas("失败后立刻重新检查"));
         Assert.True(r.LogHas("重复检查 5 次仍未满足"));
         Assert.True(sw.ElapsedMilliseconds < 1000, $"0 间隔不该有等待，实际 {sw.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void 重复检查等待中按停止要立刻结束()
+    {
+        // F11 停止：不管是在"等间隔"还是"刚判完"，都必须尽快收工，不能等到次数/时间上限
+        var s = Key("a"); s.CondNever();
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 1000;   // 间隔较长：验证停止不用等这一轮走完
+        s.RunConditionRetryMax = 0;             // 不限次数，只能靠停止结束
+        var fake = new FakeBackend();
+        var runner = new MacroRunner(fake);
+        string reason = "";
+        var done = new ManualResetEventSlim();
+        runner.Finished += r => { reason = r; done.Set(); };
+        runner.Start(Plan(s), 0);
+        Thread.Sleep(300);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        runner.Stop();
+        Assert.True(done.Wait(3000), "停止后应尽快结束");
+        sw.Stop();
+        Assert.Equal("Stopped", reason);
+        Assert.True(sw.ElapsedMilliseconds < 900, $"停止响应太慢：{sw.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void 零间隔重复检查也能被立刻停止()
+    {
+        // 间隔 0 是连着判的紧循环，最容易漏掉取消检查
+        var s = Key("a"); s.CondNever();
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 0;
+        s.RunConditionRetryMax = 0;
+        var fake = new FakeBackend();
+        var runner = new MacroRunner(fake);
+        string reason = "";
+        var done = new ManualResetEventSlim();
+        runner.Finished += r => { reason = r; done.Set(); };
+        runner.Start(Plan(s), 0);
+        Thread.Sleep(200);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        runner.Stop();
+        Assert.True(done.Wait(3000), "停止后应尽快结束");
+        sw.Stop();
+        Assert.Equal("Stopped", reason);
+        Assert.True(sw.ElapsedMilliseconds < 900, $"停止响应太慢：{sw.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void 暂停后再停止同样要退出()
+    {
+        // 用户实际操作顺序：先 F9 暂停看看情况，再 F11 停止
+        var s = Key("a"); s.CondNever();
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 500;
+        s.RunConditionRetryMax = 0;
+        var fake = new FakeBackend();
+        var runner = new MacroRunner(fake);
+        string reason = "";
+        var done = new ManualResetEventSlim();
+        runner.Finished += r => { reason = r; done.Set(); };
+        runner.Start(Plan(s), 0);
+        Thread.Sleep(200);
+        runner.Pause();
+        Thread.Sleep(200);
+        runner.Stop();
+        Assert.True(done.Wait(3000), "暂停中停止也应结束");
+        Assert.Equal("Stopped", reason);
     }
 
     // ---- 多条件 与/或（v0.4）----

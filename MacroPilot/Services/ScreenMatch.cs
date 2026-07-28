@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -87,9 +87,20 @@ public static class ScreenMatch
     /// </summary>
     public static List<(int cx, int cy, double score)> FindMatches(
         Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold, out double bestScore)
+        => FindMatches(template, regionVx, regionVy, regionW, regionH, threshold, out bestScore, System.Threading.CancellationToken.None);
+
+    /// <summary>
+    /// 同上，另外接受取消令牌：**逐行检查取消**。一次搜索在大区域上可能要几百毫秒到数秒，
+    /// 期间不理会取消的话，用户按下停止（F11）要等这一整轮搜完才生效，手感就是"按了没反应"。
+    /// 取消时抛 <see cref="OperationCanceledException"/>，与引擎其它可取消点一致。
+    /// </summary>
+    public static List<(int cx, int cy, double score)> FindMatches(
+        Bitmap? template, int regionVx, int regionVy, int regionW, int regionH, double threshold,
+        out double bestScore, System.Threading.CancellationToken ct)
     {
         bestScore = 0;
         var result = new List<(int, int, double)>();
+        ct.ThrowIfCancellationRequested();   // 抓屏也要时间，已取消就别开工了
         if (template == null || template.Width <= 0 || template.Height <= 0) return result;
         int tw = template.Width, th = template.Height;
         if (regionW < tw || regionH < th) return result;
@@ -154,6 +165,7 @@ public static class ScreenMatch
         double best = 0;
         for (int oy = 0; oy + th <= regionH; oy++)
         {
+            ct.ThrowIfCancellationRequested();   // 每行一次：几乎零成本，却能把停止响应从"整轮搜索"降到"一行"
             int rowBase = oy * sStride;
             for (int ox = 0; ox + tw <= regionW; ox++)
             {

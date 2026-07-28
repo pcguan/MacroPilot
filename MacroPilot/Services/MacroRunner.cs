@@ -69,7 +69,7 @@ public sealed class MacroRunner
                 while (!ct.IsCancellationRequested)
                 {
                     // 方案级运行条件：不满足时整方案空转等待时间窗开启（每秒复检、可即时停止），不消耗循环次数。
-                    if (!Evaluate(plan, out var planCond))
+                    if (!Evaluate(plan, out var planCond, ct))
                     {
                         // 条件类型现已不止时间段（还有图片出现），日志报【实际观测状态】而不是写死"不在时间段内"。
                         if (!waitingWindow)
@@ -415,7 +415,7 @@ public sealed class MacroRunner
     {
         bool hasCond = RunCondition.Has(step);
         if (hasCond) RunHook(step.PreCondAction, "条件判断前", ct);
-        bool ok = Evaluate(step, out conditionText);
+        bool ok = Evaluate(step, out conditionText, ct);
         // 重复检查：不满足时按间隔重判，直到满足 / 到次数上限 / 到时长上限（Wait 内已处理暂停/停止）。
         // 间隔 0 = 立刻重判（不等待）；次数与时长两个上限【同时生效】，先到者结束。
         if (hasCond && !ok && step.RunConditionRetry)
@@ -426,6 +426,10 @@ public sealed class MacroRunner
             Log?.Invoke("Info", $"条件未满足（{conditionText}），{RetryDesc(interval, max, timeout)}…");
             int tries = 0;
             var clock = System.Diagnostics.Stopwatch.StartNew();
+            // 日志节流：间隔很小（尤其 0=连着判）时每次都记会把 UI 线程灌满——日志刷不过来，
+            // 连 F9/F11 这些要在 UI 线程上派发的热键都会被拖慢。慢速重试仍然每次都记（要看每次的相似度）。
+            bool verboseLog = interval >= 200;
+            var logClock = System.Diagnostics.Stopwatch.StartNew();
             string stopReason = "";
             while (!ok)
             {
@@ -434,10 +438,14 @@ public sealed class MacroRunner
                 if (interval > 0) Wait(interval, ct);
                 else { Gate(ct); ct.ThrowIfCancellationRequested(); }   // 0 间隔也必须给暂停/停止留出响应点
                 tries++;
-                ok = Evaluate(step, out conditionText);
+                ok = Evaluate(step, out conditionText, ct);
                 // 每次判定都留痕：图片类条件会带上本次的实际相似度，
                 // 便于回答"为什么这次没匹配上"（是画面真的变了，还是只差一点点）。
-                Log?.Invoke("Info", $"　重复检查 第 {tries} 次：{conditionText}");
+                if (verboseLog || ok || tries <= 5 || logClock.ElapsedMilliseconds >= 500)
+                {
+                    Log?.Invoke("Info", $"　重复检查 第 {tries} 次：{conditionText}");
+                    logClock.Restart();
+                }
             }
             Log?.Invoke(ok ? "Info" : "Warning", ok
                 ? $"条件已满足（重复检查 {tries} 次）。"
@@ -452,7 +460,7 @@ public sealed class MacroRunner
     /// 判定整组运行条件：多条按 And（全部满足）/ Or（任一满足）组合。
     /// conditionText 汇总各条的实际观测结果，仅在【跳过】时打日志，便于分辨是"没出现"还是"阈值太严"。
     /// </summary>
-    private bool Evaluate(IRunCondition step, out string conditionText)
+    private bool Evaluate(IRunCondition step, out string conditionText, CancellationToken ct = default)
     {
         conditionText = "";
         RunCondition.Normalize(step);            // 幂等：历史存档的单条字段在这里并入列表
@@ -464,7 +472,7 @@ public sealed class MacroRunner
         foreach (var item in step.RunConditions)
         {
             if (!item.IsValid) continue;         // 半成品条目不参与判定，避免误判为不满足
-            bool one = EvaluateOne(item, out var text);
+            bool one = EvaluateOne(item, out var text, ct);
             parts.Add(text);
             acc = or ? (acc || one) : (acc && one);
             // 短路：And 遇假、Or 遇真即可停——图片条件要抓屏搜索，能省一次是一次。
@@ -475,7 +483,7 @@ public sealed class MacroRunner
     }
 
     /// <summary>判定单条条件。</summary>
-    private bool EvaluateOne(ConditionItem c, out string text)
+    private bool EvaluateOne(ConditionItem c, out string text, CancellationToken ct = default)
     {
         if (c.Type == "ImageMatch")
         {
@@ -495,7 +503,7 @@ public sealed class MacroRunner
             }
             else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
             double thr = Math.Clamp(c.Threshold, 0.5, 1.0);
-            var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out double best);
+            var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out double best, ct);
             bool found = hits.Count > 0;
             text = found
                 ? $"目标图片已出现（命中 {hits.Count} 个，最高相似度 {best:0.00} / 阈值 {thr:0.00}）"
@@ -774,7 +782,7 @@ public sealed class MacroRunner
         System.Collections.Generic.List<(int cx, int cy, double score)> hits;
         double best;
         using (var tpl = ScreenMatch.FromPng(bytes))
-            hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out best);
+            hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out best, ct);
 
         if (hits.Count == 0)
             throw new InvalidOperationException(best > 0
