@@ -480,6 +480,12 @@ public partial class MainWindow
             _ => Cursors.Cross,
         };
 
+        /// <summary>用调用方已经算好的抓取方式开始（标注编辑用：轮廓上按下＝move，但 HitTest 会把轮廓判成边）。</summary>
+        public void BeginWith(System.Windows.Point p, string grab)
+        {
+            _grab = grab; _down = p; _ox = X; _oy = Y; _ow = W; _oh = H;
+        }
+
         public void Begin(System.Windows.Point p)
         {
             _grab = HitTest(p);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -331,7 +331,15 @@ public partial class MainWindow
                 Canvas.SetLeft(annotHandles[i], pts[i].X - 4); Canvas.SetTop(annotHandles[i], pts[i].Y - 4);
             }
         }
-        void SelectAnnot(Annot? a) { selAnnot = a; LayoutAnnotSel(); }
+        // 选中要重绘新旧两个标注——选中态是画在图形【自身描边】上的（加粗 + 白色光晕），不只是外面那圈虚线框。
+        void SelectAnnot(Annot? a)
+        {
+            var old = selAnnot;
+            selAnnot = a;
+            if (old != null && !ReferenceEquals(old, a)) AddVisual(old);
+            if (a != null) AddVisual(a);
+            LayoutAnnotSel();
+        }
         void LayoutSel()
         {
             pick.Clamp(snapImg.ActualWidth, snapImg.ActualHeight);
@@ -387,40 +395,89 @@ public partial class MainWindow
             foreach (var v in a.Visuals) canvas.Children.Remove(v);
             a.Visuals.Clear();
             var brush = new SolidColorBrush(AnnotColor);
+            // 选中态：自身描边加粗，底下再垫一圈白色轮廓当高亮——「点边框选中它」得有看得见的反馈。
+            // 【不用 DropShadow 之类的效果】：分层窗（AllowsTransparency）整窗 CPU 光栅化，
+            // 大图形上每帧算一次模糊，拖动时立刻发涩。垫一层几何图形是零成本的。
+            bool on = ReferenceEquals(a, selAnnot);
+            double sw = on ? 3.5 : 2, swThin = on ? 4 : 2.5;
+            var glow = Brushes.White;
             double x1 = Math.Min(a.A.X, a.B.X), y1 = Math.Min(a.A.Y, a.B.Y);
             double w = Math.Abs(a.B.X - a.A.X), h = Math.Abs(a.B.Y - a.A.Y);
+            // 同一份几何画两遍：先白色粗描边(垫底)，再红色正常描边
+            void Twice(Func<Brush, double, Shape> make, double thick)
+            {
+                if (on)
+                {
+                    var g = make(glow, thick + 3);
+                    g.Opacity = 0.9; a.Visuals.Add(g);
+                }
+                a.Visuals.Add(make(brush, thick));
+            }
             switch (a.Kind)
             {
                 case "rect":
-                    var rc = new Rectangle { Stroke = brush, StrokeThickness = 2, Width = w, Height = h, IsHitTestVisible = false };
-                    Canvas.SetLeft(rc, x1); Canvas.SetTop(rc, y1); a.Visuals.Add(rc);
+                    Twice((st, t) =>
+                    {
+                        var rc = new Rectangle { Stroke = st, StrokeThickness = t, Width = w, Height = h, IsHitTestVisible = false };
+                        Canvas.SetLeft(rc, x1); Canvas.SetTop(rc, y1); return rc;
+                    }, sw);
                     break;
                 case "ellipse":
-                    var el = new Ellipse { Stroke = brush, StrokeThickness = 2, Width = w, Height = h, IsHitTestVisible = false };
-                    Canvas.SetLeft(el, x1); Canvas.SetTop(el, y1); a.Visuals.Add(el);
+                    Twice((st, t) =>
+                    {
+                        var el = new Ellipse { Stroke = st, StrokeThickness = t, Width = w, Height = h, IsHitTestVisible = false };
+                        Canvas.SetLeft(el, x1); Canvas.SetTop(el, y1); return el;
+                    }, sw);
                     break;
                 case "arrow":
                     foreach (var seg in ArrowSegments(a.A, a.B))
-                        a.Visuals.Add(new Line { X1 = seg.Item1.X, Y1 = seg.Item1.Y, X2 = seg.Item2.X, Y2 = seg.Item2.Y, Stroke = brush, StrokeThickness = 2.5, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false });
+                    {
+                        var s1 = seg.Item1; var s2 = seg.Item2;
+                        Twice((st, t) => new Line
+                        {
+                            X1 = s1.X, Y1 = s1.Y, X2 = s2.X, Y2 = s2.Y, Stroke = st, StrokeThickness = t,
+                            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false,
+                        }, swThin);
+                    }
                     break;
                 case "pen":
                     if (a.Pen is { Count: > 1 })
-                    {
-                        var pl = new Polyline { Stroke = brush, StrokeThickness = 2.5, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false };
-                        foreach (var pt in a.Pen) pl.Points.Add(pt);
-                        a.Visuals.Add(pl);
-                    }
+                        Twice((st, t) =>
+                        {
+                            var pl = new Polyline
+                            {
+                                Stroke = st, StrokeThickness = t, StrokeLineJoin = PenLineJoin.Round,
+                                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false,
+                            };
+                            foreach (var pt in a.Pen!) pl.Points.Add(pt);
+                            return pl;
+                        }, swThin);
                     break;
                 case "mosaic":
                     // 实时块化预览：从冻结快照里裁出该区域 → 按块尺寸缩小（缩小即块内均色）→ 最近邻放大回原尺寸，
                     // 与确认时 GDI 烧录用的是同一个块尺寸，所见即所得。
                     var mo = MosaicPreview(snapSrc, x1, y1, w, h, PixPerDip());
                     if (mo != null) { Canvas.SetLeft(mo, x1); Canvas.SetTop(mo, y1); a.Visuals.Add(mo); }
+                    if (on)   // 马赛克本身没有描边，选中时补一圈框当「边框」
+                        Twice((st, t) =>
+                        {
+                            var mb = new Rectangle { Stroke = st, StrokeThickness = t, Width = w, Height = h, IsHitTestVisible = false };
+                            Canvas.SetLeft(mb, x1); Canvas.SetTop(mb, y1); return mb;
+                        }, 2);
                     break;
                 case "text":
                     var tb = new TextBlock { Text = a.Text, Foreground = brush, FontSize = 16, IsHitTestVisible = false };
                     tb.Measure(new WSize(double.PositiveInfinity, double.PositiveInfinity));
                     a.B = new WPoint(a.A.X + tb.DesiredSize.Width + 4, a.A.Y + tb.DesiredSize.Height);   // 供选中/命中判定用的包围盒
+                    if (on)   // 文字没有描边可加粗，选中时在底下垫一个白框
+                    {
+                        var bgb = new Rectangle
+                        {
+                            Stroke = glow, StrokeThickness = 2, Width = Math.Max(2, a.B.X - a.A.X), Height = Math.Max(2, a.B.Y - a.A.Y),
+                            IsHitTestVisible = false, Opacity = 0.9,
+                        };
+                        Canvas.SetLeft(bgb, a.A.X); Canvas.SetTop(bgb, a.A.Y); a.Visuals.Add(bgb);
+                    }
                     Canvas.SetLeft(tb, a.A.X + 2); Canvas.SetTop(tb, a.A.Y); a.Visuals.Add(tb);
                     break;
             }
@@ -457,35 +514,34 @@ public partial class MainWindow
         undoBtn.Click += (_, _) => Undo();
 
         // ---- 标注命中判定 ----
-        var scratch = new RectPicker();
-        string BoxHit(WRect b, WPoint p) { scratch.X = b.X; scratch.Y = b.Y; scratch.W = b.Width; scratch.H = b.Height; scratch.Has = true; return scratch.HitTest(p); }
-        static double DistToSeg(WPoint p, WPoint a, WPoint b)
-        {
-            double dx = b.X - a.X, dy = b.Y - a.Y;
-            double len2 = dx * dx + dy * dy;
-            double t = len2 <= 0 ? 0 : Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / len2, 0, 1);
-            double qx = a.X + t * dx, qy = a.Y + t * dy;
-            return Math.Sqrt((p.X - qx) * (p.X - qx) + (p.Y - qy) * (p.Y - qy));
-        }
-        // 返回 "new"（没命中）/ "move" / 矩形手柄名 / 箭头端点 "a"|"b"
+        // 【只认边框，不认内部】：点在图形【轮廓】上才算命中它（选中 / 拖动），图形内部永远留给"接着画新图形"。
+        // 这样在一个矩形里再画一个矩形不会变成把外面那个拖走，也就不需要再为"有没有握着工具"分情况。
+        const double HitTol = 7;
+        // 返回 "new"（没命中）/ "move"（抓轮廓整体移动）/ 缩放手柄名 / 箭头端点 "a"|"b"
         string AnnotHit(Annot a, WPoint p)
         {
-            const double Near = 8;
-            if (a.Boxy) return BoxHit(a.Bounds, p);
+            bool sel = ReferenceEquals(a, selAnnot);
+            if (a.Boxy)
+            {
+                var b = a.Bounds;
+                if (sel) { var hh = Services.HitGeometry.HandleHit(b, p, HitTol); if (hh.Length > 0) return hh; }   // 手柄优先于轮廓
+                bool onEdge = a.Kind == "ellipse" ? Services.HitGeometry.NearEllipseOutline(b, p, HitTol) : Services.HitGeometry.NearRectOutline(b, p, HitTol);
+                return onEdge ? "move" : "new";
+            }
             if (a.Kind == "arrow")
             {
-                if (Math.Abs(p.X - a.A.X) <= Near && Math.Abs(p.Y - a.A.Y) <= Near) return "a";
-                if (Math.Abs(p.X - a.B.X) <= Near && Math.Abs(p.Y - a.B.Y) <= Near) return "b";
-                return DistToSeg(p, a.A, a.B) <= 6 ? "move" : "new";
+                if (sel && Math.Abs(p.X - a.A.X) <= HitTol && Math.Abs(p.Y - a.A.Y) <= HitTol) return "a";
+                if (sel && Math.Abs(p.X - a.B.X) <= HitTol && Math.Abs(p.Y - a.B.Y) <= HitTol) return "b";
+                return Services.HitGeometry.DistToSegment(p, a.A, a.B) <= HitTol ? "move" : "new";
             }
             if (a.Kind == "pen")
             {
                 if (a.Pen is { Count: > 0 })
                     for (int i = 1; i < a.Pen.Count; i++)
-                        if (DistToSeg(p, a.Pen[i - 1], a.Pen[i]) <= 6) return "move";
+                        if (Services.HitGeometry.DistToSegment(p, a.Pen[i - 1], a.Pen[i]) <= HitTol) return "move";
                 return "new";
             }
-            var bb = a.Bounds;   // text
+            var bb = a.Bounds;   // 文字：本身就是一团字，整块都算它
             return p.X >= bb.X - 2 && p.X <= bb.Right + 2 && p.Y >= bb.Y - 2 && p.Y <= bb.Bottom + 2 ? "move" : "new";
         }
         Annot? HitAnnot(WPoint p)
@@ -511,7 +567,7 @@ public partial class MainWindow
             {
                 var b = a.Bounds;
                 boxPick.X = b.X; boxPick.Y = b.Y; boxPick.W = b.Width; boxPick.H = b.Height; boxPick.Has = true;
-                boxPick.Begin(p);
+                boxPick.BeginWith(p, hit);   // 必须用我们算出来的 hit：轮廓上按下是 move，而 RectPicker 自己会判成"边"
             }
             return true;
         }
@@ -560,14 +616,14 @@ public partial class MainWindow
         {
             var p = e.GetPosition(snapImg);
             if (toolbar.HitTest(e.GetPosition(toolbar.Bar))) return;   // 点在工具条上交给按钮
-            // 已选中的标注优先接管：画完立刻就能拖动/改大小，不用先切回指针模式。
-            // 但手上还握着绘制工具时【只让手柄接管】——否则在已画的图形里再画一个就变成了拖走它。
-            if (selAnnot != null)
-            {
-                string hs = AnnotHit(selAnnot, p);
-                if (hs != "new" && !(tool.Length > 0 && hs == "move") && BeginAnnotEdit(selAnnot, p))
-                { overlay.CaptureMouse(); return; }
-            }
+            // ① 已选中的标注：手柄→改大小，轮廓→整体拖动（按下即开拖，选中和拖动是同一个手势的两段）
+            if (selAnnot != null && AnnotHit(selAnnot, p) != "new" && BeginAnnotEdit(selAnnot, p))
+            { overlay.CaptureMouse(); return; }
+            // ② 其它标注的【轮廓】：点中即选中并可直接拖走。握着绘制工具时同样有效——
+            //    因为只认轮廓，图形内部照样能接着画新的，不存在歧义。
+            var hitA = HitAnnot(p);
+            if (hitA != null) { SelectAnnot(hitA); BeginAnnotEdit(hitA, p); overlay.CaptureMouse(); return; }
+            // ③ 握着工具：画新的
             if (tool.Length > 0)
             {
                 SelectAnnot(null);
@@ -577,9 +633,7 @@ public partial class MainWindow
                 overlay.CaptureMouse();
                 return;
             }
-            // 指针模式：点中任何一个标注即选中并开始拖动，点空白才回到选区调整
-            var hitA = HitAnnot(p);
-            if (hitA != null) { SelectAnnot(hitA); BeginAnnotEdit(hitA, p); overlay.CaptureMouse(); return; }
+            // ④ 指针模式点空白：回到选区调整
             SelectAnnot(null);
             downPt = p; dragMoved = false;
             pick.Begin(p);                 // 先按"可能要拖拽"起手；若最终判定是点击，松手时用候选窗口覆盖
@@ -596,6 +650,18 @@ public partial class MainWindow
                 if (drawing.Kind == "pen") drawing.Pen!.Add(p);
                 AddVisual(drawing);
                 return;
+            }
+            // 光标反馈（握着工具时也要给）：选中项的手柄→双向箭头、轮廓→四向移动；其它标注的轮廓→手型（可点选）
+            if (!pick.Dragging)
+            {
+                if (selAnnot != null)
+                {
+                    string hs = AnnotHit(selAnnot, p);
+                    if (hs is "a" or "b" or "move") { overlay.Cursor = Cursors.SizeAll; return; }
+                    if (hs != "new") { overlay.Cursor = RectPicker.CursorFor(hs); return; }
+                }
+                if (HitAnnot(p) != null) { overlay.Cursor = Cursors.Hand; return; }
+                if (tool.Length > 0) { overlay.Cursor = Cursors.Pen; return; }
             }
             if (tool.Length > 0) return;
             if (pick.Dragging)
@@ -662,7 +728,7 @@ public partial class MainWindow
                     autoPickable = false;                    // 选区已定，退出自动识别阶段
                     autoCandidate = null;
                     autoBox.Visibility = Visibility.Collapsed;
-                    hint.Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 标注画完可再拖动/改大小（Delete 删除）· 方向键微调 · 回车完成 · Esc 取消";
+                    hint.Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 点标注的边框可选中它（再拖动/拉手柄改大小、Delete 删除，图形内部仍可继续画）· 回车完成 · Esc 取消";
                 }
                 else pick.Has = false;                       // 空点一下（没命中窗口也没拖出区域）：维持可继续识别
             }
