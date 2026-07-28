@@ -729,15 +729,16 @@ public partial class MainWindow
         }
         var hint = new TextBlock
         {
-            Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车确定 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
+            Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· Ctrl+Z 回退 · 回车确定 · Esc 取消", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0),
             Foreground = Brushes.White, FontSize = 14, FontWeight = FontWeights.SemiBold, Background = new SolidColorBrush(Color.FromArgb(0xC0, 0, 0, 0)), Padding = new Thickness(12, 6, 12, 6), IsHitTestVisible = false,
         };
-        // 确定 / 取消 悬浮条
-        var okBtn = new Button { Content = "确定", Width = 76, Height = 32, Margin = new Thickness(0, 0, 8, 0), Style = (Style)FindResource("PrimaryButton") };
-        var cancelBtn = new Button { Content = "取消", Width = 76, Height = 32, Style = (Style)FindResource("GhostButton") };
-        var barStack = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 40) };
-        barStack.Children.Add(okBtn); barStack.Children.Add(cancelBtn);
-        var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); root.Children.Add(barStack); overlay.Content = root;
+        // 悬浮工具条：与截图覆盖层同一套（跟随区域摆放，区域占满屏时压进区域内部，不会被挤出屏幕）
+        var toolbar = new OverlayToolbar(canvas);
+        var undoBtn = toolbar.Add("回退上次修改（Ctrl+Z）", GlyphUndo());
+        toolbar.Sep();
+        var cancelBtn = toolbar.Add("取消（Esc）", GlyphCross());
+        var okBtn = toolbar.Add("完成（回车）", GlyphCheck());
+        var root = new Grid(); root.Children.Add(snapImg); root.Children.Add(dim); root.Children.Add(canvas); root.Children.Add(hint); overlay.Content = root;
         overlay.SourceInitialized += (_, _) =>
         {
             var h = new System.Windows.Interop.WindowInteropHelper(overlay).Handle;
@@ -759,7 +760,20 @@ public partial class MainWindow
             int px = ox + (int)Math.Round(pick.X * r), py = oy + (int)Math.Round(pick.Y * r);
             sizeLbl.Text = $"({px}, {py})  {(int)Math.Round(pick.W * r)}×{(int)Math.Round(pick.H * r)}";
             Canvas.SetLeft(sizeLbl, pick.X); Canvas.SetTop(sizeLbl, Math.Max(0, pick.Y - 24));
+            if (pick.Has && pick.W >= 2 && pick.H >= 2) toolbar.LayoutFor(pick.X, pick.Y, pick.W, pick.H, snapImg.ActualWidth, snapImg.ActualHeight);
+            else toolbar.LayoutBottomCenter(snapImg.ActualWidth, snapImg.ActualHeight);   // 还没框选也要够得着取消/完成
         }
+        // 回退：每次改动（拖拽一次 / 键盘微调一次）前压一份矩形快照，撤销即还原上一份。
+        var hist = new List<(double x, double y, double w, double h, bool has)>();
+        void PushHist() => hist.Add((pick.X, pick.Y, pick.W, pick.H, pick.Has));
+        void Undo()
+        {
+            if (hist.Count == 0) return;
+            var s = hist[^1]; hist.RemoveAt(hist.Count - 1);
+            pick.X = s.x; pick.Y = s.y; pick.W = s.w; pick.H = s.h; pick.Has = s.has;
+            Layout();
+        }
+        undoBtn.Click += (_, _) => Undo();
         // 既有区域的初始框：不能"只初始化一次"——窗口从默认尺寸被 SetWindowPos 撑到全屏会经历多轮布局，
         // 若在中间某轮（尺寸还不对）就锁死初始化，比例失真会把既有框算得又小又偏（被 clamp 后形同没框），
         // 之后正确尺寸到位也不再重算——表现成"有数据却要重新手动画框"。
@@ -783,7 +797,9 @@ public partial class MainWindow
         // 直接鼠标交互（Thumb 在无边框透明置顶窗里命中不稳，早期"编辑区域不生效"就是拖动没被接住）。
         overlay.MouseLeftButtonDown += (_, e) =>
         {
+            if (toolbar.HitTest(e.GetPosition(toolbar.Bar))) return;   // 点在工具条上交给按钮
             touched = true;   // 用户上手后初始框停止跟随布局重算
+            PushHist();       // 本次拖拽前的状态，供回退
             pick.Begin(e.GetPosition(snapImg));
             overlay.CaptureMouse(); e.Handled = true;
             Layout();
@@ -815,6 +831,7 @@ public partial class MainWindow
         {
             if (e.Key == Key.Escape) { e.Handled = true; outv = null; overlay.Close(); return; }
             if (e.Key == Key.Enter) { e.Handled = true; Confirm(); return; }
+            if (e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Control) != 0) { e.Handled = true; Undo(); return; }
             int dx = 0, dy = 0;
             switch (e.Key)
             {
@@ -827,6 +844,7 @@ public partial class MainWindow
             e.Handled = true;
             if (!pick.Has || pick.Dragging) return;
             touched = true;   // 键盘微调也算上手，停止跟随布局重算
+            PushHist();
             // 步进按【物理像素】算（Shift 10px）再换 DIP；Ctrl+方向键 调大小，否则整体移动。
             double stepDip = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, R());
             pick.Nudge(dx * stepDip, dy * stepDip, (Keyboard.Modifiers & ModifierKeys.Control) != 0);

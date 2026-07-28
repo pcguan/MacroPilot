@@ -1,22 +1,26 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using Button = System.Windows.Controls.Button;
 using TextBox = System.Windows.Controls.TextBox;
 using WRect = System.Windows.Rect;
 using WPoint = System.Windows.Point;
+using WSize = System.Windows.Size;
 
 namespace MacroPilot;
 
 /// <summary>
 /// 截图覆盖层（截取目标图片）：冻屏 → 框选 → 可选标注 → 裁剪出 PNG。
-/// 交互对齐常见截图工具：悬停自动框住窗口、8 向调整选区、方向键微调、底部工具条。
+/// 交互对齐常见截图工具：悬停自动框住窗口、8 向调整选区、方向键微调、跟随选区的工具条、
+/// 画完的标注可再次选中拖动 / 改大小 / 删除。
 ///
 /// 【重要】这里截出来的图是拿去做【图像匹配模板】的：标注（矩形/箭头/画笔/文字/马赛克）会
 /// 烧进模板，导致模板与屏幕实际画面不一致而匹配不上。工具条上已就此给出提示——标注更适合
@@ -31,10 +35,116 @@ public partial class MainWindow
         public WPoint A, B;
         public List<WPoint>? Pen;                 // 画笔轨迹
         public string Text = "";
-        public readonly List<UIElement> Visuals = new();   // 预览用的 WPF 元素（撤销时从画布移除）
+        public readonly List<UIElement> Visuals = new();   // 预览用的 WPF 元素（撤销/重画时从画布移除）
+
+        /// <summary>矩形语义的标注（A/B 就是对角）：可用 8 向手柄调整大小。其余只能整体移动或拖端点。</summary>
+        public bool Boxy => Kind is "rect" or "ellipse" or "mosaic";
+
+        public WRect Bounds
+        {
+            get
+            {
+                if (Kind == "pen" && Pen is { Count: > 0 })
+                {
+                    double x1 = Pen.Min(p => p.X), y1 = Pen.Min(p => p.Y);
+                    return new WRect(x1, y1, Pen.Max(p => p.X) - x1, Pen.Max(p => p.Y) - y1);
+                }
+                return new WRect(Math.Min(A.X, B.X), Math.Min(A.Y, B.Y), Math.Abs(B.X - A.X), Math.Abs(B.Y - A.Y));
+            }
+        }
+
+        public void SetBounds(WRect r) { A = new WPoint(r.X, r.Y); B = new WPoint(r.Right, r.Bottom); }
+
+        public void Offset(double dx, double dy)
+        {
+            A = new WPoint(A.X + dx, A.Y + dy);
+            B = new WPoint(B.X + dx, B.Y + dy);
+            if (Pen != null)
+                for (int i = 0; i < Pen.Count; i++) Pen[i] = new WPoint(Pen[i].X + dx, Pen[i].Y + dy);
+        }
     }
 
     private static readonly Color AnnotColor = Color.FromRgb(0xFF, 0x3B, 0x30);   // 标注统一红色（截图工具惯例）
+
+    /// <summary>
+    /// 覆盖层上的深色图标工具条（截图 / 编辑限制区域共用，保证两处一致）。
+    /// 摆放规则见 <see cref="LayoutFor"/>：选区占满屏幕时会压进选区内部，不会被挤出屏幕外。
+    /// </summary>
+    private sealed class OverlayToolbar
+    {
+        private const double Gap = 8;
+        public readonly Border Bar;
+        private readonly StackPanel _row;
+
+        public OverlayToolbar(Canvas canvas, bool visible = false)
+        {
+            _row = new StackPanel { Orientation = Orientation.Horizontal };
+            Bar = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0xF2, 0x24, 0x24, 0x26)),
+                CornerRadius = new CornerRadius(8), Padding = new Thickness(6, 4, 6, 4), Child = _row,
+                Visibility = visible ? Visibility.Visible : Visibility.Collapsed,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 14, ShadowDepth = 2, Opacity = 0.35, Color = Colors.Black },
+            };
+            Panel.SetZIndex(Bar, 100);   // 标注/手柄是后加进画布的，不置顶会被盖住
+            canvas.Children.Add(Bar);
+        }
+
+        public Button Add(string tip, UIElement glyph, Action? onClick = null)
+        {
+            var b = new Button
+            {
+                Content = glyph, Width = 30, Height = 28, Margin = new Thickness(1, 0, 1, 0), ToolTip = tip,
+                Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.White, Cursor = Cursors.Hand,
+                Template = FlatButtonTemplate(),
+            };
+            if (onClick != null) b.Click += (_, _) => onClick();
+            _row.Children.Add(b);
+            return b;
+        }
+
+        public void Sep() => _row.Children.Add(new Border { Width = 1, Margin = new Thickness(5, 4, 5, 4), Background = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF)) });
+
+        public bool HitTest(WPoint pInBar) => Bar.IsVisible && Bar.InputHitTest(pInBar) != null;
+
+        // 刚从 Collapsed 变可见的那一帧 ActualWidth/Height 还是 0，直接按 0 高度摆位会把工具条推到屏幕外
+        // （全屏选区时表现为"工具条在最下面看不见"）——拿不到实际尺寸就退回 DesiredSize。
+        private (double w, double h) Size()
+        {
+            Bar.UpdateLayout();
+            double w = Bar.ActualWidth, h = Bar.ActualHeight;
+            if (w < 1 || h < 1)
+            {
+                Bar.Measure(new WSize(double.PositiveInfinity, double.PositiveInfinity));
+                w = Bar.DesiredSize.Width; h = Bar.DesiredSize.Height;
+            }
+            return (w, h);
+        }
+
+        /// <summary>贴着选区摆：优先下方，放不下翻到上方，再放不下（选区占满屏）就压进选区内部右下角。</summary>
+        public void LayoutFor(double x, double y, double w, double h, double canvasW, double canvasH)
+        {
+            Bar.Visibility = Visibility.Visible;
+            var (tw, th) = Size();
+            double bx = Math.Clamp(x + w - tw, 0, Math.Max(0, canvasW - tw));
+            double by;
+            if (y + h + Gap + th <= canvasH) by = y + h + Gap;                 // 选区下方
+            else if (y - Gap - th >= 0) by = y - Gap - th;                     // 选区上方
+            else by = Math.Clamp(y + h - th - Gap, 0, Math.Max(0, canvasH - th - Gap));   // 压进选区内部
+            Canvas.SetLeft(Bar, bx); Canvas.SetTop(Bar, by);
+        }
+
+        /// <summary>没有选区时的落位：画布底部居中。</summary>
+        public void LayoutBottomCenter(double canvasW, double canvasH)
+        {
+            Bar.Visibility = Visibility.Visible;
+            var (tw, th) = Size();
+            Canvas.SetLeft(Bar, Math.Max(0, (canvasW - tw) / 2));
+            Canvas.SetTop(Bar, Math.Max(0, canvasH - th - 40));
+        }
+
+        public void Hide() => Bar.Visibility = Visibility.Collapsed;
+    }
 
     private (byte[] png, int vx, int vy, int w, int h)? CaptureTargetImage(Window dialog)
     {
@@ -54,6 +164,7 @@ public partial class MainWindow
 
         var (ox, oy, vw, vh) = VirtualBounds();
         var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
+        var snapSrc = ToBitmapSource(snapshot);   // 冻结的 BitmapSource：马赛克实时预览直接从它取像素
 
         (int x, int y, int w, int h)? sel = null;
         var accent = (Brush)FindResource("Accent");
@@ -62,7 +173,7 @@ public partial class MainWindow
             WindowStyle = WindowStyle.None, AllowsTransparency = true, ResizeMode = ResizeMode.NoResize,
             ShowInTaskbar = false, Topmost = true, Cursor = Cursors.Cross, Background = Brushes.Transparent,
         };
-        var snapImg = new System.Windows.Controls.Image { Source = ToBitmapSource(snapshot), Stretch = Stretch.Fill };
+        var snapImg = new System.Windows.Controls.Image { Source = snapSrc, Stretch = Stretch.Fill };
         var dim = new Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0x30, 0, 0, 0)) };
         var canvas = new Canvas();
         // 自动框选的高亮框（悬停在某个窗口上时显示）
@@ -97,22 +208,34 @@ public partial class MainWindow
         double PixPerDip() => vw / Math.Max(1.0, snapImg.ActualWidth);   // 快照像素 / DIP
         var pick = new RectPicker();
         var annots = new List<Annot>();
+        var undoStack = new List<Action>();   // 每步一个回滚闭包（新增标注 / 改动标注 / 删除标注）
         string tool = "";              // "" = 选区模式；否则为标注工具名
         Annot? drawing = null;         // 正在画的标注
+        Annot? selAnnot = null;        // 当前选中、可拖动/改大小的标注
         TextBox? textEditor = null;    // 文字工具的输入框
 
-        // ---- 工具条（选好区域后出现，跟随选区下方）----
-        var toolbar = new Border
+        // 选中标注的装饰（虚线包围盒 + 手柄）：与选区手柄分开，颜色也不同，避免看混。
+        var selBox = new Rectangle
         {
-            Background = new SolidColorBrush(Color.FromArgb(0xF2, 0x24, 0x24, 0x26)),
-            CornerRadius = new CornerRadius(8), Padding = new Thickness(6, 4, 6, 4),
-            Visibility = Visibility.Collapsed,
-            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 14, ShadowDepth = 2, Opacity = 0.35, Color = Colors.Black },
+            Stroke = Brushes.White, StrokeThickness = 1, StrokeDashArray = new DoubleCollection { 4, 3 },
+            Visibility = Visibility.Collapsed, IsHitTestVisible = false,
         };
-        var tbRow = new StackPanel { Orientation = Orientation.Horizontal };
-        toolbar.Child = tbRow;
-        canvas.Children.Add(toolbar);
+        Panel.SetZIndex(selBox, 90);
+        canvas.Children.Add(selBox);
+        var annotHandles = new Rectangle[8];
+        for (int i = 0; i < 8; i++)
+        {
+            annotHandles[i] = new Rectangle
+            {
+                Width = 8, Height = 8, Fill = Brushes.White, Stroke = new SolidColorBrush(AnnotColor), StrokeThickness = 1.5,
+                Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+            };
+            Panel.SetZIndex(annotHandles[i], 90);
+            canvas.Children.Add(annotHandles[i]);
+        }
 
+        // ---- 工具条（选好区域后出现，跟随选区）----
+        var toolbar = new OverlayToolbar(canvas);
         var toolBtns = new Dictionary<string, Button>();
         void SetTool(string t)
         {
@@ -124,17 +247,10 @@ public partial class MainWindow
         }
         Button ToolBtn(string kind, string tip, UIElement glyph)
         {
-            var b = new Button
-            {
-                Content = glyph, Width = 30, Height = 28, Margin = new Thickness(1, 0, 1, 0), ToolTip = tip,
-                Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.White, Cursor = Cursors.Hand,
-            };
-            b.Template = FlatButtonTemplate();
+            var b = toolbar.Add(tip, glyph);
             if (kind.Length > 0) { toolBtns[kind] = b; b.Click += (_, _) => SetTool(kind); }
-            tbRow.Children.Add(b);
             return b;
         }
-        void Sep() => tbRow.Children.Add(new Border { Width = 1, Margin = new Thickness(5, 4, 5, 4), Background = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF)) });
 
         ToolBtn("rect", "矩形（会画进目标图）", GlyphRect());
         ToolBtn("ellipse", "椭圆（会画进目标图）", GlyphEllipse());
@@ -142,24 +258,50 @@ public partial class MainWindow
         ToolBtn("pen", "画笔（会画进目标图）", GlyphPen());
         ToolBtn("mosaic", "马赛克（会画进目标图）", GlyphMosaic());
         ToolBtn("text", "文字（会画进目标图）", GlyphText());
-        Sep();
-        var undoBtn = ToolBtn("", "撤销上一步标注", GlyphUndo());
-        Sep();
+        toolbar.Sep();
+        var undoBtn = ToolBtn("", "撤销上一步标注（Ctrl+Z）", GlyphUndo());
+        toolbar.Sep();
         var cancelBtn = ToolBtn("", "取消（Esc）", GlyphCross());
         var okBtn = ToolBtn("", "完成（回车）", GlyphCheck());
 
         // ---- 布局 ----
         void LayoutToolbar()
         {
-            if (!pick.Has || pick.W < 2 || pick.H < 2) { toolbar.Visibility = Visibility.Collapsed; return; }
-            toolbar.Visibility = Visibility.Visible;
-            toolbar.UpdateLayout();
-            double tw = toolbar.ActualWidth, th = toolbar.ActualHeight;
-            double x = Math.Min(pick.X + pick.W - tw, Math.Max(0, snapImg.ActualWidth - tw));
-            double y = pick.Y + pick.H + 8;                                  // 默认贴选区下方
-            if (y + th > snapImg.ActualHeight) y = Math.Max(0, pick.Y - th - 8);   // 下方放不下就翻到上方
-            Canvas.SetLeft(toolbar, Math.Max(0, x)); Canvas.SetTop(toolbar, y);
+            if (!pick.Has || pick.W < 2 || pick.H < 2) { toolbar.Hide(); return; }
+            toolbar.LayoutFor(pick.X, pick.Y, pick.W, pick.H, snapImg.ActualWidth, snapImg.ActualHeight);
         }
+        void LayoutAnnotSel()
+        {
+            if (selAnnot == null)
+            {
+                selBox.Visibility = Visibility.Collapsed;
+                foreach (var h in annotHandles) h.Visibility = Visibility.Collapsed;
+                return;
+            }
+            var b = selAnnot.Bounds;
+            selBox.Visibility = Visibility.Visible;
+            Canvas.SetLeft(selBox, b.X - 3); Canvas.SetTop(selBox, b.Y - 3);
+            selBox.Width = Math.Max(0, b.Width + 6); selBox.Height = Math.Max(0, b.Height + 6);
+            // 矩形语义 → 8 向手柄；箭头 → 两个端点；画笔/文字 → 只能整体移动，不给手柄
+            WPoint[] pts;
+            if (selAnnot.Boxy)
+                pts = new[]
+                {
+                    new WPoint(b.X, b.Y), new WPoint(b.X + b.Width / 2, b.Y), new WPoint(b.Right, b.Y),
+                    new WPoint(b.X, b.Y + b.Height / 2), new WPoint(b.Right, b.Y + b.Height / 2),
+                    new WPoint(b.X, b.Bottom), new WPoint(b.X + b.Width / 2, b.Bottom), new WPoint(b.Right, b.Bottom),
+                };
+            else if (selAnnot.Kind == "arrow") pts = new[] { selAnnot.A, selAnnot.B };
+            else pts = Array.Empty<WPoint>();
+            for (int i = 0; i < annotHandles.Length; i++)
+            {
+                bool on = i < pts.Length;
+                annotHandles[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                if (!on) continue;
+                Canvas.SetLeft(annotHandles[i], pts[i].X - 4); Canvas.SetTop(annotHandles[i], pts[i].Y - 4);
+            }
+        }
+        void SelectAnnot(Annot? a) { selAnnot = a; LayoutAnnotSel(); }
         void LayoutSel()
         {
             pick.Clamp(snapImg.ActualWidth, snapImg.ActualHeight);
@@ -188,9 +330,11 @@ public partial class MainWindow
             canvas.Children.Remove(textEditor);
             textEditor = null;
             if (t.Trim().Length == 0) return;
-            var a = new Annot { Kind = "text", A = pos, Text = t };
+            var a = new Annot { Kind = "text", A = pos, B = pos, Text = t };
             AddVisual(a);
             annots.Add(a);
+            PushAdd(a);
+            SelectAnnot(a);
         }
         void StartText(WPoint p)
         {
@@ -238,26 +382,138 @@ public partial class MainWindow
                     }
                     break;
                 case "mosaic":
-                    // 预览用半透明格子示意，真正的像素块化在确认时做（预览要实时块化太重）
-                    var mo = new Rectangle { Fill = new SolidColorBrush(Color.FromArgb(0xB0, 0x80, 0x80, 0x80)), Width = w, Height = h, IsHitTestVisible = false };
-                    Canvas.SetLeft(mo, x1); Canvas.SetTop(mo, y1); a.Visuals.Add(mo);
+                    // 实时块化预览：从冻结快照里裁出该区域 → 按块尺寸缩小（缩小即块内均色）→ 最近邻放大回原尺寸，
+                    // 与确认时 GDI 烧录用的是同一个块尺寸，所见即所得。
+                    var mo = MosaicPreview(snapSrc, x1, y1, w, h, PixPerDip());
+                    if (mo != null) { Canvas.SetLeft(mo, x1); Canvas.SetTop(mo, y1); a.Visuals.Add(mo); }
                     break;
                 case "text":
                     var tb = new TextBlock { Text = a.Text, Foreground = brush, FontSize = 16, IsHitTestVisible = false };
+                    tb.Measure(new WSize(double.PositiveInfinity, double.PositiveInfinity));
+                    a.B = new WPoint(a.A.X + tb.DesiredSize.Width + 4, a.A.Y + tb.DesiredSize.Height);   // 供选中/命中判定用的包围盒
                     Canvas.SetLeft(tb, a.A.X + 2); Canvas.SetTop(tb, a.A.Y); a.Visuals.Add(tb);
                     break;
             }
             foreach (var v in a.Visuals) canvas.Children.Add(v);
         }
 
-        undoBtn.Click += (_, _) =>
+        // ---- 撤销：每一步（新增 / 改动 / 删除）压一个回滚闭包 ----
+        void PushAdd(Annot a) => undoStack.Add(() =>
+        {
+            foreach (var v in a.Visuals) canvas.Children.Remove(v);
+            annots.Remove(a);
+            if (selAnnot == a) SelectAnnot(null);
+        });
+        void PushGeom(Annot a, WPoint oa, WPoint ob, List<WPoint>? opn) => undoStack.Add(() =>
+        {
+            a.A = oa; a.B = ob; if (opn != null) a.Pen = opn;
+            AddVisual(a);
+            if (selAnnot == a) LayoutAnnotSel();
+        });
+        void PushDelete(Annot a, int idx) => undoStack.Add(() =>
+        {
+            annots.Insert(Math.Min(idx, annots.Count), a);
+            AddVisual(a);
+            SelectAnnot(a);
+        });
+        void Undo()
         {
             CommitText();
-            if (annots.Count == 0) return;
-            var last = annots[^1];
-            foreach (var v in last.Visuals) canvas.Children.Remove(v);
-            annots.RemoveAt(annots.Count - 1);
-        };
+            if (undoStack.Count == 0) return;
+            var act = undoStack[^1];
+            undoStack.RemoveAt(undoStack.Count - 1);
+            act();
+        }
+        undoBtn.Click += (_, _) => Undo();
+
+        // ---- 标注命中判定 ----
+        var scratch = new RectPicker();
+        string BoxHit(WRect b, WPoint p) { scratch.X = b.X; scratch.Y = b.Y; scratch.W = b.Width; scratch.H = b.Height; scratch.Has = true; return scratch.HitTest(p); }
+        static double DistToSeg(WPoint p, WPoint a, WPoint b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y;
+            double len2 = dx * dx + dy * dy;
+            double t = len2 <= 0 ? 0 : Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / len2, 0, 1);
+            double qx = a.X + t * dx, qy = a.Y + t * dy;
+            return Math.Sqrt((p.X - qx) * (p.X - qx) + (p.Y - qy) * (p.Y - qy));
+        }
+        // 返回 "new"（没命中）/ "move" / 矩形手柄名 / 箭头端点 "a"|"b"
+        string AnnotHit(Annot a, WPoint p)
+        {
+            const double Near = 8;
+            if (a.Boxy) return BoxHit(a.Bounds, p);
+            if (a.Kind == "arrow")
+            {
+                if (Math.Abs(p.X - a.A.X) <= Near && Math.Abs(p.Y - a.A.Y) <= Near) return "a";
+                if (Math.Abs(p.X - a.B.X) <= Near && Math.Abs(p.Y - a.B.Y) <= Near) return "b";
+                return DistToSeg(p, a.A, a.B) <= 6 ? "move" : "new";
+            }
+            if (a.Kind == "pen")
+            {
+                if (a.Pen is { Count: > 0 })
+                    for (int i = 1; i < a.Pen.Count; i++)
+                        if (DistToSeg(p, a.Pen[i - 1], a.Pen[i]) <= 6) return "move";
+                return "new";
+            }
+            var bb = a.Bounds;   // text
+            return p.X >= bb.X - 2 && p.X <= bb.Right + 2 && p.Y >= bb.Y - 2 && p.Y <= bb.Bottom + 2 ? "move" : "new";
+        }
+        Annot? HitAnnot(WPoint p)
+        {
+            for (int i = annots.Count - 1; i >= 0; i--)     // 后画的在上面，先判它
+                if (AnnotHit(annots[i], p) != "new") return annots[i];
+            return null;
+        }
+
+        // ---- 标注的移动 / 改大小 ----
+        Annot? editing = null;
+        string editGrab = "";
+        WPoint editDown = default, origA = default, origB = default;
+        List<WPoint>? origPen = null;
+        var boxPick = new RectPicker();
+        bool BeginAnnotEdit(Annot a, WPoint p)
+        {
+            string hit = AnnotHit(a, p);
+            if (hit == "new") return false;
+            editing = a; editGrab = hit; editDown = p;
+            origA = a.A; origB = a.B; origPen = a.Pen?.ToList();
+            if (a.Boxy)
+            {
+                var b = a.Bounds;
+                boxPick.X = b.X; boxPick.Y = b.Y; boxPick.W = b.Width; boxPick.H = b.Height; boxPick.Has = true;
+                boxPick.Begin(p);
+            }
+            return true;
+        }
+        void DragAnnotEdit(WPoint p)
+        {
+            if (editing == null) return;
+            double dx = p.X - editDown.X, dy = p.Y - editDown.Y;
+            if (editing.Boxy)
+            {
+                boxPick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight);
+                editing.SetBounds(new WRect(boxPick.X, boxPick.Y, boxPick.W, boxPick.H));
+            }
+            else if (editing.Kind == "arrow" && editGrab == "a") editing.A = new WPoint(origA.X + dx, origA.Y + dy);
+            else if (editing.Kind == "arrow" && editGrab == "b") editing.B = new WPoint(origB.X + dx, origB.Y + dy);
+            else
+            {
+                editing.A = origA; editing.B = origB;
+                if (origPen != null) editing.Pen = origPen.Select(q => new WPoint(q.X, q.Y)).ToList();
+                editing.Offset(dx, dy);
+            }
+            AddVisual(editing);
+            LayoutAnnotSel();
+        }
+        void EndAnnotEdit()
+        {
+            if (editing == null) return;
+            if (boxPick.Dragging) boxPick.End();
+            bool changed = editing.A != origA || editing.B != origB
+                           || (origPen != null && editing.Pen != null && origPen.Count > 0 && editing.Pen[0] != origPen[0]);
+            if (changed) PushGeom(editing, origA, origB, origPen);
+            editing = null; editGrab = "";
+        }
 
         // ---- 鼠标交互 ----
         // 自动识别窗口 vs 手动框选：按下时【两种意图都先保留】，松手时按位移判定——
@@ -273,15 +529,28 @@ public partial class MainWindow
         overlay.MouseLeftButtonDown += (_, e) =>
         {
             var p = e.GetPosition(snapImg);
-            if (toolbar.IsVisible && toolbar.InputHitTest(e.GetPosition(toolbar)) != null) return;   // 点在工具条上交给按钮
+            if (toolbar.HitTest(e.GetPosition(toolbar.Bar))) return;   // 点在工具条上交给按钮
+            // 已选中的标注优先接管：画完立刻就能拖动/改大小，不用先切回指针模式。
+            // 但手上还握着绘制工具时【只让手柄接管】——否则在已画的图形里再画一个就变成了拖走它。
+            if (selAnnot != null)
+            {
+                string hs = AnnotHit(selAnnot, p);
+                if (hs != "new" && !(tool.Length > 0 && hs == "move") && BeginAnnotEdit(selAnnot, p))
+                { overlay.CaptureMouse(); return; }
+            }
             if (tool.Length > 0)
             {
+                SelectAnnot(null);
                 if (tool == "text") { StartText(p); return; }
                 drawing = new Annot { Kind = tool, A = p, B = p };
                 if (tool == "pen") drawing.Pen = new List<WPoint> { p };
                 overlay.CaptureMouse();
                 return;
             }
+            // 指针模式：点中任何一个标注即选中并开始拖动，点空白才回到选区调整
+            var hitA = HitAnnot(p);
+            if (hitA != null) { SelectAnnot(hitA); BeginAnnotEdit(hitA, p); overlay.CaptureMouse(); return; }
+            SelectAnnot(null);
             downPt = p; dragMoved = false;
             pick.Begin(p);                 // 先按"可能要拖拽"起手；若最终判定是点击，松手时用候选窗口覆盖
             overlay.CaptureMouse();
@@ -290,6 +559,7 @@ public partial class MainWindow
         overlay.MouseMove += (_, e) =>
         {
             var p = e.GetPosition(snapImg);
+            if (editing != null) { DragAnnotEdit(p); return; }
             if (drawing != null)
             {
                 drawing.B = p;
@@ -309,6 +579,13 @@ public partial class MainWindow
                 if (dragMoved || !autoPickable) { pick.Drag(p, snapImg.ActualWidth, snapImg.ActualHeight); LayoutSel(); }
                 return;
             }
+            // 光标反馈：选中的标注上给调整手势，其它标注上给移动手势
+            if (selAnnot != null)
+            {
+                string hs = AnnotHit(selAnnot, p);
+                if (hs != "new") { overlay.Cursor = hs is "a" or "b" ? Cursors.SizeAll : RectPicker.CursorFor(hs); return; }
+            }
+            if (HitAnnot(p) != null) { overlay.Cursor = Cursors.SizeAll; return; }
             if (pick.Has) { overlay.Cursor = RectPicker.CursorFor(pick.HitTest(p)); return; }
             // 未框选：找光标下最上层的窗口，高亮它
             if (!autoPickable) return;
@@ -330,12 +607,13 @@ public partial class MainWindow
         };
         overlay.MouseLeftButtonUp += (_, _) =>
         {
+            if (editing != null) { EndAnnotEdit(); overlay.ReleaseMouseCapture(); return; }
             if (drawing != null)
             {
                 overlay.ReleaseMouseCapture();
                 bool tiny = drawing.Kind != "pen" && Math.Abs(drawing.B.X - drawing.A.X) < 3 && Math.Abs(drawing.B.Y - drawing.A.Y) < 3;
                 if (tiny) foreach (var v in drawing.Visuals) canvas.Children.Remove(v);
-                else annots.Add(drawing);
+                else { annots.Add(drawing); PushAdd(drawing); SelectAnnot(drawing); }   // 画完即选中，可继续调整
                 drawing = null;
                 return;
             }
@@ -354,7 +632,7 @@ public partial class MainWindow
                     autoPickable = false;                    // 选区已定，退出自动识别阶段
                     autoCandidate = null;
                     autoBox.Visibility = Visibility.Collapsed;
-                    hint.Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 方向键微调（Ctrl 调大小 / Shift 加速）· 回车完成 · Esc 取消";
+                    hint.Text = "拖动区域内移动 · 拖边/角调整 · 区域外拖拽重画 · 标注画完可再拖动/改大小（Delete 删除）· 方向键微调 · 回车完成 · Esc 取消";
                 }
                 else pick.Has = false;                       // 空点一下（没命中窗口也没拖出区域）：维持可继续识别
             }
@@ -381,11 +659,21 @@ public partial class MainWindow
             {
                 e.Handled = true;
                 if (textEditor != null) { canvas.Children.Remove(textEditor); textEditor = null; return; }
-                if (tool.Length > 0) { SetTool(tool); return; }   // 先退出标注工具
+                if (selAnnot != null) { SelectAnnot(null); return; }   // 先取消标注选中
+                if (tool.Length > 0) { SetTool(tool); return; }        // 再退出标注工具
                 sel = null; overlay.Close(); return;
             }
             if (e.Key == Key.Enter) { e.Handled = true; Finish(); return; }
-            if (e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Control) != 0) { e.Handled = true; undoBtn.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); return; }
+            if (e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Control) != 0) { e.Handled = true; Undo(); return; }
+            if ((e.Key == Key.Delete || e.Key == Key.Back) && selAnnot != null && textEditor == null)
+            {
+                e.Handled = true;
+                var a = selAnnot; int idx = annots.IndexOf(a);
+                foreach (var v in a.Visuals) canvas.Children.Remove(v);
+                annots.Remove(a); SelectAnnot(null);
+                if (idx >= 0) PushDelete(a, idx);
+                return;
+            }
             int dx = 0, dy = 0;
             switch (e.Key)
             {
@@ -396,9 +684,18 @@ public partial class MainWindow
                 default: return;
             }
             e.Handled = true;
+            double step = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, PixPerDip());
+            if (selAnnot != null)   // 选中标注时方向键微调的是标注，不是选区
+            {
+                var a = selAnnot;
+                var oa = a.A; var ob = a.B; var opn = a.Pen?.ToList();
+                a.Offset(dx * step, dy * step);
+                AddVisual(a); LayoutAnnotSel();
+                PushGeom(a, oa, ob, opn);
+                return;
+            }
             if (!pick.Has || pick.Dragging || tool.Length > 0) return;
-            double stepDip = ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1) / Math.Max(0.0001, PixPerDip());
-            pick.Nudge(dx * stepDip, dy * stepDip, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
+            pick.Nudge(dx * step, dy * step, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
             LayoutSel();
         };
         overlay.ShowDialog();
@@ -429,68 +726,126 @@ public partial class MainWindow
         return png == null ? null : (png, rx, ry, rw, rh);
     }
 
+    /// <summary>马赛克块尺寸（物理像素）——预览与烧录必须用同一个，否则所见非所得。</summary>
+    private static int MosaicBlock(double pixPerDip) => Math.Max(4, (int)Math.Round(6 * pixPerDip));
+
+    /// <summary>
+    /// 马赛克的实时预览元素：裁 → 缩小（缩小时的重采样即块内均色）→ 最近邻放大回原尺寸。
+    /// 走 WPF 的位图管线，拖拽时每帧重建也不卡；老实现只画一块灰色半透明矩形，看不到实际效果。
+    /// </summary>
+    private static UIElement? MosaicPreview(BitmapSource src, double x, double y, double w, double h, double r)
+    {
+        if (w < 1 || h < 1) return null;
+        int px = (int)Math.Round(x * r), py = (int)Math.Round(y * r);
+        int pw = (int)Math.Round(w * r), ph = (int)Math.Round(h * r);
+        px = Math.Clamp(px, 0, Math.Max(0, src.PixelWidth - 1));
+        py = Math.Clamp(py, 0, Math.Max(0, src.PixelHeight - 1));
+        pw = Math.Clamp(pw, 1, src.PixelWidth - px);
+        ph = Math.Clamp(ph, 1, src.PixelHeight - py);
+        try
+        {
+            double scale = 1.0 / MosaicBlock(r);
+            var small = new TransformedBitmap(new CroppedBitmap(src, new Int32Rect(px, py, pw, ph)), new ScaleTransform(scale, scale));
+            var img = new System.Windows.Controls.Image { Source = small, Width = w, Height = h, Stretch = Stretch.Fill, IsHitTestVisible = false };
+            RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.NearestNeighbor);   // 放大回去要保持块状，别插值糊掉
+            return img;
+        }
+        catch { return null; }
+    }
+
     // 把标注按 DIP→物理像素 换算后画到裁剪出的位图上（selX/selY 为选区左上角的 DIP 坐标）。
     private static void BurnAnnotations(System.Drawing.Bitmap bmp, List<Annot> annots, double r, double selX, double selY)
     {
         float S(double dip) => (float)(dip * r);
         System.Drawing.PointF P(WPoint p) => new((float)((p.X - selX) * r), (float)((p.Y - selY) * r));
-        using var g = System.Drawing.Graphics.FromImage(bmp);
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
         var color = System.Drawing.Color.FromArgb(AnnotColor.R, AnnotColor.G, AnnotColor.B);
         using var pen = new System.Drawing.Pen(color, Math.Max(1f, S(2.5)))
         { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
         using var brush = new System.Drawing.SolidBrush(color);
 
-        foreach (var a in annots)
+        // 马赛克走 LockBits 直接改像素，与 Graphics 不能同时持有同一张位图 → 遇到马赛克先收起画笔，
+        // 画完再开新的。按标注顺序处理，叠放次序与预览一致。
+        System.Drawing.Graphics? g = null;
+        System.Drawing.Graphics G()
         {
-            var p1 = P(a.A); var p2 = P(a.B);
-            float x = Math.Min(p1.X, p2.X), y = Math.Min(p1.Y, p2.Y);
-            float w = Math.Abs(p2.X - p1.X), h = Math.Abs(p2.Y - p1.Y);
-            switch (a.Kind)
+            if (g != null) return g;
+            g = System.Drawing.Graphics.FromImage(bmp);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+            return g;
+        }
+        try
+        {
+            foreach (var a in annots)
             {
-                case "rect": if (w > 0 && h > 0) g.DrawRectangle(pen, x, y, w, h); break;
-                case "ellipse": if (w > 0 && h > 0) g.DrawEllipse(pen, x, y, w, h); break;
-                case "arrow":
-                    foreach (var seg in ArrowSegments(a.A, a.B)) g.DrawLine(pen, P(seg.Item1), P(seg.Item2));
-                    break;
-                case "pen":
-                    if (a.Pen is { Count: > 1 })
-                    {
-                        var pts = new System.Drawing.PointF[a.Pen.Count];
-                        for (int i = 0; i < a.Pen.Count; i++) pts[i] = P(a.Pen[i]);
-                        g.DrawLines(pen, pts);
-                    }
-                    break;
-                case "text":
-                    using (var font = new System.Drawing.Font("Microsoft YaHei UI", Math.Max(6f, S(12)), System.Drawing.GraphicsUnit.Pixel))
-                        g.DrawString(a.Text, font, brush, P(a.A));
-                    break;
-                case "mosaic":
-                    Mosaic(bmp, (int)x, (int)y, (int)w, (int)h, Math.Max(4, (int)S(6)));
-                    break;
+                var p1 = P(a.A); var p2 = P(a.B);
+                float x = Math.Min(p1.X, p2.X), y = Math.Min(p1.Y, p2.Y);
+                float w = Math.Abs(p2.X - p1.X), h = Math.Abs(p2.Y - p1.Y);
+                switch (a.Kind)
+                {
+                    case "rect": if (w > 0 && h > 0) G().DrawRectangle(pen, x, y, w, h); break;
+                    case "ellipse": if (w > 0 && h > 0) G().DrawEllipse(pen, x, y, w, h); break;
+                    case "arrow":
+                        foreach (var seg in ArrowSegments(a.A, a.B)) G().DrawLine(pen, P(seg.Item1), P(seg.Item2));
+                        break;
+                    case "pen":
+                        if (a.Pen is { Count: > 1 })
+                        {
+                            var pts = new System.Drawing.PointF[a.Pen.Count];
+                            for (int i = 0; i < a.Pen.Count; i++) pts[i] = P(a.Pen[i]);
+                            G().DrawLines(pen, pts);
+                        }
+                        break;
+                    case "text":
+                        using (var font = new System.Drawing.Font("Microsoft YaHei UI", Math.Max(6f, S(12)), System.Drawing.GraphicsUnit.Pixel))
+                            G().DrawString(a.Text, font, brush, P(a.A));
+                        break;
+                    case "mosaic":
+                        g?.Flush(); g?.Dispose(); g = null;
+                        Mosaic(bmp, (int)x, (int)y, (int)w, (int)h, MosaicBlock(r));
+                        break;
+                }
             }
         }
+        finally { g?.Dispose(); }
     }
 
-    // 像素块化：每 block×block 取平均色填回去。
+    // 像素块化：每 block×block 取平均色填回去。走 LockBits——GetPixel/SetPixel 在大区域上要几秒（每像素两次 GDI+ 调用）。
     private static void Mosaic(System.Drawing.Bitmap bmp, int x0, int y0, int w, int h, int block)
     {
         x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
         int x1 = Math.Min(bmp.Width, x0 + w), y1 = Math.Min(bmp.Height, y0 + h);
-        for (int by = y0; by < y1; by += block)
-            for (int bx = x0; bx < x1; bx += block)
-            {
-                int ex = Math.Min(bx + block, x1), ey = Math.Min(by + block, y1);
-                long sr = 0, sg = 0, sb = 0; int n = 0;
-                for (int yy = by; yy < ey; yy++)
-                    for (int xx = bx; xx < ex; xx++)
-                    { var c = bmp.GetPixel(xx, yy); sr += c.R; sg += c.G; sb += c.B; n++; }
-                if (n == 0) continue;
-                var avg = System.Drawing.Color.FromArgb((int)(sr / n), (int)(sg / n), (int)(sb / n));
-                for (int yy = by; yy < ey; yy++)
-                    for (int xx = bx; xx < ex; xx++) bmp.SetPixel(xx, yy, avg);
-            }
+        if (x1 <= x0 || y1 <= y0 || block < 1) return;
+        var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height),
+            System.Drawing.Imaging.ImageLockMode.ReadWrite, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
+        {
+            int stride = data.Stride;
+            var buf = new byte[stride * bmp.Height];
+            Marshal.Copy(data.Scan0, buf, 0, buf.Length);
+            for (int by = y0; by < y1; by += block)
+                for (int bx = x0; bx < x1; bx += block)
+                {
+                    int ex = Math.Min(bx + block, x1), ey = Math.Min(by + block, y1);
+                    long sb = 0, sg = 0, sr = 0; int n = 0;
+                    for (int yy = by; yy < ey; yy++)
+                    {
+                        int row = yy * stride;
+                        for (int xx = bx; xx < ex; xx++)
+                        { int i = row + xx * 4; sb += buf[i]; sg += buf[i + 1]; sr += buf[i + 2]; n++; }
+                    }
+                    if (n == 0) continue;
+                    byte cb = (byte)(sb / n), cg = (byte)(sg / n), cr = (byte)(sr / n);
+                    for (int yy = by; yy < ey; yy++)
+                    {
+                        int row = yy * stride;
+                        for (int xx = bx; xx < ex; xx++)
+                        { int i = row + xx * 4; buf[i] = cb; buf[i + 1] = cg; buf[i + 2] = cr; buf[i + 3] = 0xFF; }
+                    }
+                }
+            Marshal.Copy(buf, 0, data.Scan0, buf.Length);
+        }
+        finally { bmp.UnlockBits(data); }
     }
 
     // 箭头 = 主干 + 两条头翼，返回若干线段（WPF 预览与 GDI 烧录共用同一份几何）。
