@@ -39,7 +39,7 @@ public partial class MainWindow
         public double Thick = 4;                  // 描边粗细（DIP）；文字用它换算字号；马赛克不用
         public readonly List<UIElement> Visuals = new();   // 预览用的 WPF 元素（撤销/重画时从画布移除）
 
-        public double FontSize => Math.Max(12, Thick * 4);   // 文字没有描边，粗细档位改成字号
+        public double FontSize => Math.Max(12, Thick * 5);   // 文字没有描边，粗细档位改成字号
 
         /// <summary>矩形语义的标注（A/B 就是对角）：可用 8 向手柄调整大小。其余只能整体移动或拖端点。</summary>
         public bool Boxy => Kind is "rect" or "ellipse";
@@ -48,7 +48,7 @@ public partial class MainWindow
         public bool IsStroke => Kind is "pen" or "mosaic";
 
         /// <summary>马赛克笔刷半径（DIP）：跟着粗细档位走，与画笔的"线宽"是一回事。</summary>
-        public double BrushRadius => Math.Max(4, Thick * 4);
+        public double BrushRadius => Math.Max(3, Thick * 2.5);
 
         public WRect Bounds
         {
@@ -78,7 +78,7 @@ public partial class MainWindow
     }
 
     private static readonly Color AnnotColor = Color.FromRgb(0xFF, 0x3B, 0x30);   // 标注默认红色（截图工具惯例）
-    private static readonly double[] AnnotThicks = { 2, 4, 7 };                   // 细 / 中 / 粗
+    private static readonly double[] AnnotThicks = { 1.5, 2.5, 4 };               // 细 / 中 / 粗
     private static readonly Color[] AnnotPalette =
     {
         Color.FromRgb(0xFF, 0x3B, 0x30), Color.FromRgb(0xFF, 0x95, 0x00), Color.FromRgb(0xFF, 0xCC, 0x00),
@@ -322,17 +322,47 @@ public partial class MainWindow
             canvas.Children.Add(annotHandles[i]);
         }
 
+        // 标注样式状态（粗细档位 / 颜色）：笔刷光标与样式条都要用，声明在两者之前
+        bool styleShown = false;                   // 样式行是否显示（握着工具 / 选中标注时）
+        int thickIdx = 1;                          // 默认"中"
+        var curColor = AnnotColor;
+        var thickBtns = new List<Button>();
+        var colorBtns = new List<Button>();
+
+        // 样式条顶边的小三角，指向当前工具那颗按钮（对齐成熟截图工具）。用工具条同色，看起来像是从条上长出来的。
+        var caret = new Polygon
+        {
+            Fill = new SolidColorBrush(Color.FromArgb(0xF2, 0x24, 0x24, 0x26)),
+            Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+        };
+        Panel.SetZIndex(caret, 101);
+        canvas.Children.Add(caret);
+
+        // 笔刷光标：马赛克/画笔时把系统光标藏掉，改画一个与实际笔刷等大的圆圈——
+        // 十字光标看不出会糊多大一片，圆圈就是"所见即所涂"。
+        var brushRing = new Ellipse
+        {
+            Stroke = Brushes.White, StrokeThickness = 1.2, Fill = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+            Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+        };
+        Panel.SetZIndex(brushRing, 95);
+        canvas.Children.Add(brushRing);
+        double BrushR() => tool == "mosaic" ? Math.Max(3, AnnotThicks[thickIdx] * 2.5) : Math.Max(2, AnnotThicks[thickIdx] / 2);
+        void MoveBrushRing(WPoint p)
+        {
+            if (tool is not ("mosaic" or "pen")) { brushRing.Visibility = Visibility.Collapsed; return; }
+            double r2 = BrushR();
+            brushRing.Width = r2 * 2; brushRing.Height = r2 * 2;
+            Canvas.SetLeft(brushRing, p.X - r2); Canvas.SetTop(brushRing, p.Y - r2);
+            brushRing.Visibility = Visibility.Visible;
+        }
+
         // ---- 工具条（选好区域后出现，跟随选区）----
         var toolbar = new OverlayToolbar(canvas);
         // 样式行是【独立的第二条】，挂在主工具条正下方（对齐成熟截图工具的排布），
         // 只在握着工具或选中标注时出现，平时不占地方。
         var styleBar = new OverlayToolbar(canvas);
         var toolBtns = new Dictionary<string, Button>();
-        bool styleShown = false;                   // 样式行是否显示（握着工具 / 选中标注时）
-        int thickIdx = 1;                          // 默认"中"
-        var curColor = AnnotColor;
-        var thickBtns = new List<Button>();
-        var colorBtns = new List<Button>();
         Brush SelBg() => new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
         void SyncStyleBtns()
         {
@@ -350,13 +380,23 @@ public partial class MainWindow
                 PushStyle(a, oc, ot);
             AddVisual(a); LayoutAnnotSel(); SyncStyleBtns();
         }
+        void RefreshBrushRing()
+        {
+            if (brushRing.Visibility != Visibility.Visible) return;
+            double r2 = BrushR();
+            double cx = Canvas.GetLeft(brushRing) + brushRing.Width / 2, cy = Canvas.GetTop(brushRing) + brushRing.Height / 2;
+            brushRing.Width = r2 * 2; brushRing.Height = r2 * 2;
+            Canvas.SetLeft(brushRing, cx - r2); Canvas.SetTop(brushRing, cy - r2);
+        }
         void SetTool(string t)
         {
             tool = tool == t ? "" : t;                       // 再点一次同一个工具＝取消，回到选区调整
             foreach (var kv in toolBtns)
                 kv.Value.Background = kv.Key == tool ? new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0x3B, 0x30)) : Brushes.Transparent;
-            // 画标注时也用十字光标：笔形光标的"笔尖"落点看不准，画不准位置
-            overlay.Cursor = Cursors.Cross;
+            // 画标注时用十字光标（笔形光标的"笔尖"落点看不准）；笔迹类改用圆圈笔刷光标
+            bool brushy = tool is "mosaic" or "pen";
+            overlay.Cursor = brushy ? Cursors.None : Cursors.Cross;
+            if (!brushy) brushRing.Visibility = Visibility.Collapsed;
             CommitText();
             SyncStyle();
         }
@@ -391,7 +431,7 @@ public partial class MainWindow
             int idx = i;
             string tip = i == 0 ? "细" : i == 1 ? "中" : "粗";
             thickBtns.Add(styleBar.Add(tip + "（马赛克＝笔刷大小；也会应用到当前选中的标注）",
-                GlyphDot(5 + i * 4, Brushes.White), () => { thickIdx = idx; ApplyStyle(); }, null, 28));
+                GlyphDot(5 + i * 3, Brushes.White), () => { thickIdx = idx; ApplyStyle(); RefreshBrushRing(); }, null, 28));
         }
         styleBar.Sep();
         for (int i = 0; i < AnnotPalette.Length; i++)
@@ -410,7 +450,31 @@ public partial class MainWindow
             var mid = new WPoint(selR.X + selR.Width / 2, selR.Y + selR.Height / 2);
             var area = WorkAreaOnCanvas(mid, ox, oy, PixPerDip(), snapImg.ActualWidth, snapImg.ActualHeight);
             toolbar.LayoutFor(selR, area);
-            if (styleShown) styleBar.LayoutUnder(toolbar, area); else styleBar.Hide();
+            if (styleShown) { styleBar.LayoutUnder(toolbar, area); LayoutCaret(); }
+            else { styleBar.Hide(); caret.Visibility = Visibility.Collapsed; }
+        }
+        // 小三角：横向对准当前工具按钮的中心，纵向贴在样式条靠工具条的那一边（样式条翻到上方时三角朝下）
+        void LayoutCaret()
+        {
+            string kind = tool.Length > 0 ? tool : (selAnnot?.Kind ?? "");
+            if (!toolBtns.TryGetValue(kind, out var btn) || !btn.IsVisible || btn.ActualWidth < 1)
+            { caret.Visibility = Visibility.Collapsed; return; }
+            try
+            {
+                var c = btn.TransformToAncestor(canvas).Transform(new WPoint(btn.ActualWidth / 2, 0));
+                double sTop = Canvas.GetTop(styleBar.Bar), tTop = Canvas.GetTop(toolbar.Bar);
+                bool below = sTop > tTop;                    // 样式条在工具条下方 → 三角朝上
+                const double w = 14, h = 7;
+                caret.Points.Clear();
+                if (below) { caret.Points.Add(new WPoint(0, h)); caret.Points.Add(new WPoint(w / 2, 0)); caret.Points.Add(new WPoint(w, h)); }
+                else { caret.Points.Add(new WPoint(0, 0)); caret.Points.Add(new WPoint(w / 2, h)); caret.Points.Add(new WPoint(w, 0)); }
+                double left = Math.Clamp(c.X - w / 2, Canvas.GetLeft(styleBar.Bar) + 4,
+                                         Canvas.GetLeft(styleBar.Bar) + Math.Max(8, styleBar.Bar.ActualWidth) - w - 4);
+                Canvas.SetLeft(caret, left);
+                Canvas.SetTop(caret, below ? sTop - h + 0.5 : sTop + styleBar.Bar.ActualHeight - 0.5);
+                caret.Visibility = Visibility.Visible;
+            }
+            catch { caret.Visibility = Visibility.Collapsed; }   // 布局还没就绪时不画
         }
         void LayoutAnnotSel()
         {
@@ -691,22 +755,9 @@ public partial class MainWindow
                 if (Services.HitGeometry.DistToSegment(p, a.A, a.B) > HitTol) return "new";
                 return sel ? "move" : "select";
             }
-            if (a.IsStroke)
-            {
-                double tol = a.Kind == "mosaic" ? a.BrushRadius : Math.Max(HitTol, a.Thick);
-                if (a.Pen is { Count: > 0 })
-                {
-                    if (a.Pen.Count == 1)
-                        return Services.HitGeometry.DistToSegment(p, a.Pen[0], a.Pen[0]) <= tol ? (sel ? "move" : "select") : "new";
-                    for (int i = 1; i < a.Pen.Count; i++)
-                        if (Services.HitGeometry.DistToSegment(p, a.Pen[i - 1], a.Pen[i]) <= tol)
-                            return sel ? "move" : "select";
-                }
-                return "new";
-            }
-            var bb = a.Bounds;   // 文字：本身就是一团字，整块都算它
-            if (p.X < bb.X - 2 || p.X > bb.Right + 2 || p.Y < bb.Y - 2 || p.Y > bb.Bottom + 2) return "new";
-            return sel ? "move" : "select";
+            // 画笔 / 马赛克 / 文字【不参与选中】：它们是"涂上去就完事"的笔迹，
+            // 要改就撤销重画；参与选中只会在连续涂抹时误抓。
+            return "new";
         }
         Annot? HitAnnot(WPoint p)
         {
@@ -824,7 +875,7 @@ public partial class MainWindow
             {
                 var cp2 = ClampPt(p);
                 drawing.B = cp2;
-                if (drawing.IsStroke) drawing.Pen!.Add(cp2);
+                if (drawing.IsStroke) { drawing.Pen!.Add(cp2); MoveBrushRing(p); }
                 AddVisual(drawing);
                 return;
             }
@@ -838,6 +889,7 @@ public partial class MainWindow
                     if (hs != "new") { overlay.Cursor = RectPicker.CursorFor(hs); return; }
                 }
                 if (HitAnnot(p) != null) { overlay.Cursor = Cursors.Hand; return; }
+                if (tool is "mosaic" or "pen") { overlay.Cursor = Cursors.None; MoveBrushRing(p); return; }
                 if (tool.Length > 0) { overlay.Cursor = Cursors.Cross; return; }   // 画标注也用十字，落点看得准
             }
             if (tool.Length > 0) return;
@@ -878,6 +930,7 @@ public partial class MainWindow
             }
             else { autoCandidate = null; autoBox.Visibility = Visibility.Collapsed; sizeLbl.Visibility = Visibility.Collapsed; }
         };
+        overlay.MouseLeave += (_, _) => brushRing.Visibility = Visibility.Collapsed;
         overlay.MouseLeftButtonUp += (_, _) =>
         {
             if (editing != null) { EndAnnotEdit(); overlay.ReleaseMouseCapture(); return; }
