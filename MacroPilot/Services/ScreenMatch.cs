@@ -124,26 +124,202 @@ public static class ScreenMatch
         var result = new List<(int, int, double)>();
         int tw = template.Width, th = template.Height;
         int regionW = shot.Width, regionH = shot.Height;
-        int regionVx = offsetX, regionVy = offsetY;
         if (tw <= 0 || th <= 0 || regionW < tw || regionH < th) return result;
 
-        var rt = new Rectangle(0, 0, tw, th);
-        var rs = new Rectangle(0, 0, regionW, regionH);
-        var dt = template.LockBits(rt, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var ds = shot.LockBits(rs, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        int tStride = dt.Stride, sStride = ds.Stride;
-        var tbuf = new byte[tStride * th];
-        var sbuf = new byte[sStride * regionH];
+        var dt = template.LockBits(new Rectangle(0, 0, tw, th), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var ds = shot.LockBits(new Rectangle(0, 0, regionW, regionH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var tbuf = new byte[dt.Stride * th];
+        var sbuf = new byte[ds.Stride * regionH];
         Marshal.Copy(dt.Scan0, tbuf, 0, tbuf.Length);
         Marshal.Copy(ds.Scan0, sbuf, 0, sbuf.Length);
-        template.UnlockBits(dt); shot.UnlockBits(ds);   // shot 由调用方释放（FindMatches 用完即弃，离线验证时要复用）
+        int tStride = dt.Stride, sStride = ds.Stride;
+        template.UnlockBits(dt); shot.UnlockBits(ds);   // shot 由调用方释放（FindMatches 用完即弃，离线验证要复用）
 
-        int n = tw * th;
-        // 权重 = 1 + min(15, 亮度梯度/6)：梯度取与右/下邻的亮度差绝对值的较大者。
-        var weight = new int[n];
-        long totalW = 0;
+        var full = new Matcher(tbuf, tStride, tw, th, sbuf, sStride, regionW, regionH);
+        var raw = new List<(int x, int y, double score)>();
+        double best = 0;
+
+        // ---- 先粗后精 ----
+        // 全分辨率直扫的代价 = 位置数 × 模板像素数：整屏 2560×1440 配 364×41 的模板就是 307 万个位置 ×
+        // 上千次比较，14 核并行也要 0.9 秒。先在 1/k 缩略图上筛一遍，每个位置的比较量降 k² 倍，
+        // 候选再回原图用【原来那套一模一样的判定】精验 → 命中与分数完全不变。
+        //
+        // 【为什么要遍历 k² 个相位】缩略图是按 k×k 分块平均出来的，块的边界固定在 0,k,2k…；
+        // 而目标在屏幕上的位置是任意的，只要它没落在块边界上，块里就混进了周围的背景，
+        // 粗筛分数会掉下去 → 真目标被漏掉（实测：贴在 4 的倍数坐标上能找到，贴在 x%4=2 上就丢了）。
+        // 把区域按 (px,py) 各偏移 0..k-1 各缩一次，就一定有一个相位与目标严丝合缝，于是不可能漏。
+        // 相位共 k² 个、每个位置数是原来的 1/k²，位置总数不变，但每个位置的比较量降到 1/k²。
+        int scale = ChooseScale(tw, th, regionW, regionH);
+        bool coarseUsed = false;
+        if (scale > 1)
         {
-            var lum = new float[n];
+            var (ctb, ctStride, ctw, cth) = Decimate(null, tbuf, tStride, tw, th, 0, 0, scale);
+            if (ctw >= 6 && cth >= 4)
+            {
+                var sat = new Sat(sbuf, sStride, regionW, regionH);
+                double coarseThr = Math.Max(0.5, threshold - CoarseSlack);
+                var candidates = new List<(int x, int y)>();
+                bool overflow = false;
+                for (int py = 0; py < scale && !overflow; py++)
+                    for (int px = 0; px < scale && !overflow; px++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var (cs, csStride, cw, chh) = Decimate(sat, null, 0, regionW, regionH, px, py, scale);
+                        if (cw < ctw || chh < cth) continue;
+                        var coarse = new Matcher(ctb, ctStride, ctw, cth, cs, csStride, cw, chh);
+                        var cand = coarse.Scan(0, cw - ctw, 0, chh - cth, coarseThr, coarseThr, ct, out _);
+                        foreach (var c in cand)
+                        {
+                            candidates.Add((c.x * scale + px, c.y * scale + py));
+                            if (candidates.Count > MaxCoarseCandidates) { overflow = true; break; }   // 粗筛没起到过滤作用，回退全量扫
+                        }
+                    }
+                if (!overflow)
+                {
+                    coarseUsed = true;
+                    var seen = new HashSet<long>();
+                    foreach (var (cx, cy) in candidates)
+                    {
+                        // 相位已经把对齐钉死了，精验只需在 ±1 的邻域内兜一下取整误差
+                        int x0 = Math.Max(0, cx - 1), x1 = Math.Min(regionW - tw, cx + 1);
+                        int y0 = Math.Max(0, cy - 1), y1 = Math.Min(regionH - th, cy + 1);
+                        if (x1 < x0 || y1 < y0) continue;
+                        if (!seen.Add(((long)x0 << 32) | (uint)y0)) continue;   // 邻域重叠，去重省一次扫描
+                        var hits = full.Scan(x0, x1, y0, y1, threshold, Math.Max(0, threshold - DiagSlack), ct, out double b);
+                        if (b > best) best = b;
+                        raw.AddRange(hits);
+                    }
+                }
+            }
+        }
+        if (!coarseUsed)
+            raw = full.Scan(0, regionW - tw, 0, regionH - th, threshold, Math.Max(0, threshold - DiagSlack), ct, out best);
+
+        bestScore = best;
+
+        // 非极大值抑制：按分数降序贪心接受，抑制与已接受项中心距离在半个模板内的其它候选（同一目标的邻近位置）。
+        raw.Sort((p, q) => q.score.CompareTo(p.score));
+        var kept = new List<(int x, int y, double score)>();
+        foreach (var c in raw)
+        {
+            bool near = false;
+            foreach (var k2 in kept)
+                if (Math.Abs(c.x - k2.x) < tw / 2 + 1 && Math.Abs(c.y - k2.y) < th / 2 + 1) { near = true; break; }
+            if (!near) kept.Add(c);
+        }
+        // 阅读顺序（上→下、左→右）排序，供「第几个」稳定索引。
+        kept.Sort((p, q) => p.y != q.y ? p.y.CompareTo(q.y) : p.x.CompareTo(q.x));
+        foreach (var k3 in kept)
+            result.Add((offsetX + k3.x + tw / 2, offsetY + k3.y + th / 2, k3.score));
+        return result;
+    }
+
+    // 缩略图上放宽的阈值幅度。相位对齐后，真目标在缩略图上的块均值与模板缩略图【逐块一致】，
+    // 分数本应接近满分；放宽是为了容忍屏幕上的轻微差异（抗锯齿/动画），宁多勿漏——多出来的候选精验会淘汰。
+    private const double CoarseSlack = 0.15;
+    private const int MaxCoarseCandidates = 4000; // 粗筛没起到过滤作用时（候选过多）回退全量扫
+    private const int MinCoarseArea = 250_000;    // 位置数低于此值时全量扫本来就很快，不值得再缩一遍图
+
+    /// <summary>选缩放倍数：模板缩完不能太小（细节全糊就筛不准），扫描量太小则不缩。</summary>
+    private static int ChooseScale(int tw, int th, int rw, int rh)
+    {
+        long positions = (long)Math.Max(0, rw - tw + 1) * Math.Max(0, rh - th + 1);
+        if (positions < MinCoarseArea) return 1;
+        // k 越大越省：相位共 k² 个、每相位位置数 1/k²（位置总数不变），但每个位置的比较量降到 1/k²。
+        // 上限由"缩完还认得出结构"决定——模板缩到 10×6 以下就只剩几个色块，粗筛会放过一大片。
+        foreach (int k in new[] { 8, 6, 5, 4, 3, 2 })
+            if (tw / k >= 10 && th / k >= 6) return k;
+        return 1;
+    }
+
+    /// <summary>
+    /// 积分图（每通道一张）：算任意矩形的像素和都是 O(1)。相位缩略图要算 k²×(W/k)×(H/k) 个块均值，
+    /// 逐块累加会重复扫整幅图 k² 遍，有了它就只扫一遍。
+    /// </summary>
+    private sealed class Sat
+    {
+        private readonly int[] _b, _g, _r;
+        private readonly int _w;
+        public Sat(byte[] src, int stride, int w, int h)
+        {
+            _w = w + 1;
+            _b = new int[_w * (h + 1)]; _g = new int[_w * (h + 1)]; _r = new int[_w * (h + 1)];
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * stride, cur = (y + 1) * _w, prev = y * _w;
+                int rb = 0, rg = 0, rr = 0;
+                for (int x = 0; x < w; x++)
+                {
+                    int i = row + x * 4;
+                    rb += src[i]; rg += src[i + 1]; rr += src[i + 2];
+                    _b[cur + x + 1] = _b[prev + x + 1] + rb;
+                    _g[cur + x + 1] = _g[prev + x + 1] + rg;
+                    _r[cur + x + 1] = _r[prev + x + 1] + rr;
+                }
+            }
+        }
+        public (int b, int g, int r) Sum(int x, int y, int w, int h)
+        {
+            int a = y * _w + x, bb = y * _w + x + w, c = (y + h) * _w + x, d = (y + h) * _w + x + w;
+            return (_b[d] - _b[bb] - _b[c] + _b[a], _g[d] - _g[bb] - _g[c] + _g[a], _r[d] - _r[bb] - _r[c] + _r[a]);
+        }
+    }
+
+    /// <summary>
+    /// k×k 盒式平均缩小（BGRA），从 (px,py) 起分块——(px,py) 即"相位"。
+    /// 传 sat 就走积分图（区域用），否则直接逐块累加（模板用，只缩一次）。
+    /// 平均比抽样稳：轻微位移/抗锯齿差异会被抹平，粗筛才不会误杀真目标。
+    /// </summary>
+    private static (byte[] buf, int stride, int w, int h) Decimate(
+        Sat? sat, byte[]? src, int stride, int w, int h, int px, int py, int k)
+    {
+        int nw = (w - px) / k, nh = (h - py) / k;
+        if (nw <= 0 || nh <= 0) return (Array.Empty<byte>(), 0, 0, 0);
+        int nstride = nw * 4;
+        var dst = new byte[nstride * nh];
+        int m = k * k;
+        for (int y = 0; y < nh; y++)
+        {
+            int drow = y * nstride;
+            for (int x = 0; x < nw; x++)
+            {
+                int sb, sg, sr;
+                if (sat != null) (sb, sg, sr) = sat.Sum(px + x * k, py + y * k, k, k);
+                else
+                {
+                    sb = sg = sr = 0;
+                    for (int dy = 0; dy < k; dy++)
+                    {
+                        int srow = (py + y * k + dy) * stride + (px + x * k) * 4;
+                        for (int dx = 0; dx < k; dx++)
+                        { int i = srow + dx * 4; sb += src![i]; sg += src[i + 1]; sr += src[i + 2]; }
+                    }
+                }
+                int o = drow + x * 4;
+                dst[o] = (byte)(sb / m); dst[o + 1] = (byte)(sg / m); dst[o + 2] = (byte)(sr / m); dst[o + 3] = 255;
+            }
+        }
+        return (dst, nstride, nw, nh);
+    }
+
+    /// <summary>
+    /// 一次匹配所需的预处理与扫描：模板像素按【梯度权重降序】排好，配合预算早退。
+    /// 抽成类是为了让"缩略图粗筛"和"原图精验"共用同一套判定——精度不打折的前提就在这里。
+    /// </summary>
+    private sealed class Matcher
+    {
+        private readonly byte[] _s;
+        private readonly int _sStride, _rw, _rh, _tw, _th, _n;
+        private readonly int[] _wS, _sOff;
+        private readonly byte[] _tB, _tG, _tR;
+        private readonly long _totalW;
+
+        public Matcher(byte[] tbuf, int tStride, int tw, int th, byte[] sbuf, int sStride, int rw, int rh)
+        {
+            _s = sbuf; _sStride = sStride; _rw = rw; _rh = rh; _tw = tw; _th = th; _n = tw * th;
+            // 权重 = 1 + min(15, 亮度梯度/6)：梯度取与右/下邻的亮度差绝对值的较大者。
+            var weight = new int[_n];
+            var lum = new float[_n];
             for (int y = 0; y < th; y++)
             {
                 int row = y * tStride;
@@ -153,6 +329,7 @@ public static class ScreenMatch
                     lum[y * tw + x] = 0.114f * tbuf[i] + 0.587f * tbuf[i + 1] + 0.299f * tbuf[i + 2];   // BGRA
                 }
             }
+            long total = 0;
             for (int y = 0; y < th; y++)
                 for (int x = 0; x < tw; x++)
                 {
@@ -160,101 +337,88 @@ public static class ScreenMatch
                     float gx = x + 1 < tw ? Math.Abs(lum[i + 1] - lum[i]) : 0;
                     float gy = y + 1 < th ? Math.Abs(lum[i + tw] - lum[i]) : 0;
                     int w = 1 + Math.Min(15, (int)(Math.Max(gx, gy) / 6));
-                    weight[i] = w; totalW += w;
+                    weight[i] = w; total += w;
                 }
-        }
-        // 结构像素优先：模板像素按权重降序排列（同时预取排好序的模板 BGR 与屏幕偏移，避免内层反查）。
-        var order = new int[n];
-        for (int i = 0; i < n; i++) order[i] = i;
-        Array.Sort(order, (a, b) => weight[b].CompareTo(weight[a]));
-        var wS = new int[n]; var tB = new byte[n]; var tG = new byte[n]; var tR = new byte[n]; var sOff = new int[n];
-        for (int k = 0; k < n; k++)
-        {
-            int i = order[k]; int y = i / tw, x = i % tw;
-            wS[k] = weight[i];
-            int ti = y * tStride + x * 4;
-            tB[k] = tbuf[ti]; tG[k] = tbuf[ti + 1]; tR[k] = tbuf[ti + 2];
-            sOff[k] = y * sStride + x * 4;   // 相对滑窗左上角的屏幕缓冲偏移
-        }
-
-        var raw = new List<(int x, int y, double score)>();
-        long budget = (long)(totalW * (1.0 - threshold));                                // 加权差异超过它即不达标
-        long diagBudget = (long)(totalW * (1.0 - Math.Max(0, threshold - DiagSlack)));    // 放宽一档，用于统计最高相似度
-        double best = 0;
-        int rows = regionH - th + 1, cols = regionW - tw + 1;
-
-        // 【按行并行】：本质是 rows×cols 个互不相干的位置各算各的，天然可并行；共享的 tbuf/sbuf 全是只读。
-        // 现实数据量很吓人——2560×1440 的区域配 364×41 的模板就有 307 万个位置，单线程实测要十几秒
-        // （每个位置平均要比到上千个像素才够爆预算）。运行条件的"重复检查"会把这笔开销按次数翻倍，
-        // 用户那边就表现成"两条日志之间隔了 33 秒"。并行后按核数近似线性变快，且结果与单线程完全一致。
-        var lk = new object();
-        void ScanRow(int oy, List<(int x, int y, double score)> localHits, ref double localBest)
-        {
-            int rowBase = oy * sStride;
-            for (int ox = 0; ox < cols; ox++)
+            _totalW = total;
+            // 结构像素优先：按权重降序排列（同时预取排好序的模板 BGR 与屏幕偏移，避免内层反查）。
+            var order = new int[_n];
+            for (int i = 0; i < _n; i++) order[i] = i;
+            Array.Sort(order, (a, b) => weight[b].CompareTo(weight[a]));
+            _wS = new int[_n]; _tB = new byte[_n]; _tG = new byte[_n]; _tR = new byte[_n]; _sOff = new int[_n];
+            for (int k = 0; k < _n; k++)
             {
-                int baseOff = rowBase + ox * 4;
-                long pen = 0;
-                bool ok = true;
-                for (int k = 0; k < n; k++)
+                int i = order[k]; int y = i / tw, x = i % tw;
+                _wS[k] = weight[i];
+                int ti = y * tStride + x * 4;
+                _tB[k] = tbuf[ti]; _tG[k] = tbuf[ti + 1]; _tR[k] = tbuf[ti + 2];
+                _sOff[k] = y * _sStride + x * 4;   // 相对滑窗左上角的屏幕缓冲偏移
+            }
+        }
+
+        /// <summary>
+        /// 扫描 [x0,x1]×[y0,y1] 这些左上角位置。hitThr=判为命中的阈值；diagThr=早退门槛（比 hitThr 低，
+        /// 用于统计"最高相似度"这个诊断值）。返回命中列表，bestScore 给出扫到的最高分。
+        /// </summary>
+        public List<(int x, int y, double score)> Scan(
+            int x0, int x1, int y0, int y1, double hitThr, double diagThr,
+            System.Threading.CancellationToken ct, out double bestScore)
+        {
+            var raw = new List<(int x, int y, double score)>();
+            bestScore = 0;
+            x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
+            x1 = Math.Min(x1, _rw - _tw); y1 = Math.Min(y1, _rh - _th);
+            if (x1 < x0 || y1 < y0) return raw;
+            long budget = (long)(_totalW * (1.0 - hitThr));
+            long diagBudget = (long)(_totalW * (1.0 - diagThr));
+            double best = 0;
+            var lk = new object();
+
+            void ScanRow(int oy, List<(int x, int y, double score)> hits, ref double localBest)
+            {
+                int rowBase = oy * _sStride;
+                for (int ox = x0; ox <= x1; ox++)
                 {
-                    int si = baseOff + sOff[k];
-                    if (Math.Abs(tB[k] - sbuf[si]) > Tolerance ||
-                        Math.Abs(tG[k] - sbuf[si + 1]) > Tolerance ||
-                        Math.Abs(tR[k] - sbuf[si + 2]) > Tolerance)
+                    int baseOff = rowBase + ox * 4;
+                    long pen = 0;
+                    bool ok = true;
+                    for (int k = 0; k < _n; k++)
                     {
-                        pen += wS[k];
-                        if (pen > diagBudget) { ok = false; break; }   // 连"接近"都算不上，放弃该位置
-                    }
-                }
-                if (!ok) continue;
-                double score = 1.0 - (double)pen / totalW;
-                if (score > localBest) localBest = score;
-                if (pen <= budget) localHits.Add((ox, oy, score));     // 达阈值才算命中
-            }
-        }
-
-        if (rows > 0 && cols > 0)
-        {
-            var po = new System.Threading.Tasks.ParallelOptions { CancellationToken = ct };
-            try
-            {
-                System.Threading.Tasks.Parallel.For(0, rows, po,
-                    () => (hits: new List<(int x, int y, double score)>(), best: 0.0),
-                    (oy, _, local) =>
-                    {
-                        double lb = local.best;
-                        ScanRow(oy, local.hits, ref lb);
-                        return (local.hits, lb);
-                    },
-                    local =>
-                    {
-                        lock (lk)
+                        int si = baseOff + _sOff[k];
+                        if (Math.Abs(_tB[k] - _s[si]) > Tolerance ||
+                            Math.Abs(_tG[k] - _s[si + 1]) > Tolerance ||
+                            Math.Abs(_tR[k] - _s[si + 2]) > Tolerance)
                         {
-                            raw.AddRange(local.hits);
-                            if (local.best > best) best = local.best;
+                            pen += _wS[k];
+                            if (pen > diagBudget) { ok = false; break; }   // 连"接近"都算不上，放弃该位置
                         }
-                    });
+                    }
+                    if (!ok) continue;
+                    double score = 1.0 - (double)pen / _totalW;
+                    if (score > localBest) localBest = score;
+                    if (pen <= budget) hits.Add((ox, oy, score));          // 达阈值才算命中
+                }
             }
-            catch (AggregateException ex) when (ex.InnerException is OperationCanceledException oce) { throw oce; }
-        }
-        bestScore = best;
 
-        // 非极大值抑制：按分数降序贪心接受，抑制与已接受项中心距离在半个模板内的其它候选（同一目标的邻近位置）。
-        raw.Sort((p, q) => q.score.CompareTo(p.score));
-        var kept = new List<(int x, int y, double score)>();
-        foreach (var c in raw)
-        {
-            bool near = false;
-            foreach (var k in kept)
-                if (Math.Abs(c.x - k.x) < tw / 2 + 1 && Math.Abs(c.y - k.y) < th / 2 + 1) { near = true; break; }
-            if (!near) kept.Add(c);
+            // 按行并行：位置之间互不相干，共享缓冲全只读。行数很少时（精验小窗口）并行反而是负担，直接串行。
+            if (y1 - y0 < 8)
+            {
+                for (int oy = y0; oy <= y1; oy++) { ct.ThrowIfCancellationRequested(); ScanRow(oy, raw, ref best); }
+            }
+            else
+            {
+                var po = new System.Threading.Tasks.ParallelOptions { CancellationToken = ct };
+                try
+                {
+                    System.Threading.Tasks.Parallel.For(y0, y1 + 1, po,
+                        () => (hits: new List<(int x, int y, double score)>(), best: 0.0),
+                        (oy, _, local) => { double lb = local.best; ScanRow(oy, local.hits, ref lb); return (local.hits, lb); },
+                        local => { lock (lk) { raw.AddRange(local.hits); if (local.best > best) best = local.best; } });
+                }
+                catch (AggregateException ex) when (ex.InnerException is OperationCanceledException oce) { throw oce; }
+            }
+            bestScore = best;
+            return raw;
         }
-        // 阅读顺序（上→下、左→右）排序，供「第几个」稳定索引。
-        kept.Sort((p, q) => p.y != q.y ? p.y.CompareTo(q.y) : p.x.CompareTo(q.x));
-        foreach (var k in kept)
-            result.Add((regionVx + k.x + tw / 2, regionVy + k.y + th / 2, k.score));
-        return result;
     }
 
     private static double MatchRatio(Bitmap a, Bitmap b)

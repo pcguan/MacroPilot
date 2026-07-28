@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Threading;
 using MacroPilot.Services;
 using Xunit;
@@ -108,6 +108,56 @@ public class ScreenMatchTests
         cts.Cancel();
         Assert.Throws<System.OperationCanceledException>(
             () => ScreenMatch.FindIn(scene, tpl, 0.9, out _, cts.Token));
+    }
+
+    [Fact]
+    public void 大区域走先粗后精但任何相位都不能漏()
+    {
+        // 区域够大时会先在缩略图上粗筛。缩略图按 k×k 分块，块边界是固定的，而目标在屏幕上的位置是任意的——
+        // 若只按一个相位缩图，没落在块边界上的目标就会被漏掉（实测 16 个相位里丢 14 个）。
+        // 这里把模板贴到 8×8＝64 种偏移上逐一验证：一个都不许漏。
+        using var tpl = MakeTemplate(60, 40);
+        for (int dy = 0; dy < 8; dy++)
+            for (int dx = 0; dx < 8; dx++)
+            {
+                using var scene = MakeScene(1200, 800);   // 位置数 ~87 万，足以触发先粗后精
+                Paste(scene, tpl, 300 + dx, 200 + dy);
+                var hits = ScreenMatch.FindIn(scene, tpl, 0.9, out _);
+                Assert.True(
+                    hits.Exists(h => h.cx == 300 + dx + tpl.Width / 2 && h.cy == 200 + dy + tpl.Height / 2 && h.score > 0.99),
+                    $"相位 ({dx},{dy}) 漏检：命中 {hits.Count} 个");
+            }
+    }
+
+    [Fact]
+    public void 先粗后精不会凭空多出命中()
+    {
+        // 大区域 + 模板不在画面里：粗筛可以放宽，但精验必须把它们全部淘汰
+        using var tpl = MakeTemplate(60, 40);
+        using var scene = MakeScene(1200, 800);
+        Assert.Empty(ScreenMatch.FindIn(scene, tpl, 0.9, out _));
+    }
+
+    [Fact]
+    public void 像素不完全相同的副本仍能命中()
+    {
+        // 屏幕上的实际画面与模板往往有轻微差异（抗锯齿/压缩）。逐通道 ±20 仍在容差内，
+        // 全分辨率判定认它，粗筛就不许把它筛掉。
+        using var tpl = MakeTemplate(60, 40);
+        using var scene = MakeScene(1200, 800);
+        Paste(scene, tpl, 411, 233);
+        var rnd = new System.Random(7);
+        for (int y = 0; y < tpl.Height; y++)
+            for (int x = 0; x < tpl.Width; x++)
+            {
+                var c = scene.GetPixel(411 + x, 233 + y);
+                int D() => rnd.Next(-20, 21);
+                scene.SetPixel(411 + x, 233 + y, Color.FromArgb(
+                    System.Math.Clamp(c.R + D(), 0, 255), System.Math.Clamp(c.G + D(), 0, 255), System.Math.Clamp(c.B + D(), 0, 255)));
+            }
+        var hits = ScreenMatch.FindIn(scene, tpl, 0.9, out _);
+        Assert.Single(hits);
+        Assert.Equal(411 + tpl.Width / 2, hits[0].cx);
     }
 
     [Fact]
