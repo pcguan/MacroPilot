@@ -36,8 +36,11 @@ public interface IRunCondition
     // 【方案级】历来就是"空转等到条件满足"，故忽略本开关始终等待（旧行为不变），但间隔/次数上限对它生效。
     // 【动作级/组合级】原本是"不满足即跳过"，勾选后才改为重复检查。
     bool RunConditionRetry { get; set; }
-    int RunConditionRetryIntervalMs { get; set; }   // 默认 1000
-    int RunConditionRetryMax { get; set; }          // 0 = 不限次数
+    int RunConditionRetryIntervalMs { get; set; }        // 默认 1000；0 = 判定失败立刻重判（不等待）
+    int RunConditionRetryIntervalUnit { get; set; }      // 仅记录用户选的显示单位（0毫秒 1秒 2分钟 3小时）
+    int RunConditionRetryMax { get; set; }               // 0 = 不限次数
+    int RunConditionRetryTimeoutMs { get; set; }         // 0 = 不限时长；与次数上限【同时生效】，先到者结束重试
+    int RunConditionRetryTimeoutUnit { get; set; }
 }
 
 public static class RunCondition
@@ -109,7 +112,10 @@ public static class RunCondition
         dst.RunConditionThreshold = src.RunConditionThreshold;
         dst.RunConditionRetry = src.RunConditionRetry;
         dst.RunConditionRetryIntervalMs = src.RunConditionRetryIntervalMs;
+        dst.RunConditionRetryIntervalUnit = src.RunConditionRetryIntervalUnit;
         dst.RunConditionRetryMax = src.RunConditionRetryMax;
+        dst.RunConditionRetryTimeoutMs = src.RunConditionRetryTimeoutMs;
+        dst.RunConditionRetryTimeoutUnit = src.RunConditionRetryTimeoutUnit;
     }
 
     /// <summary>
@@ -123,7 +129,8 @@ public static class RunCondition
         sb.Append(c.RunConditionLogic).Append('|')
           .Append(c.RunConditionRetry).Append('|')
           .Append(c.RunConditionRetryIntervalMs).Append('|')
-          .Append(c.RunConditionRetryMax).Append('|');
+          .Append(c.RunConditionRetryMax).Append('|')
+          .Append(c.RunConditionRetryTimeoutMs).Append('|');
         foreach (var it in c.RunConditions)
             sb.Append(it.Type).Append(',').Append(it.Invert).Append(',')
               .Append(it.StartMinute).Append(',').Append(it.EndMinute).Append(',')
@@ -151,6 +158,9 @@ public static class RunCondition
         c.RunConditionThreshold = 0.9;
         c.RunConditionRetry = false;
         c.RunConditionRetryIntervalMs = 1000;
+        c.RunConditionRetryIntervalUnit = 0;
         c.RunConditionRetryMax = 0;
+        c.RunConditionRetryTimeoutMs = 0;
+        c.RunConditionRetryTimeoutUnit = 1;
     }
 }

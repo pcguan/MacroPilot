@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Controls;
 using MacroPilot.Models;
@@ -22,7 +22,8 @@ public partial class MainWindow
         public readonly ComboBox LogicCombo = new();                       // 与 / 或
         public readonly System.Collections.Generic.List<ConditionItem> Items = new();   // 条件列表（编辑期副本）
         public readonly CheckBox Retry = new();                            // 条件不满足时重复检查
-        public readonly System.Windows.Controls.TextBox RetryInterval = new(), RetryMax = new();
+        public readonly System.Windows.Controls.TextBox RetryInterval = new(), RetryMax = new(), RetryTimeout = new();
+        public readonly ComboBox RetryIntervalUnit = new(), RetryTimeoutUnit = new();   // 0毫秒 1秒 2分钟 3小时
         public StackPanel Panel = null!;
         /// <summary>条件列表变更后刷新列表 UI（由 BuildRunConditionPanel 赋值）。</summary>
         public Action RefreshItems = () => { };
@@ -48,8 +49,16 @@ public partial class MainWindow
         ed.Enabled.IsChecked = RunCondition.Has(src);
         ed.LogicCombo.SelectedIndex = string.Equals(src.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         ed.Retry.IsChecked = src.RunConditionRetry;
-        ed.RetryInterval.Text = (src.RunConditionRetryIntervalMs <= 0 ? 1000 : src.RunConditionRetryIntervalMs).ToString();
+        // 间隔 0 是合法值（=立刻重判），不能像以前那样把 0 当"没设置"顶成 1000
+        int iv = Math.Max(0, src.RunConditionRetryIntervalMs);
+        int ivU = Math.Clamp(src.RunConditionRetryIntervalUnit, 0, 3);
+        ed.RetryIntervalUnit.SelectedIndex = ivU;
+        ed.RetryInterval.Text = FormatDelayValue(iv, ivU);
         ed.RetryMax.Text = Math.Max(0, src.RunConditionRetryMax).ToString();
+        int to = Math.Max(0, src.RunConditionRetryTimeoutMs);
+        int toU = Math.Clamp(src.RunConditionRetryTimeoutUnit, 0, 3);
+        ed.RetryTimeoutUnit.SelectedIndex = toU;
+        ed.RetryTimeout.Text = FormatDelayValue(to, toU);
     }
 
     /// <summary>把编辑结果写回 dst。输入不合法时抛 InvalidOperationException，由调用方统一提示。</summary>
@@ -69,9 +78,14 @@ public partial class MainWindow
     private static void ApplyRetry(RunConditionEditor ed, IRunCondition dst)
     {
         dst.RunConditionRetry = ed.Retry.IsChecked == true;
-        int iv = ParseInt(ed.RetryInterval.Text, 1000);
-        dst.RunConditionRetryIntervalMs = iv <= 0 ? 1000 : iv;
+        int ivU = Math.Clamp(ed.RetryIntervalUnit.SelectedIndex, 0, 3);
+        int toU = Math.Clamp(ed.RetryTimeoutUnit.SelectedIndex, 0, 3);
+        // 0 是合法值：间隔 0=立刻重判、时限 0=不限时长。别再把 0 兜成默认值。
+        dst.RunConditionRetryIntervalMs = (int)Math.Round(Math.Max(0, ParseDouble(ed.RetryInterval.Text, 0)) * LoopUnitFactor(ivU));
+        dst.RunConditionRetryIntervalUnit = ivU;
         dst.RunConditionRetryMax = Math.Max(0, ParseInt(ed.RetryMax.Text, 0));
+        dst.RunConditionRetryTimeoutMs = (int)Math.Round(Math.Max(0, ParseDouble(ed.RetryTimeout.Text, 0)) * LoopUnitFactor(toU));
+        dst.RunConditionRetryTimeoutUnit = toU;
     }
 
     // ================= 方案设置对话框（循环次数 / 间隔 / 运行条件三合一） =================

@@ -144,7 +144,10 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     // 重复检查（详见 IRunCondition）：间隔默认 1000ms，次数 0=不限。旧 JSON 无这些键时取此处默认值，行为不变。
     public bool RunConditionRetry { get; set; }
     public int RunConditionRetryIntervalMs { get; set; } = 1000;
+    public int RunConditionRetryIntervalUnit { get; set; }
     public int RunConditionRetryMax { get; set; }
+    public int RunConditionRetryTimeoutMs { get; set; }        // 0=不限时长
+    public int RunConditionRetryTimeoutUnit { get; set; } = 1; // 默认按"秒"显示
 
     // Group 时的子动作（顺序执行）
     private ObservableCollection<MacroStep> _children = new();

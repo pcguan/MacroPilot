@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Text.Json.Serialization;
 
@@ -35,7 +35,10 @@ public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
     // 重复检查（详见 IRunCondition）：间隔默认 1000ms，次数 0=不限。旧 JSON 无这些键时取此处默认值，行为不变。
     public bool RunConditionRetry { get; set; }
     public int RunConditionRetryIntervalMs { get; set; } = 1000;
+    public int RunConditionRetryIntervalUnit { get; set; }
     public int RunConditionRetryMax { get; set; }
+    public int RunConditionRetryTimeoutMs { get; set; }        // 0=不限时长
+    public int RunConditionRetryTimeoutUnit { get; set; } = 1; // 默认按"秒"显示
     [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);
 
 

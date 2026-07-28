@@ -1,4 +1,4 @@
-using MacroPilot.Models;
+﻿using MacroPilot.Models;
 using Xunit;
 using static MacroPilot.Tests.Harness;
 
@@ -109,6 +109,56 @@ public class RunConditionTests
             if (msg.Contains("重新检查")) MakeSatisfied(s);
         });
         Assert.Equal(new[] { "a" }, r.Calls);
+    }
+
+    [Fact]
+    public void 重复检查的时间上限到点后跳过()
+    {
+        // 次数不限、只设时间上限：到点必须停下来跳过该动作，而不是无限等
+        var s = Key("a"); s.CondNever();
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 20;
+        s.RunConditionRetryMax = 0;            // 不限次数
+        s.RunConditionRetryTimeoutMs = 300;    // 只靠时间收口
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = Run(Plan(s), timeoutMs: 8000);
+        sw.Stop();
+        Assert.Empty(r.Calls);
+        Assert.True(r.LogHas("毫秒时限"));
+        Assert.True(sw.ElapsedMilliseconds >= 250, $"应等够时限才放弃，实际 {sw.ElapsedMilliseconds}ms");
+        Assert.True(sw.ElapsedMilliseconds < 4000, $"到点就该结束，实际 {sw.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void 次数与时间上限同时生效时先到者结束()
+    {
+        // 次数很快用完、时间上限很长 → 应按次数结束（两者是"先到先算"，不是必须都满足）
+        var s = Key("a"); s.CondNever();
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 10;
+        s.RunConditionRetryMax = 2;
+        s.RunConditionRetryTimeoutMs = 60000;
+        var r = Run(Plan(s), timeoutMs: 8000);
+        Assert.Empty(r.Calls);
+        Assert.True(r.LogHas("重复检查 2 次仍未满足"));
+        Assert.True(r.LogHas("次上限"));
+    }
+
+    [Fact]
+    public void 间隔为零表示立刻重判()
+    {
+        // 间隔 0 = 不等待，直接连着判。用次数上限收口，验证不会因为 0 被当成"没设置"而顶成 1000ms。
+        var s = Key("a"); s.CondNever();
+        s.RunConditionRetry = true;
+        s.RunConditionRetryIntervalMs = 0;
+        s.RunConditionRetryMax = 5;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = Run(Plan(s), timeoutMs: 8000);
+        sw.Stop();
+        Assert.Empty(r.Calls);
+        Assert.True(r.LogHas("失败后立刻重新检查"));
+        Assert.True(r.LogHas("重复检查 5 次仍未满足"));
+        Assert.True(sw.ElapsedMilliseconds < 1000, $"0 间隔不该有等待，实际 {sw.ElapsedMilliseconds}ms");
     }
 
     // ---- 多条件 与/或（v0.4）----

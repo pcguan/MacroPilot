@@ -959,6 +959,12 @@ public partial class MainWindow
         DockPanel.SetDock(clearBtn, Dock.Right); row.Children.Add(clearBtn);
         var setBtn = new Button { Content = "设置", Width = 56, Height = 32, Margin = new Thickness(8, 0, 0, 0) };
         DockPanel.SetDock(setBtn, Dock.Right); row.Children.Add(setBtn);
+        // 复制 / 粘贴：与动作列表共用同一个剪贴板 _clip，所以能把列表里的动作直接贴成监听动作，反之亦然。
+        // 组合不在此列——监听里塞组合会让"一个挂点=一个动作"的心智模型失控，也难在一行摘要里看清。
+        var pasteBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 15, Content = "\uE77F", ToolTip = "粘贴为该监听动作（与动作列表共用剪贴板；组合除外）", Margin = new Thickness(8, 0, 0, 0) };
+        DockPanel.SetDock(pasteBtn, Dock.Right); row.Children.Add(pasteBtn);
+        var copyBtn = new Button { Style = (Style)FindResource("IconButton"), FontSize = 15, Content = "\uE8C8", ToolTip = "复制该监听动作（可粘到别的挂点或动作列表里）", Margin = new Thickness(8, 0, 0, 0) };
+        DockPanel.SetDock(copyBtn, Dock.Right); row.Children.Add(copyBtn);
         // 摘要自动换行（不再 … 截断）：配置复杂的监听动作描述很长，让它多行显示看全，与外层文本一致。
         var summary = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("Muted") };
         row.Children.Add(summary);
@@ -968,10 +974,29 @@ public partial class MainWindow
             var s = get();
             summary.Text = s != null ? s.ToString() : "未设置";
             clearBtn.IsEnabled = s != null;
+            copyBtn.IsEnabled = s != null;
+            pasteBtn.IsEnabled = _clip != null && !_clip.IsGroup;
         }
         // 监听动作＝完整动作：用与外层同款的完整对话框（可配循环/运行条件/备注，且能继续配监听——递归下去）。
         setBtn.Click += (_, _) => { var s = ShowAddActionDialog(get()); if (s != null) { set(s); Refresh(); } };
         clearBtn.Click += (_, _) => { set(null); Refresh(); };
+        copyBtn.Click += (_, _) =>
+        {
+            var s = get();
+            if (s == null) return;
+            _clip = s.Clone();
+            ShowToast("已复制监听动作");
+            Refresh();
+        };
+        pasteBtn.Click += (_, _) =>
+        {
+            if (_clip == null) return;
+            if (_clip.IsGroup) { ThemedDialog.Show("组合动作不能作为监听动作粘贴。", "无法粘贴", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+            var copy = _clip.Clone();
+            copy.RenewId();                                                   // 新身份，避免与原件抢同一个跳转目标
+            copy.JumpTargetId = ""; copy.JumpTarget = 0; copy.JumpTimes = 0;   // 跳转对监听是 no-op，贴过来更没意义
+            set(copy); Refresh();
+        };
         Refresh();
         return row;
     }
@@ -991,6 +1016,7 @@ public partial class MainWindow
         var retry = ed.Retry;
         var retryInterval = ed.RetryInterval;
         var retryMax = ed.RetryMax;
+        var retryTimeout = ed.RetryTimeout;
         var detail = new StackPanel();
         enabled.Content = "启用运行条件";
 
@@ -1063,25 +1089,41 @@ public partial class MainWindow
         // ---- 重复检查（对整组条件生效）----
         retry.Content = "条件不满足时重复检查，直到满足";
         retry.Margin = new Thickness(0, 14, 0, 0);
-        retryInterval.Width = 84; retryInterval.Height = 32; retryInterval.Text = "1000";
-        retryMax.Width = 74; retryMax.Height = 32; retryMax.Text = "0";
+        ComboBox UnitBox(ComboBox cb, int def)
+        {
+            cb.Items.Clear();
+            foreach (var n in new[] { "毫秒", "秒", "分钟", "小时" }) cb.Items.Add(n);
+            if (cb.SelectedIndex < 0) cb.SelectedIndex = def;
+            cb.Width = 88; cb.Height = 32; cb.Margin = new Thickness(6, 0, 16, 0);
+            return cb;
+        }
+        retryInterval.Width = 84; retryInterval.Height = 32; if (retryInterval.Text.Length == 0) retryInterval.Text = "1";
+        retryMax.Width = 74; retryMax.Height = 32; if (retryMax.Text.Length == 0) retryMax.Text = "0";
+        retryTimeout.Width = 84; retryTimeout.Height = 32; if (retryTimeout.Text.Length == 0) retryTimeout.Text = "0";
+        // 两行：间隔 / 上限（次数 + 时长）。都能选单位，都用 0 表示"不限 / 不等待"。
         var rrow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
         rrow.Children.Add(new TextBlock { Text = "间隔", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
         rrow.Children.Add(retryInterval);
-        rrow.Children.Add(new TextBlock { Text = "毫秒", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 16, 0) });
-        rrow.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
-        rrow.Children.Add(retryMax);
-        rrow.Children.Add(new TextBlock { Text = "次（0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0) });
+        rrow.Children.Add(UnitBox(ed.RetryIntervalUnit, 1));
+        rrow.Children.Add(new TextBlock { Text = "（0 = 立刻重判）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted") });
+        var rrow2 = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(22, 8, 0, 0) };
+        rrow2.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+        rrow2.Children.Add(retryMax);
+        rrow2.Children.Add(new TextBlock { Text = "次", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(6, 0, 16, 0) });
+        rrow2.Children.Add(new TextBlock { Text = "最多", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+        rrow2.Children.Add(retryTimeout);
+        rrow2.Children.Add(UnitBox(ed.RetryTimeoutUnit, 1));
+        rrow2.Children.Add(new TextBlock { Text = "（均 0 = 不限）", VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("Muted") });
         var rnote = new TextBlock
         {
             Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 6, 0, 0),
-            Text = "不勾选时条件不满足就直接跳过该动作。勾选后会按间隔反复判定，等到满足才继续（等待期间可暂停 / 停止）；到达次数上限仍不满足则跳过。\n方案级运行条件本来就会一直等到满足，因此该勾选对它无影响，但间隔与次数上限同样生效（超出上限即结束本次运行）。",
+            Text = "不勾选时条件不满足就直接跳过该动作。勾选后按间隔反复判定，等到满足才继续（等待期间可暂停 / 停止）。\n次数上限与时间上限【同时生效，先到者结束】，到达后仍不满足则跳过该动作。间隔填 0 表示判完立刻再判——图片类条件会持续占用 CPU，酌情使用。\n方案级运行条件本来就会一直等到满足，因此该勾选对它无影响，但间隔与两个上限同样生效（超出即结束本次运行）。",
         };
-        void RefreshRetry() { rrow.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
+        void RefreshRetry() { rrow.Visibility = rrow2.Visibility = rnote.Visibility = retry.IsChecked == true ? Visibility.Visible : Visibility.Collapsed; }
         retry.Checked += (_, _) => RefreshRetry();
         retry.Unchecked += (_, _) => RefreshRetry();
         RefreshRetry();
-        detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rnote);
+        detail.Children.Add(retry); detail.Children.Add(rrow); detail.Children.Add(rrow2); detail.Children.Add(rnote);
 
         // 勾选开关后，明细收进一个缩进 + 弱底色 + 强调左条的面板里，一眼看出属于该开关的"势力范围"。
         var detailWrap = new Border

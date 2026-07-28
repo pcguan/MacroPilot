@@ -60,26 +60,39 @@ public sealed class MacroRunner
                 int laps = 0;
                 bool waitingWindow = false;
                 // 方案级条件的等待参数：历来是硬编码"每秒复检、无限等"，现改由配置驱动（默认值与旧行为一致）。
-                int planWaitMs = Math.Max(50, plan.RunConditionRetryIntervalMs <= 0 ? 1000 : plan.RunConditionRetryIntervalMs);
+                // 间隔 0 = 判定失败立刻重判（不等待）；次数上限与时长上限同时生效，先到者结束。
+                int planWaitMs = Math.Max(0, plan.RunConditionRetryIntervalMs);
                 int planWaitMax = Math.Max(0, plan.RunConditionRetryMax);
+                int planWaitTimeout = Math.Max(0, plan.RunConditionRetryTimeoutMs);
                 int planWaited = 0;
+                var planWaitClock = new System.Diagnostics.Stopwatch();
                 while (!ct.IsCancellationRequested)
                 {
                     // 方案级运行条件：不满足时整方案空转等待时间窗开启（每秒复检、可即时停止），不消耗循环次数。
                     if (!Evaluate(plan, out var planCond))
                     {
                         // 条件类型现已不止时间段（还有图片出现），日志报【实际观测状态】而不是写死"不在时间段内"。
-                        if (!waitingWindow) { waitingWindow = true; Log?.Invoke("Warning", $"⏸ 方案运行条件未满足（{planCond}），每 {planWaitMs} 毫秒重新检查{(planWaitMax > 0 ? $"，最多 {planWaitMax} 次" : "")}…"); Progress?.Invoke(0, "等待运行条件…"); }
+                        if (!waitingWindow)
+                        {
+                            waitingWindow = true; planWaitClock.Restart();
+                            Log?.Invoke("Warning", $"⏸ 方案运行条件未满足（{planCond}），{RetryDesc(planWaitMs, planWaitMax, planWaitTimeout)}…");
+                            Progress?.Invoke(0, "等待运行条件…");
+                        }
                         if (planWaitMax > 0 && planWaited >= planWaitMax)
                         {
                             Log?.Invoke("Warning", $"方案运行条件重复检查 {planWaited} 次仍未满足，结束运行。");
                             break;
                         }
+                        if (planWaitTimeout > 0 && planWaitClock.ElapsedMilliseconds >= planWaitTimeout)
+                        {
+                            Log?.Invoke("Warning", $"方案运行条件重复检查已超过 {planWaitTimeout} 毫秒仍未满足，结束运行。");
+                            break;
+                        }
                         planWaited++;
-                        if (ct.WaitHandle.WaitOne(planWaitMs)) break;
+                        if (planWaitMs > 0 && ct.WaitHandle.WaitOne(planWaitMs)) break;
                         continue;
                     }
-                    if (waitingWindow) { waitingWindow = false; planWaited = 0; Log?.Invoke("Info", "▶ 运行条件已满足，开始执行。"); }
+                    if (waitingWindow) { waitingWindow = false; planWaited = 0; planWaitClock.Reset(); Log?.Invoke("Info", "▶ 运行条件已满足，开始执行。"); }
                     _lap = laps + 1;
                     PlanLoopChanged?.Invoke($"第 {_lap}{LoopTot(_planLoops)} 轮");
                     Log?.Invoke("Info", $"— 第 {_lap}{LoopTot(_planLoops)} 轮 —");
@@ -144,6 +157,15 @@ public sealed class MacroRunner
         if (waitTotalMs >= 0) s += $" · 等待 {waitElapsedMs / 1000.0:0.0}s / {waitTotalMs / 1000.0:0.0}s";
         return s;
     }
+    // 重复检查的参数描述（日志用）：间隔 0 说明是"立刻重判"，两个上限都可能为 0（不限）。
+    private static string RetryDesc(int intervalMs, int max, int timeoutMs)
+    {
+        string head = intervalMs > 0 ? $"每 {intervalMs} 毫秒重新检查" : "失败后立刻重新检查";
+        if (max > 0) head += $"，最多 {max} 次";
+        if (timeoutMs > 0) head += $"，最多 {timeoutMs} 毫秒";
+        return head;
+    }
+
     // 循环"当前/总"里的"/总"部分：0=无限→"/∞"，1=不循环→空，N→"/N"
     private static string LoopTot(int total) => total == 0 ? "/∞" : (total == 1 ? "" : $"/{total}");
 
@@ -394,16 +416,23 @@ public sealed class MacroRunner
         bool hasCond = RunCondition.Has(step);
         if (hasCond) RunHook(step.PreCondAction, "条件判断前", ct);
         bool ok = Evaluate(step, out conditionText);
-        // 重复检查：不满足时按间隔重判，直到满足或到次数上限（Wait 内已处理暂停/停止）。
+        // 重复检查：不满足时按间隔重判，直到满足 / 到次数上限 / 到时长上限（Wait 内已处理暂停/停止）。
+        // 间隔 0 = 立刻重判（不等待）；次数与时长两个上限【同时生效】，先到者结束。
         if (hasCond && !ok && step.RunConditionRetry)
         {
-            int interval = Math.Max(50, step.RunConditionRetryIntervalMs);
+            int interval = Math.Max(0, step.RunConditionRetryIntervalMs);
             int max = Math.Max(0, step.RunConditionRetryMax);
-            Log?.Invoke("Info", $"条件未满足（{conditionText}），每 {interval} 毫秒重新检查{(max > 0 ? $"，最多 {max} 次" : "")}…");
+            int timeout = Math.Max(0, step.RunConditionRetryTimeoutMs);
+            Log?.Invoke("Info", $"条件未满足（{conditionText}），{RetryDesc(interval, max, timeout)}…");
             int tries = 0;
-            while (!ok && (max == 0 || tries < max))
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            string stopReason = "";
+            while (!ok)
             {
-                Wait(interval, ct);
+                if (max > 0 && tries >= max) { stopReason = $"已达 {max} 次上限"; break; }
+                if (timeout > 0 && clock.ElapsedMilliseconds >= timeout) { stopReason = $"已达 {timeout} 毫秒时限"; break; }
+                if (interval > 0) Wait(interval, ct);
+                else { Gate(ct); ct.ThrowIfCancellationRequested(); }   // 0 间隔也必须给暂停/停止留出响应点
                 tries++;
                 ok = Evaluate(step, out conditionText);
                 // 每次判定都留痕：图片类条件会带上本次的实际相似度，
@@ -412,7 +441,7 @@ public sealed class MacroRunner
             }
             Log?.Invoke(ok ? "Info" : "Warning", ok
                 ? $"条件已满足（重复检查 {tries} 次）。"
-                : $"条件重复检查 {tries} 次仍未满足（{conditionText}）。");
+                : $"条件重复检查 {tries} 次仍未满足（{stopReason}，{conditionText}）。");
         }
         if (hasCond) RunHook(ok ? step.CondSuccessAction : step.CondFailAction, ok ? "判断成功后" : "判断失败后", ct);
         return ok;
