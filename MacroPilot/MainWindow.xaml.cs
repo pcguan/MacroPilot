@@ -651,18 +651,74 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _undo.Push(new UndoSnap("", new List<MacroStep>(), 0, 0, p));
         UndoButton.IsEnabled = true;
     }
+    // ---- 双击方案 = 就地改名 ----
+    // 走"文本框覆盖在原位置"而不是弹对话框：改个名字弹窗太重，双击即改、回车确定、Esc 取消。
+    private void PlansList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject src && FindAncestor<ListBoxItem>(src) is { } item
+            && item.DataContext is MacroPlan plan)
+            BeginInlineRename(item, plan);
+    }
+
+    private void BeginInlineRename(ListBoxItem item, MacroPlan plan)
+    {
+        var text = FindChildByName<TextBlock>(item, "NameText");
+        var edit = FindChildByName<TextBox>(item, "NameEdit");
+        if (text == null || edit == null) return;
+
+        text.Visibility = Visibility.Collapsed;
+        edit.Visibility = Visibility.Visible;
+        edit.Text = plan.Name;
+        edit.Focus(); edit.SelectAll();
+
+        bool done = false;
+        void Finish(bool commit)
+        {
+            if (done) return;
+            done = true;
+            edit.Visibility = Visibility.Collapsed;
+            text.Visibility = Visibility.Visible;
+            if (commit) ApplyPlanRename(plan, edit.Text);
+        }
+        edit.KeyDown += (_, ev) =>
+        {
+            if (ev.Key == Key.Enter) { ev.Handled = true; Finish(true); }
+            else if (ev.Key == Key.Escape) { ev.Handled = true; Finish(false); }
+        };
+        edit.LostFocus += (_, _) => Finish(true);   // 点到别处＝确认（与资源管理器一致）
+    }
+
+    /// <summary>改名的唯一入口：撤销、定时启动跟随、脏标记、列表刷新都在这里，别再各写一份。</summary>
+    private void ApplyPlanRename(MacroPlan plan, string? input)
+    {
+        var name = (input ?? "").Trim();
+        if (name.Length == 0 || name == plan.Name) return;
+        PushUndo();
+        string old = plan.Name;
+        plan.Name = name;
+        PlansList.Items.Refresh();
+        MarkDirty();
+        if (_doc.ScheduledPlan == old && _doc.ScheduleMode != "") { _doc.ScheduledPlan = name; PersistSettings(); }
+        RefreshScheduleMark();
+    }
+
+    private static T? FindChildByName<T>(DependencyObject root, string name) where T : FrameworkElement
+    {
+        int n = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < n; i++)
+        {
+            var c = VisualTreeHelper.GetChild(root, i);
+            if (c is T fe && fe.Name == name) return fe;
+            var found = FindChildByName<T>(c, name);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private void RenamePlanIcon_Click(object sender, RoutedEventArgs e)
     {
         if (_plan == null) return;
-        var name = Prompt(this, "重命名方案", "方案名称", _plan.Name);
-        if (string.IsNullOrWhiteSpace(name)) return;
-        name = name.Trim();
-        if (name == _plan.Name) return;
-        PushUndo();
-        string old2 = _plan.Name;
-        _plan.Name = name; PlansList.Items.Refresh(); MarkDirty();
-        if (_doc.ScheduledPlan == old2 && _doc.ScheduleMode != "") { _doc.ScheduledPlan = name; PersistSettings(); }
-        RefreshScheduleMark();
+        ApplyPlanRename(_plan, Prompt(this, "重命名方案", "方案名称", _plan.Name));
     }
     private void DeletePlanIcon_Click(object sender, RoutedEventArgs e)
     {

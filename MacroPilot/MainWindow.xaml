@@ -393,6 +393,7 @@
                 </StackPanel>
               </StackPanel>
               <ListBox Name="PlansList" SelectionChanged="PlansList_SelectionChanged" KeyDown="PlansList_KeyDown" AllowDrop="True"
+                       MouseDoubleClick="PlansList_MouseDoubleClick"
                        PreviewMouseRightButtonDown="PlansList_PreviewMouseRightButtonDown"
                        PreviewMouseLeftButtonDown="PlansList_PreviewMouseLeftButtonDown" PreviewMouseMove="PlansList_PreviewMouseMove"
                        DragOver="PlansList_DragOver" Drop="PlansList_Drop">
@@ -407,7 +408,12 @@
                                ToolTip="有未保存的修改" />
                       <TextBlock Name="SchedMark" DockPanel.Dock="Left" FontFamily="Segoe MDL2 Assets" FontSize="12" Text="&#xE823;" Foreground="{DynamicResource Accent}"
                                  VerticalAlignment="Center" Margin="0,0,6,0" Visibility="Collapsed" ToolTip="已设定时启动" />
-                      <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Name}" />
+                      <!-- 名称：平时是文本，双击就地变成输入框改名（NameEdit 由 code-behind 切换显隐） -->
+                      <Grid>
+                        <TextBlock Name="NameText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Name}" />
+                        <TextBox Name="NameEdit" Visibility="Collapsed" MinHeight="0" Height="24" Padding="4,0"
+                                 VerticalContentAlignment="Center" Text="{Binding Name, Mode=OneWay}" />
+                      </Grid>
                     </DockPanel>
                     <DataTemplate.Triggers>
                       <DataTrigger Binding="{Binding Dirty}" Value="True">

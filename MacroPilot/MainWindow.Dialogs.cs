@@ -1392,16 +1392,18 @@ public partial class MainWindow
                 Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
             });
 
-        // 终点坐标对应窗口的哪个点（3×3）：默认左上角
-        var dragAnchorCombo = new ComboBox { Height = 32 };
+        // 终点坐标对应窗口的哪个点（3×3）：默认左上角。它是终点坐标的一部分，因此就放在那张卡里（见下方 InsertTopRow）。
+        var dragAnchorCombo = new ComboBox { Height = 32, Width = 132 };
         for (int i = 0; i < 9; i++) dragAnchorCombo.Items.Add(new ComboBoxItem { Content = MacroStep.AnchorCn(i), Tag = i.ToString() });
         dragAnchorCombo.SelectedIndex = 0;
-        var dragAnchorPanel = SubGroup("终点对应窗口的", dragAnchorCombo,
-            new TextBlock
-            {
-                Text = "拖完之后，窗口的这个点会落在下面设置的终点坐标上。例如选「中心」就是把窗口中心摆到该坐标。",
-                Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
-            });
+        var dragAnchorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 10) };
+        dragAnchorRow.Children.Add(new TextBlock { Text = "对齐点", Width = 52, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+        dragAnchorRow.Children.Add(dragAnchorCombo);
+        dragAnchorRow.Children.Add(new TextBlock
+        {
+            Text = "窗口的这个点会落在下面的坐标上", VerticalAlignment = VerticalAlignment.Center,
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, Margin = new Thickness(10, 0, 0, 0),
+        });
 
         // 拖动终点：始终展开、无勾选框
         var dragEnd = new CoordBlock(this, win, "终点坐标", showCheck: false);
@@ -1412,7 +1414,9 @@ public partial class MainWindow
         var clickImagePanel = clickImage.Panel;
 
         // 拟人化移动（动作级）：独立成块，排在最后；只在启用坐标时有意义。
-        var humanizeMoveCheck = new CheckBox { Content = "拟人化移动（走缓入缓出的弧线轨迹，更像真人）" };
+        // 默认勾选：这是本工具的主要卖点之一，绝大多数场景都该开着；不想要的再手动关。
+        // 编辑既有动作时会被 LoadMoveFields/各 case 按存档值覆盖，不影响老方案。
+        var humanizeMoveCheck = new CheckBox { Content = "拟人化移动（走缓入缓出的弧线轨迹，更像真人）", IsChecked = true };
         var humanizeNote = new TextBlock
         {
             Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
@@ -1672,7 +1676,7 @@ public partial class MainWindow
         mousePanel.Children.Add(mouseTargetPanel);   // 紧跟在「鼠标按钮」下面
         mousePanel.Children.Add(dragModePanel);
         // —— 中间是 windowPanel（拖动窗口 / 激活窗口共用）——
-        mousePanel2.Children.Add(dragAnchorPanel);
+        dragEnd.InsertTopRow(dragAnchorRow);   // 对齐点与终点坐标同卡：它说的就是"这个坐标指窗口的哪儿"
         mousePanel2.Children.Add(mouseMovePanel);
         mousePanel2.Children.Add(dragEndPanel);
         mousePanel2.Children.Add(clickImagePanel);
@@ -1817,7 +1821,7 @@ public partial class MainWindow
             mouseTargetPanel.Visibility = (isClick || isMove) && d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
             mouseTargetTitle.Text = isMove ? "移动类型" : "点击类型";
             dragModePanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;
-            dragAnchorPanel.Visibility = dragWindow ? Visibility.Visible : Visibility.Collapsed;
+            dragAnchorRow.Visibility = dragWindow ? Visibility.Visible : Visibility.Collapsed;   // 坐标拖动没有"窗口的哪个点"一说
             string tgt = TargetKind();
             bool isClickAt = isClick && tgt == "coord", isClickImage = isClick && tgt == "image";
             bool isMoveAt = isMove && tgt != "image", isMoveImage = isMove && tgt == "image";
@@ -1829,7 +1833,7 @@ public partial class MainWindow
                                : isDrag ? "起点坐标（在此按下鼠标键）"
                                : "坐标（移动到该位置再点击）";
             dragEndPanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;   // 拖动才有终点
-            dragEnd.SetTitle(dragWindow ? "终点坐标（窗口左上角落在这里）" : "终点坐标");
+            dragEnd.SetTitle(dragWindow ? "终点坐标（窗口拖到这里）" : "终点坐标");
 
             // 点击（无论打哪儿）都要按钮 + 按住时间；滚轮/移动不要。
             bool anyClick = isClick;
@@ -2741,6 +2745,10 @@ public partial class MainWindow
         private readonly Border _wrap;
         public readonly CheckBox Enabled = new() { VerticalAlignment = VerticalAlignment.Center };
         private TextBlock? _titleText;   // showCheck=false 时标题是普通文本（此时 Enabled 根本不在可视树里）
+        private StackPanel? _detail;     // 卡片内容区，供调用方插入附加行
+
+        /// <summary>往卡片内容区顶部插一行（紧跟标题行）。拖动窗口的"对齐点"就是这样与终点坐标合成一张卡的。</summary>
+        public void InsertTopRow(UIElement row) => _detail?.Children.Insert(1, row);
 
         /// <summary>改标题：勾选框式与纯文本式都要覆盖到，否则 showCheck=false 的块改了没反应。</summary>
         public void SetTitle(string t) { Enabled.Content = t; if (_titleText != null) _titleText.Text = t; }
@@ -2750,6 +2758,7 @@ public partial class MainWindow
         {
             _o = o; _win = win;
             var detail = new StackPanel();
+            _detail = detail;
 
             // 标题行：勾选框（或纯标题）+ 标识屏幕按钮
             var header = new DockPanel { LastChildFill = false };
