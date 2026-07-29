@@ -1,4 +1,4 @@
-<ui:FluentWindow x:Class="MacroPilot.MainWindow"
+﻿<ui:FluentWindow x:Class="MacroPilot.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
@@ -223,6 +223,19 @@
                     </Border>
                   </StackPanel>
                 </Border>
+              </StackPanel>
+            </Border>
+
+            <!-- 图片搜索占用核数 -->
+            <Border Style="{StaticResource SettingCard}">
+              <StackPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource SettingTitle}" Text="图片搜索占用核数" />
+                  <ComboBox Name="MatchCoresCombo" DockPanel.Dock="Right" VerticalAlignment="Center" Width="170"
+                            SelectionChanged="MatchCores_Changed" />
+                </DockPanel>
+                <TextBlock Name="MatchCoresDesc" Style="{StaticResource SettingDesc}"
+                           Text="图片条件与「点击图片」搜索时会把选中的核吃满。默认用满全部核心（最快）；与游戏同时跑觉得卡顿时，可以留几个核给前台。" />
               </StackPanel>
             </Border>
 

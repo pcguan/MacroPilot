@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace MacroPilot.Models;
 
@@ -15,6 +15,9 @@ public sealed class MacroDocument
     public int ExecutionDelayMs { get; set; } = 1000;      // 点运行后、真正执行前的缓冲（切窗口用）
     public bool TimingJitterEnabled { get; set; }          // 是否启用拟人化时间抖动
     public double TimingJitterMs { get; set; } = 5;        // 抖动区间 ± 毫秒(可小数)，独立保存，关闭抖动也保留
+    // 图片搜索用多少个核：0 = 全部（默认）。搜索期间会把选中的核吃满，跟游戏抢 CPU 时可以调小。
+    // 存的是"核数"而不是"留几个核"：换机器后核数变了，0（全部）永远正确，具体数值则由 UI 按本机核数夹取。
+    public int MatchMaxCores { get; set; }
     public bool RunAsAdmin { get; set; }
     // 自动更新：启动时立即检查新版并直接更新；关闭则不做启动检查，仅靠 30s 轮询在状态栏提醒。
     public bool AutoUpdate { get; set; }

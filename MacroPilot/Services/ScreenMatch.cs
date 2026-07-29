@@ -14,6 +14,20 @@ namespace MacroPilot.Services;
 public static class ScreenMatch
 {
     private const int Tolerance = 28;   // 单通道容差，抗轻微色差/抗锯齿
+
+    /// <summary>
+    /// 图片搜索允许占用的核数：0 或负数＝不限（用满所有逻辑核，默认）。
+    /// 搜索期间被选中的核基本是满载的——本工具常与游戏同时跑，需要时可以留几个核给前台。
+    /// 由配置页写入（<see cref="Models.MacroDocument.MatchMaxCores"/>），运行期读取。
+    /// </summary>
+    public static int MaxParallelism { get; set; }
+
+    private static System.Threading.Tasks.ParallelOptions Po(System.Threading.CancellationToken ct)
+    {
+        int cores = Environment.ProcessorCount;
+        int dop = MaxParallelism > 0 ? Math.Min(MaxParallelism, cores) : -1;   // 超过本机核数没有意义
+        return new System.Threading.Tasks.ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = dop };
+    }
     private const double DiagSlack = 0.15;   // 统计"最高相似度"时相对阈值放宽的幅度（仅供诊断，不影响命中判定）
 
     /// <summary>抓取虚拟桌面某区域（虚拟像素）为 Bitmap（调用方负责 Dispose）。</summary>
@@ -429,7 +443,7 @@ public static class ScreenMatch
             }
             else
             {
-                var po = new System.Threading.Tasks.ParallelOptions { CancellationToken = ct };
+                var po = Po(ct);
                 try
                 {
                     System.Threading.Tasks.Parallel.For(y0, y1 + 1, po,

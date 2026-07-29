@@ -222,6 +222,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         BaudText.Text = _doc.BaudRate.ToString();
         ExecDelayText.Text = (_doc.ExecutionDelayMs / 1000.0).ToString();
         JitterCheck.IsChecked = _doc.TimingJitterEnabled;
+        BuildMatchCoresItems();
         JitterText.Text = _doc.TimingJitterMs.ToString();
         JitterPanel.Visibility = _doc.TimingJitterEnabled ? Visibility.Visible : Visibility.Collapsed;
         AdminModeCheck.IsChecked = _doc.RunAsAdmin;
@@ -425,6 +426,38 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         JitterPanel.Visibility = _doc.TimingJitterEnabled ? Visibility.Visible : Visibility.Collapsed;
         PersistSettings();
     }
+    // 图片搜索占用核数：选项按【本机逻辑核数】现场生成——换机器后核数变了也不会出现选不到/超出的档位。
+    // 存的值是核数本身，0 表示"全部"，因此在任何机器上都成立。
+    private void BuildMatchCoresItems()
+    {
+        int cores = Environment.ProcessorCount;
+        MatchCoresCombo.Items.Clear();
+        MatchCoresCombo.Items.Add(new ComboBoxItem { Content = $"全部（{cores} 核）", Tag = "0" });
+        for (int i = cores - 1; i >= 1; i--)
+            MatchCoresCombo.Items.Add(new ComboBoxItem { Content = $"{i} 核", Tag = i.ToString() });
+        int want = Math.Clamp(_doc.MatchMaxCores, 0, cores);
+        if (want >= cores) want = 0;                       // 选满＝全部，归一成 0，换机器仍然正确
+        if (want != _doc.MatchMaxCores) _doc.MatchMaxCores = want;
+        SelectByTag(MatchCoresCombo, want.ToString());
+        if (MatchCoresCombo.SelectedIndex < 0) MatchCoresCombo.SelectedIndex = 0;
+        ApplyMatchCores();
+    }
+    private void ApplyMatchCores()
+    {
+        Services.ScreenMatch.MaxParallelism = _doc.MatchMaxCores;
+        int cores = Environment.ProcessorCount;
+        MatchCoresDesc.Text = _doc.MatchMaxCores <= 0
+            ? $"图片条件与「点击图片」搜索时会把核吃满。当前用满全部 {cores} 个逻辑核（最快）；与游戏同时跑觉得卡顿时，可以留几个核给前台。"
+            : $"图片条件与「点击图片」搜索最多用 {_doc.MatchMaxCores} 个核（本机共 {cores} 个），其余留给前台程序；核数越少单次搜索越慢。";
+    }
+    private void MatchCores_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading) return;
+        _doc.MatchMaxCores = ParseInt(TagOf(MatchCoresCombo), 0);
+        ApplyMatchCores();
+        PersistSettings();
+    }
+
     private void Jitter_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
