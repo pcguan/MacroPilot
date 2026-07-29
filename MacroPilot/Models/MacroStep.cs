@@ -89,6 +89,14 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public int LoopDelayMs { get; set; } = 1000;
     public int LoopDelayUnit { get; set; } = 1;           // 0毫秒 1秒 2分钟 3小时
 
+    // 【重复次数】与上面的【执行次数(LoopCount)】是两回事，别混：
+    //   执行次数 = 重复"动作本体"（点击/按键/滚动几下），一次条件判定、一套监听走一遍；
+    //   重复次数 = 重复"整趟"，每一轮都【重新判定运行条件、重新触发监听、各记一条日志】。
+    // 1=一趟（默认，与旧存档一致）、0=无限、N=N 趟；RepeatDelayMs 是趟与趟之间的间隔。
+    public int RepeatCount { get; set; } = 1;
+    public int RepeatDelayMs { get; set; } = 1000;
+    public int RepeatDelayUnit { get; set; } = 1;
+
     // 动作的稳定身份：跳转靠它绑定目标，因此插入/删除/排序都不会指错。
     // 懒生成——新建对象时不占 Guid，首次读取（含序列化）才生成；反序列化时用存档里的值。
     private string _id = "";
@@ -219,6 +227,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             ClickImageOrigRectW = ClickImageOrigRectW, ClickImageOrigRectH = ClickImageOrigRectH,
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
+            RepeatCount = RepeatCount, RepeatDelayMs = RepeatDelayMs, RepeatDelayUnit = RepeatDelayUnit,
             Id = Id, JumpTargetId = JumpTargetId, JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
             DisplayIndex = DisplayIndex,   // 运行页跑的是克隆副本，带上序号否则运行列表全显 0.（编辑页会 RefreshIndices 重算，不受影响）
             PreCondAction = PreCondAction?.Clone(), CondSuccessAction = CondSuccessAction?.Clone(),
@@ -253,6 +262,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     {
         string desc = BaseDesc();
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
+        res += RepeatCount switch { 1 => "", 0 => "（无限重复）", _ => $"（重复 {RepeatCount} 次）" };
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
         if (HasListener)
         {

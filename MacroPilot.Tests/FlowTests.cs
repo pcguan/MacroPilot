@@ -1,4 +1,4 @@
-using System.Threading;
+﻿using System.Threading;
 using System.Threading.Tasks;
 using MacroPilot.Input;
 using MacroPilot.Models;
@@ -55,6 +55,92 @@ public class FlowTests
         var g = Group(Key("x"), bad, Key("y"));
         var r = Run(Plan(g));
         Assert.Equal(new[] { "x", "y" }, r.Calls);
+    }
+
+    // ---- 重复次数 vs 执行次数（两个概念，别混）----
+    // 执行次数(LoopCount) = 重复动作【本体】，条件判一次、监听走一遍；
+    // 重复次数(RepeatCount) = 重复【整趟】，每趟都重新判条件、重新触发监听。
+
+    [Fact]
+    public void 重复次数把整趟重复若干遍()
+    {
+        var s = Key("a"); s.RepeatCount = 3; s.RepeatDelayMs = 0;
+        var r = Run(Plan(s));
+        Assert.Equal(new[] { "a", "a", "a" }, r.Calls);
+    }
+
+    [Fact]
+    public void 执行次数与重复次数相乘()
+    {
+        var s = Key("a");
+        s.LoopCount = 2; s.LoopDelayMs = 0;      // 本体做 2 遍
+        s.RepeatCount = 3; s.RepeatDelayMs = 0;  // 整趟来 3 趟
+        var r = Run(Plan(s));
+        Assert.Equal(6, r.Calls.Count);
+    }
+
+    [Fact]
+    public void 重复次数每趟都会重新判定运行条件()
+    {
+        // 条件恒不满足 + 不重试：每趟都判、每趟都跳过，动作一次都不执行
+        var s = Key("a"); s.CondNever();
+        s.RepeatCount = 3; s.RepeatDelayMs = 0;
+        var r = Run(Plan(s));
+        Assert.Empty(r.Calls);
+        int skipped = r.Logs.FindAll(l => l.Contains("条件不满足，跳过动作")).Count;
+        Assert.Equal(3, skipped);   // 判了 3 次，而不是 1 次
+    }
+
+    [Fact]
+    public void 执行次数只判一次条件()
+    {
+        // 对照组：本体重复 3 遍，条件只判一次 → 只有一条跳过日志
+        var s = Key("a"); s.CondNever();
+        s.LoopCount = 3; s.LoopDelayMs = 0;
+        var r = Run(Plan(s));
+        Assert.Empty(r.Calls);
+        Assert.Single(r.Logs.FindAll(l => l.Contains("条件不满足，跳过动作")));
+    }
+
+    [Fact]
+    public void 重复次数每趟都触发监听()
+    {
+        var s = Key("a");
+        s.PreRunAction = Key("pre");
+        s.CompleteAction = Key("done");
+        s.RepeatCount = 2; s.RepeatDelayMs = 0;
+        var r = Run(Plan(s));
+        Assert.Equal(new[] { "pre", "a", "done", "pre", "a", "done" }, r.Calls);
+    }
+
+    [Fact]
+    public void 执行次数不会重复触发监听()
+    {
+        var s = Key("a");
+        s.PreRunAction = Key("pre");
+        s.CompleteAction = Key("done");
+        s.LoopCount = 2; s.LoopDelayMs = 0;
+        var r = Run(Plan(s));
+        Assert.Equal(new[] { "pre", "a", "a", "done" }, r.Calls);   // 监听各一次，本体两次
+    }
+
+    [Fact]
+    public void 组合也支持整趟重复()
+    {
+        var g = Group(Key("x"), Key("y"));
+        g.RepeatCount = 2; g.RepeatDelayMs = 0;
+        var r = Run(Plan(g));
+        Assert.Equal(new[] { "x", "y", "x", "y" }, r.Calls);
+    }
+
+    [Fact]
+    public void 重复期间产生跳转就不再重复()
+    {
+        // 跳转优先：否则"重复 5 次"会把跳转困在原地
+        var a = Key("a");
+        var j = JumpTo(a, 1); j.RepeatCount = 5; j.RepeatDelayMs = 0;
+        var r = Run(Plan(a, j));
+        Assert.Equal(new[] { "a", "a" }, r.Calls);
     }
 
     // ---- 跳转 ----

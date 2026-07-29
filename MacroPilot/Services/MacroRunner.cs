@@ -231,16 +231,19 @@ public sealed class MacroRunner
             StepStateChanged?.Invoke(step, true);
             if (step.IsGroup)
             {
-                if (!GateHooks(step, out var conditionText, ct))
+                RepeatCycle(step, ct, () =>
                 {
-                    Log?.Invoke("Info", prefix + $"{step.Display}，条件不满足，已跳过（{conditionText}）");
-                }
-                else
-                {
-                    Log?.Invoke("Info", prefix + $"组合（{step.Children.Count} 个动作）");
-                    RunGroup(step, ct);
-                    Log?.Invoke("Success", prefix + "组合执行完成");
-                }
+                    if (!GateHooks(step, out var conditionText, ct))
+                    {
+                        Log?.Invoke("Info", prefix + $"{step.Display}，条件不满足，已跳过（{conditionText}）");
+                    }
+                    else
+                    {
+                        Log?.Invoke("Info", prefix + $"组合（{step.Children.Count} 个动作）");
+                        RunGroup(step, ct);
+                        Log?.Invoke("Success", prefix + "组合执行完成");
+                    }
+                });
             }
             else
             {
@@ -297,12 +300,15 @@ public sealed class MacroRunner
                     if (child.Disabled) { Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：{child.Display}（已禁用，跳过）"); continue; }
                     if (child.IsGroup)   // 嵌套子组合：递归执行，其自身的循环/监听/运行条件都照常生效
                     {
-                        if (GateHooks(child, out var reason, ct))
+                        RepeatCycle(child, ct, () =>
                         {
-                            Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合（{child.Children.Count} 个动作）");
-                            RunGroup(child, ct, depth + 1);
-                        }
-                        else Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合条件不满足，已跳过（{reason}）");
+                            if (GateHooks(child, out var reason, ct))
+                            {
+                                Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合（{child.Children.Count} 个动作）");
+                                RunGroup(child, ct, depth + 1);
+                            }
+                            else Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合条件不满足，已跳过（{reason}）");
+                        });
                     }
                     else RunLeaf(child, $"{indent}└ 子 {k + 1}/{group.Children.Count}：{child.Display}", ct);
                 }
@@ -317,8 +323,37 @@ public sealed class MacroRunner
         RunHook(group.CompleteAction, "运行结束后", ct);
     }
 
+    /// <summary>
+    /// 【整趟重复】：把"判定运行条件 → 监听 → 动作本体"当作一趟，按 RepeatCount 重复若干趟。
+    /// 与动作自身的【执行次数 LoopCount】是两回事——后者只重复动作本体（条件判一次、监听走一遍），
+    /// 前者每一趟都重新判条件、重新触发监听。中途产生跳转就不再重复（跳转优先，否则永远跳不出去）。
+    /// </summary>
+    private void RepeatCycle(MacroStep step, CancellationToken ct, Action once)
+    {
+        int reps = Math.Max(0, step.RepeatCount);
+        int done = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            Gate(ct);
+            once();
+            done++;
+            if (_pendingJump != null) break;
+            if (reps == 1) break;
+            if (reps != 0 && done >= reps) break;
+            if (step.RepeatDelayMs > 0) Wait(Jitter(step.RepeatDelayMs), ct);
+        }
+    }
+
     // 叶子动作：写一条"执行中"日志行 → 执行(含自身循环) → 改为执行成功/失败/已停止；并高亮该行 + 跑监听。
+    // 外层再套一层"整趟重复"（RepeatCount），每趟都会重新判条件、重新走监听。
     private bool RunLeaf(MacroStep step, string body, CancellationToken ct)
+    {
+        bool any = false;
+        RepeatCycle(step, ct, () => any |= RunLeafOnce(step, body, ct));
+        return any;
+    }
+
+    private bool RunLeafOnce(MacroStep step, string body, CancellationToken ct)
     {
         if (!GateHooks(step, out var conditionText, ct))
         {

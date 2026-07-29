@@ -1681,8 +1681,8 @@ public partial class MainWindow
         mousePanel2.Children.Add(dragEndPanel);
         mousePanel2.Children.Add(clickImagePanel);
         mousePanel2.Children.Add(mouseHoldPanel);
+        mousePanel2.Children.Add(mouseWheelPanel);      // 滚轮格数排在滚动次数前面：先定"一次滚多少"，再定"滚几次"
         mousePanel2.Children.Add(mouseRepeat.Panel);
-        mousePanel2.Children.Add(mouseWheelPanel);
         mousePanel2.Children.Add(humanizePanel);
 
         // 跳转面板（运行 → 跳转）：原先挂在每个动作上的「执行后跳转到」已剥离成这个独立动作。
@@ -1711,6 +1711,7 @@ public partial class MainWindow
 
         // 运行类（等待/激活窗口）的 执行次数+重复间隔：与鼠标/键盘同一套 RepeatBlock，后续新类型照此办理。
         var runRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
+        var stepRepeat = new RepeatBlock(this, "重复次数（0 为无限）", forRepeat: true, note: "每一趟都会【重新判定上面的运行条件、重新触发监听动作】，并各记一条日志。与上面各类动作里的「点击次数 / 按键次数 / 滚动次数 / 执行次数」不同——那个只是把动作本体多做几遍，条件只判一次、监听只走一遍。");
         baseContent.Children.Add(runRepeat.Panel);
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var cond = BuildRunConditionEditor(null);    // 与方案级共用同一套控件与逻辑
@@ -1723,6 +1724,8 @@ public partial class MainWindow
             var condPanel = cond.Panel;
             condPanel.Margin = new Thickness(0, 0, 0, 4);
             sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡
+            // 「重复次数」紧跟运行条件：它的意义就是"整趟重复，每趟重新判条件"，放一起才看得懂
+            sp.Children.Add(GroupCard("重复", stepRepeat.Panel));
 
             var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(GroupCard("事件监听",
@@ -2046,6 +2049,7 @@ public partial class MainWindow
                 }
                 {
                     if (ra is "等待" or "激活窗口") runRepeat.Apply(result);   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
+                    stepRepeat.Apply(result);   // 整趟重复：所有动作类型通用
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
                     result.PreCondAction = hookPreCond; result.CondSuccessAction = hookCondOk; result.CondFailAction = hookCondFail;
                     result.PreRunAction = hookPreRun;
@@ -2140,6 +2144,7 @@ public partial class MainWindow
             else if (source.JumpTarget >= 1 && source.JumpTarget <= count) jumpTargetCombo.SelectedIndex = source.JumpTarget;   // 只有序号的旧数据
             jumpMaxText.Text = Math.Max(0, source.JumpTimes).ToString();
             noteText.Text = source.Note;
+            stepRepeat.Load(source);
         }
 
         win.Content = grid;
@@ -2219,6 +2224,9 @@ public partial class MainWindow
         var condPanel = cond.Panel;
         condPanel.Margin = new Thickness(0, 0, 0, 4);
         sp.Children.Add(GroupCard("运行条件", condPanel));   // 与动作对话框一致：运行条件独立成卡
+        var groupStepRepeat = new RepeatBlock(this, "重复次数（0 为无限）", forRepeat: true, note: "每一趟都会【重新判定上面的运行条件、重新触发监听动作】，并各记一条日志。与上面各类动作里的「点击次数 / 按键次数 / 滚动次数 / 执行次数」不同——那个只是把动作本体多做几遍，条件只判一次、监听只走一遍。");
+        groupStepRepeat.Load(source);
+        sp.Children.Add(GroupCard("重复", groupStepRepeat.Panel));
 
         MacroStep? hookPreCond = source.PreCondAction, hookCondOk = source.CondSuccessAction, hookCondFail = source.CondFailAction,
                    hookPreRun = source.PreRunAction,
@@ -2255,7 +2263,7 @@ public partial class MainWindow
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
             };
-            try { groupRepeat.Apply(result); }
+            try { groupRepeat.Apply(result); groupStepRepeat.Apply(result); }
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
             try { ApplyRunCondition(cond, result); }   // 与方案级/动作级同一份写回逻辑
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
@@ -2913,8 +2921,14 @@ public partial class MainWindow
     }
 
     // 「次数 + 重复间隔」块：点击/滚动/按键共用同一套逻辑（间隔仅在次数 != 1 时显示；重复时必填校验）。
+    /// <summary>
+    /// 次数 + 间隔的可复用块。两种口径由 <c>forRepeat</c> 决定：
+    ///   false = 【执行次数】写 LoopCount/LoopDelayMs —— 重复动作本体（条件判一次、监听走一遍）；
+    ///   true  = 【重复次数】写 RepeatCount/RepeatDelayMs —— 整趟重复，每趟都重新判条件、重新走监听。
+    /// </summary>
     private sealed class RepeatBlock
     {
+        private readonly bool _forRepeat;
         public readonly Border Panel;
         public readonly TextBlock CountLabel;
         public readonly TextBox Count = new() { Text = "1", Height = 32 };
@@ -2922,8 +2936,9 @@ public partial class MainWindow
         private readonly ComboBox _delayUnit = new() { Width = 84, Height = 32, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         private readonly StackPanel _delayBlock;
 
-        public RepeatBlock(MainWindow owner, string label)
+        public RepeatBlock(MainWindow owner, string label, bool forRepeat = false, string? note = null)
         {
+            _forRepeat = forRepeat;
             CountLabel = FieldLabel(label);
             foreach (var u in new[] { "毫秒", "秒", "分钟", "小时" }) _delayUnit.Items.Add(u);
             _delayUnit.SelectedIndex = 1;   // 默认 1 秒
@@ -2935,13 +2950,23 @@ public partial class MainWindow
             var inner = new StackPanel();
             inner.Children.Add(CountLabel);
             inner.Children.Add(Count);
+            if (note != null)
+                inner.Children.Add(new TextBlock
+                {
+                    Text = note, Foreground = (Brush)owner.FindResource("Muted"), FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+                });
             inner.Children.Add(_delayBlock);
             Panel = owner.SubGroup(null, inner);
             Count.TextChanged += (_, _) => Refresh();
             Refresh();
         }
 
-        private void Refresh() => _delayBlock.Visibility = ParseInt(Count.Text, 1) == 1 ? Visibility.Collapsed : Visibility.Visible;
+        private void Refresh()
+        {
+            _delayBlock.Visibility = ParseInt(Count.Text, 1) == 1 ? Visibility.Collapsed : Visibility.Visible;
+            if (_forRepeat && _delayBlock.Children.Count > 0 && _delayBlock.Children[0] is TextBlock lb) lb.Text = "每趟之间的间隔";
+        }
         private double UnitFactor => _delayUnit.SelectedIndex switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
 
         private int DelayMs()
@@ -2953,17 +2978,26 @@ public partial class MainWindow
 
         public void Apply(MacroStep r)
         {
-            r.LoopCount = Math.Max(0, ParseInt(Count.Text, 1));
-            if (r.LoopCount != 1) { r.LoopDelayMs = DelayMs(); r.LoopDelayUnit = Math.Max(0, _delayUnit.SelectedIndex); }
+            int n = Math.Max(0, ParseInt(Count.Text, 1));
+            if (_forRepeat)
+            {
+                r.RepeatCount = n;
+                if (n != 1) { r.RepeatDelayMs = DelayMs(); r.RepeatDelayUnit = Math.Max(0, _delayUnit.SelectedIndex); }
+            }
+            else
+            {
+                r.LoopCount = n;
+                if (n != 1) { r.LoopDelayMs = DelayMs(); r.LoopDelayUnit = Math.Max(0, _delayUnit.SelectedIndex); }
+            }
         }
 
         public void Load(MacroStep sSrc)
         {
-            Count.Text = sSrc.LoopCount.ToString();
-            int u = Math.Clamp(sSrc.LoopDelayUnit, 0, 3);
+            Count.Text = (_forRepeat ? sSrc.RepeatCount : sSrc.LoopCount).ToString();
+            int u = Math.Clamp(_forRepeat ? sSrc.RepeatDelayUnit : sSrc.LoopDelayUnit, 0, 3);
             _delayUnit.SelectedIndex = u;
             double f = u switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
-            double v = sSrc.LoopDelayMs / f;
+            double v = (_forRepeat ? sSrc.RepeatDelayMs : sSrc.LoopDelayMs) / f;
             _delayVal.Text = v % 1.0 == 0 ? ((long)v).ToString() : v.ToString("0.###");
         }
     }
