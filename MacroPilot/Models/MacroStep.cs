@@ -39,6 +39,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     // MouseDrag 的终点：起点复用上面的 MoveMonitor/MoveNormX/MoveNormY。
     // DragMode：""=坐标拖动（起点→终点）；"Window"=拖动窗口（先激活 Target* 指定的窗口，再把它的左上角拖到终点）。
     public string DragMode { get; set; } = "";
+    // 拖动窗口时，终点坐标对应窗口的哪个点：0..8 按 3×3 排（0=左上 1=上中 2=右上 3=左中 4=中心 …… 8=右下）。
+    public int DragAnchor { get; set; }
     public string DragEndMonitor { get; set; } = "";
     public double DragEndNormX { get; set; }
     public double DragEndNormY { get; set; }
@@ -208,7 +210,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             Type = Type, Button = Button, Key = Key, Modifier = Modifier,
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
-            DragMode = DragMode, DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
+            DragMode = DragMode, DragAnchor = DragAnchor, DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
             Text = Text, TextMode = TextMode, TextCharDelayMs = TextCharDelayMs, TextRandom = TextRandom,
             ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
             ClickImageRectX = ClickImageRectX, ClickImageRectY = ClickImageRectY, ClickImageRectW = ClickImageRectW, ClickImageRectH = ClickImageRectH,
@@ -320,7 +322,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         string to = string.IsNullOrEmpty(DragEndMonitor)
             ? $"（{Pct(DragEndNormX, DragEndNormY)}）"
             : $"{Short(DragEndMonitor)}（{Pct(DragEndNormX, DragEndNormY)}）";
-        if (DragMode == "Window") return $"拖动窗口 {WindowTargetCn()} → 左上角到 {to}" + MoveSuffix();
+        if (DragMode == "Window") return $"拖动窗口 {WindowTargetCn()} → {AnchorCn(DragAnchor)}到 {to}" + MoveSuffix();
         string from = string.IsNullOrEmpty(MoveMonitor) ? Pct(MoveNormX, MoveNormY) : $"{Short(MoveMonitor)}（{Pct(MoveNormX, MoveNormY)}）";
         if (DragEndMonitor == MoveMonitor) to = $"（{Pct(DragEndNormX, DragEndNormY)}）";
         return $"{ButtonCn(Button)}拖动 {from} → {to}" + MoveSuffix();
@@ -351,6 +353,14 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         string head = moveOnly ? "移动到图片" : $"{ButtonCn(Button)}点击图片";
         return $"{head}（{region}内{nth}匹配，相似度 {ClickImageThreshold * 100:0}%）";
     }
+
+    /// <summary>窗口对齐点的中文名（3×3：0=左上 … 8=右下）。</summary>
+    public static string AnchorCn(int a) => (a % 3, a / 3) switch
+    {
+        (0, 0) => "左上角", (1, 0) => "上边中点", (2, 0) => "右上角",
+        (0, 1) => "左边中点", (1, 1) => "中心", (2, 1) => "右边中点",
+        (0, 2) => "左下角", (1, 2) => "下边中点", _ => "右下角",
+    };
 
     private string WindowTargetCn()
     {

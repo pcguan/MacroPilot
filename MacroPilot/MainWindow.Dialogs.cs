@@ -1358,7 +1358,11 @@ public partial class MainWindow
         baseContent.Children.Add(typeRow);
 
         // 鼠标面板
+        // 鼠标面板拆两段：上段（按钮/类型/拖动方式）→ 【窗口选择框】→ 下段（坐标/终点/图片/次数…）。
+        // 「拖动窗口」要先选窗口再设终点坐标，而窗口选择框是与「激活窗口」共用的同一个控件，
+        // 只能放在两段之间，才能同时满足两种动作的先后顺序。
         var mousePanel = new StackPanel(); baseContent.Children.Add(mousePanel);
+        var mousePanel2 = new StackPanel();
 
         // 鼠标按钮：多一个「仅移动」——选它即只移动不点击（存为 MouseMove）。
         var buttonCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 0), Height = 32 };
@@ -1385,6 +1389,17 @@ public partial class MainWindow
             new TextBlock
             {
                 Text = "拖动窗口：先激活选定的窗口，再按住它的标题栏拖动，使窗口【左上角】落在终点坐标。",
+                Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+            });
+
+        // 终点坐标对应窗口的哪个点（3×3）：默认左上角
+        var dragAnchorCombo = new ComboBox { Height = 32 };
+        for (int i = 0; i < 9; i++) dragAnchorCombo.Items.Add(new ComboBoxItem { Content = MacroStep.AnchorCn(i), Tag = i.ToString() });
+        dragAnchorCombo.SelectedIndex = 0;
+        var dragAnchorPanel = SubGroup("终点对应窗口的", dragAnchorCombo,
+            new TextBlock
+            {
+                Text = "拖完之后，窗口的这个点会落在下面设置的终点坐标上。例如选「中心」就是把窗口中心摆到该坐标。",
                 Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
             });
 
@@ -1530,6 +1545,7 @@ public partial class MainWindow
         var windowInner = new StackPanel();
         var windowPanel = SubGroup(null, windowInner);
         windowPanel.Visibility = Visibility.Collapsed; baseContent.Children.Add(windowPanel);
+        baseContent.Children.Add(mousePanel2);   // 窗口选择框之后才是终点坐标等（顺序即"先选窗口、再设终点"）
         var winHeader = new DockPanel { LastChildFill = false };
         winHeader.Children.Add(new TextBlock { Text = "选择目标窗口", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         var idBtnWin = new Button { Style = (Style)FindResource("IconButton"), FontSize = 16, Content = "", ToolTip = "标识屏幕（在各屏显示编号，帮你分清桌面对应哪块屏）" };
@@ -1655,13 +1671,15 @@ public partial class MainWindow
         mousePanel.Children.Add(mouseButtonPanel);
         mousePanel.Children.Add(mouseTargetPanel);   // 紧跟在「鼠标按钮」下面
         mousePanel.Children.Add(dragModePanel);
-        mousePanel.Children.Add(mouseMovePanel);
-        mousePanel.Children.Add(dragEndPanel);
-        mousePanel.Children.Add(clickImagePanel);
-        mousePanel.Children.Add(mouseHoldPanel);
-        mousePanel.Children.Add(mouseRepeat.Panel);
-        mousePanel.Children.Add(mouseWheelPanel);
-        mousePanel.Children.Add(humanizePanel);
+        // —— 中间是 windowPanel（拖动窗口 / 激活窗口共用）——
+        mousePanel2.Children.Add(dragAnchorPanel);
+        mousePanel2.Children.Add(mouseMovePanel);
+        mousePanel2.Children.Add(dragEndPanel);
+        mousePanel2.Children.Add(clickImagePanel);
+        mousePanel2.Children.Add(mouseHoldPanel);
+        mousePanel2.Children.Add(mouseRepeat.Panel);
+        mousePanel2.Children.Add(mouseWheelPanel);
+        mousePanel2.Children.Add(humanizePanel);
 
         // 跳转面板（运行 → 跳转）：原先挂在每个动作上的「执行后跳转到」已剥离成这个独立动作。
         var jumpInner = new StackPanel();
@@ -1786,7 +1804,7 @@ public partial class MainWindow
             runActionCombo.Visibility = t == "运行" ? Visibility.Visible : Visibility.Collapsed;
             keyKindPanel.Visibility = d == "键盘" ? Visibility.Visible : Visibility.Collapsed;
 
-            mousePanel.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
+            mousePanel.Visibility = mousePanel2.Visibility = d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
             keyboardPanel.Visibility = d == "键盘" && KeyAct() == "按键" ? Visibility.Visible : Visibility.Collapsed;
             textPanel.Visibility = d == "键盘" && KeyAct() == "文本" ? Visibility.Visible : Visibility.Collapsed;
             waitPanel.Visibility = ra == "等待" ? Visibility.Visible : Visibility.Collapsed;
@@ -1799,6 +1817,7 @@ public partial class MainWindow
             mouseTargetPanel.Visibility = (isClick || isMove) && d == "鼠标" ? Visibility.Visible : Visibility.Collapsed;
             mouseTargetTitle.Text = isMove ? "移动类型" : "点击类型";
             dragModePanel.Visibility = isDrag ? Visibility.Visible : Visibility.Collapsed;
+            dragAnchorPanel.Visibility = dragWindow ? Visibility.Visible : Visibility.Collapsed;
             string tgt = TargetKind();
             bool isClickAt = isClick && tgt == "coord", isClickImage = isClick && tgt == "image";
             bool isMoveAt = isMove && tgt != "image", isMoveImage = isMove && tgt == "image";
@@ -1819,8 +1838,9 @@ public partial class MainWindow
             clickImagePanel.Visibility = anyImage ? Visibility.Visible : Visibility.Collapsed;
             mouseHoldPanel.Visibility = anyClick ? Visibility.Visible : Visibility.Collapsed;
             mouseWheelPanel.Visibility = isWheel ? Visibility.Visible : Visibility.Collapsed;
-            // 拟人化在会发生移动到目标时有意义：点击坐标/移动/拖动/点击图片（落点偏移已并入坐标块，仅坐标块场景有）。
-            humanizePanel.Visibility = coordForced || anyImage ? Visibility.Visible : Visibility.Collapsed;
+            // 拟人化在会发生"移动到目标"时都有意义：点击坐标 / 移动 / 图片 / 两种拖动都算
+            //（拖动窗口同样是按住标题栏一路拖过去的，理应也能走拟人化轨迹）。
+            humanizePanel.Visibility = coordForced || anyImage || isDrag ? Visibility.Visible : Visibility.Collapsed;
 
             bool hasRepeat = anyClick || isWheel;
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
@@ -1915,6 +1935,7 @@ public partial class MainWindow
                             if (selProc == WindowActivator.DesktopSentinel)
                                 throw new InvalidOperationException("桌面不能拖动，请选择一个普通窗口。");
                             result.DragMode = "Window";
+                            result.DragAnchor = ParseInt(TagOf(dragAnchorCombo), 0);
                             result.TargetProcess = selProc; result.TargetTitle = selTitle; result.TargetPid = selPid;
                         }
                         else FillMove(result);
@@ -2082,7 +2103,10 @@ public partial class MainWindow
                     typeCombo.SelectedItem = "输入"; deviceCombo.SelectedItem = "鼠标"; mouseActionCombo.SelectedItem = "拖动";
                     dragModeCombo.SelectedIndex = source.DragMode == "Window" ? 1 : 0;
                     if (source.DragMode == "Window")
-                    { selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel(); }
+                    {
+                        selPid = source.TargetPid; selProc = source.TargetProcess; selTitle = source.TargetTitle; UpdateSelLabel();
+                        dragAnchorCombo.SelectedIndex = Math.Clamp(source.DragAnchor, 0, 8);
+                    }
                     coordCheck.IsChecked = true; LoadMoveFields(); LoadButtonFields();
                     dragEnd.Write(source.DragEndMonitor, source.DragEndNormX, source.DragEndNormY);
                     break;

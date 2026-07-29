@@ -724,7 +724,11 @@ public sealed class MacroRunner
 
         var (ex, ey) = ScreenInfo.Resolve(step.DragEndMonitor, step.DragEndNormX, step.DragEndNormY);
         (ex, ey) = ApplyOffset(ex, ey, step.ClickOffset);
-        int tx = grabX + (ex - wx), ty = grabY + (ey - wy);   // 抓点要移动的位移 = 窗口左上角要移动的位移
+        // 终点坐标对应窗口的哪个点由 DragAnchor 决定（3×3）：先反推出窗口左上角该落在哪儿
+        int ax = Math.Clamp(step.DragAnchor, 0, 8) % 3, ay = Math.Clamp(step.DragAnchor, 0, 8) / 3;
+        int targetLeft = ex - (int)Math.Round(ww * ax / 2.0);
+        int targetTop = ey - (int)Math.Round(wh * ay / 2.0);
+        int tx = grabX + (targetLeft - wx), ty = grabY + (targetTop - wy);   // 抓点的位移 = 窗口左上角的位移
 
         _backend.MouseMove(grabX, grabY);
         ct.ThrowIfCancellationRequested();
@@ -736,7 +740,7 @@ public sealed class MacroRunner
             Wait(60, ct);
         }
         finally { _backend.MouseUp(step.Button); }
-        Log?.Invoke("Info", $"拖动窗口：({wx}, {wy}) → ({ex}, {ey})。");
+        Log?.Invoke("Info", $"拖动窗口：左上角 ({wx}, {wy}) → ({targetLeft}, {targetTop})（{MacroStep.AnchorCn(step.DragAnchor)}对齐到 {ex}, {ey}）。");
     }
 
     // 点击图片：定位 → 移到中心 → 点击。移动图片：只定位 + 移动，不点击（两者共用 LocateImage）。
