@@ -161,6 +161,29 @@ public class ScreenMatchTests
     }
 
     [Fact]
+    public void 同分命中的结果与线程调度无关()
+    {
+        // 扫描是并行的，回收顺序不定。若只按分数排序，一堆同分候选进 NMS 的先后每次都可能不同，
+        // 最终留下谁、留几个就会飘 —— 「点击第 N 个」会变得不可复现。
+        using var tpl = MakeTemplate(60, 40);
+        using var scene = MakeScene(1200, 800);
+        Paste(scene, tpl, 200, 120);
+        Paste(scene, tpl, 700, 120);
+        Paste(scene, tpl, 450, 500);
+        var first = ScreenMatch.FindIn(scene, tpl, 0.9, out _);
+        for (int i = 0; i < 8; i++)
+        {
+            var again = ScreenMatch.FindIn(scene, tpl, 0.9, out _);
+            Assert.Equal(first.Count, again.Count);
+            for (int k = 0; k < first.Count; k++)
+            {
+                Assert.Equal(first[k].cx, again[k].cx);
+                Assert.Equal(first[k].cy, again[k].cy);
+            }
+        }
+    }
+
+    [Fact]
     public void 区域比模板还小时直接返回空()
     {
         using var tpl = MakeTemplate(80, 60);

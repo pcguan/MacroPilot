@@ -198,7 +198,16 @@ public static class ScreenMatch
         bestScore = best;
 
         // 非极大值抑制：按分数降序贪心接受，抑制与已接受项中心距离在半个模板内的其它候选（同一目标的邻近位置）。
-        raw.Sort((p, q) => q.score.CompareTo(p.score));
+        // 同分时再按位置排（上→下、左→右）：并行扫描回来的顺序本身不确定，只按分数排的话，
+        // 一堆同分候选进 NMS 的先后每次都可能不同 → 同一屏幕两次搜索的结果个数/位置会飘，
+        // 「点击第 N 个」就不稳。加上位置这一级比较，结果与线程调度彻底无关。
+        raw.Sort((p, q) =>
+        {
+            int c = q.score.CompareTo(p.score);
+            if (c != 0) return c;
+            c = p.y.CompareTo(q.y);
+            return c != 0 ? c : p.x.CompareTo(q.x);
+        });
         var kept = new List<(int x, int y, double score)>();
         foreach (var c in raw)
         {
@@ -219,16 +228,25 @@ public static class ScreenMatch
     private const double CoarseSlack = 0.15;
     private const int MaxCoarseCandidates = 4000; // 粗筛没起到过滤作用时（候选过多）回退全量扫
     private const int MinCoarseArea = 250_000;    // 位置数低于此值时全量扫本来就很快，不值得再缩一遍图
+    // 模板太小也不值得：缩略图省下的是"每个位置的比较量"，而准备工作（积分图 + k² 张缩略图）
+    // 的开销只跟【区域面积】有关。实测 32×32 及以下时准备工作反而占大头（快 1.0 倍甚至倒退到 0.4 倍），
+    // 64×48（≈3000 像素）起才稳定获益。
+    private const int MinCoarseTemplatePixels = 3000;
+    private const int MinCoarseTemplateKept = 250;   // 缩略图模板至少要保留这么多像素，否则筛不准也摊不平
 
     /// <summary>选缩放倍数：模板缩完不能太小（细节全糊就筛不准），扫描量太小则不缩。</summary>
     private static int ChooseScale(int tw, int th, int rw, int rh)
     {
         long positions = (long)Math.Max(0, rw - tw + 1) * Math.Max(0, rh - th + 1);
         if (positions < MinCoarseArea) return 1;
+        if ((long)tw * th < MinCoarseTemplatePixels) return 1;
         // k 越大越省：相位共 k² 个、每相位位置数 1/k²（位置总数不变），但每个位置的比较量降到 1/k²。
         // 上限由"缩完还认得出结构"决定——模板缩到 10×6 以下就只剩几个色块，粗筛会放过一大片。
+        // k 越大，每个位置的比较量越省（1/k²）；但缩略图模板本身也在变小，小到只剩几十个像素时
+        // 既筛不准（候选暴涨、精验白跑）又摊不平 k² 个相位的固定开销——实测 64×48 用 k=6（36 个相位、
+        // 缩略图只剩 10×8）反而比全量扫还慢。所以再加一条：缩完至少要留住 ~250 个像素。
         foreach (int k in new[] { 8, 6, 5, 4, 3, 2 })
-            if (tw / k >= 10 && th / k >= 6) return k;
+            if (tw / k >= 10 && th / k >= 6 && (tw / k) * (th / k) >= MinCoarseTemplateKept) return k;
         return 1;
     }
 
@@ -375,25 +393,30 @@ public static class ScreenMatch
 
             void ScanRow(int oy, List<(int x, int y, double score)> hits, ref double localBest)
             {
+                // 先把字段抓成局部：内层是几十亿次的热循环，字段访问会挡住 JIT 的边界检查消除，
+                // 实测（不走粗筛的小模板）差 10~20%。
+                byte[] sb = _s, tb = _tB, tg = _tG, tr = _tR;
+                int[] off = _sOff, wS = _wS;
+                int n = _n; long total = _totalW;
                 int rowBase = oy * _sStride;
                 for (int ox = x0; ox <= x1; ox++)
                 {
                     int baseOff = rowBase + ox * 4;
                     long pen = 0;
                     bool ok = true;
-                    for (int k = 0; k < _n; k++)
+                    for (int k = 0; k < n; k++)
                     {
-                        int si = baseOff + _sOff[k];
-                        if (Math.Abs(_tB[k] - _s[si]) > Tolerance ||
-                            Math.Abs(_tG[k] - _s[si + 1]) > Tolerance ||
-                            Math.Abs(_tR[k] - _s[si + 2]) > Tolerance)
+                        int si = baseOff + off[k];
+                        if (Math.Abs(tb[k] - sb[si]) > Tolerance ||
+                            Math.Abs(tg[k] - sb[si + 1]) > Tolerance ||
+                            Math.Abs(tr[k] - sb[si + 2]) > Tolerance)
                         {
-                            pen += _wS[k];
+                            pen += wS[k];
                             if (pen > diagBudget) { ok = false; break; }   // 连"接近"都算不上，放弃该位置
                         }
                     }
                     if (!ok) continue;
-                    double score = 1.0 - (double)pen / _totalW;
+                    double score = 1.0 - (double)pen / total;
                     if (score > localBest) localBest = score;
                     if (pen <= budget) hits.Add((ox, oy, score));          // 达阈值才算命中
                 }
