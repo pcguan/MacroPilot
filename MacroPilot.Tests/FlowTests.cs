@@ -143,6 +143,23 @@ public class FlowTests
         Assert.Equal(new[] { "a", "a" }, r.Calls);
     }
 
+    [Fact]
+    public void 拖动次数按执行次数重复本体()
+    {
+        // 拖动没有"重复次数"，但要能连拖几次：走的是执行次数(LoopCount)，条件仍只判一次
+        var d = new MacroStep { Type = "MouseDrag", Button = "Left", MoveMonitor = "", DragEndMonitor = "" };
+        d.LoopCount = 3; d.LoopDelayMs = 0;
+        var fake = new FakeBackend();
+        var runner = new MacroRunner(fake);
+        var done = new System.Threading.ManualResetEventSlim();
+        runner.Finished += _ => done.Set();
+        runner.Start(Plan(d), 0);
+        Assert.True(done.Wait(5000));
+        // 每次拖动 = 一对 按下/松开
+        Assert.Equal(3, fake.Calls.FindAll(c => c.StartsWith("down:")).Count);
+        Assert.Equal(3, fake.Calls.FindAll(c => c.StartsWith("up:")).Count);
+    }
+
     // ---- 跳转 ----
 
     [Fact]

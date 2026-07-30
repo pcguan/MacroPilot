@@ -1711,6 +1711,7 @@ public partial class MainWindow
 
         // 运行类（等待/激活窗口）的 执行次数+重复间隔：与鼠标/键盘同一套 RepeatBlock，后续新类型照此办理。
         var runRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
+        Border? stepRepeatCard = null;
         var stepRepeat = new RepeatBlock(this, "重复次数（0 为无限）", forRepeat: true, note: "每一趟都会【重新判定上面的运行条件、重新触发监听动作】，并各记一条日志。与上面各类动作里的「点击次数 / 按键次数 / 滚动次数 / 执行次数」不同——那个只是把动作本体多做几遍，条件只判一次、监听只走一遍。");
         baseContent.Children.Add(runRepeat.Panel);
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
@@ -1725,7 +1726,8 @@ public partial class MainWindow
             condPanel.Margin = new Thickness(0, 0, 0, 4);
             sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡
             // 「重复次数」紧跟运行条件：它的意义就是"整趟重复，每趟重新判条件"，放一起才看得懂
-            sp.Children.Add(GroupCard("重复", stepRepeat.Panel));
+            stepRepeatCard = GroupCard("重复", stepRepeat.Panel);
+            sp.Children.Add(stepRepeatCard);
 
             var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(GroupCard("事件监听",
@@ -1849,9 +1851,14 @@ public partial class MainWindow
             //（拖动窗口同样是按住标题栏一路拖过去的，理应也能走拟人化轨迹）。
             humanizePanel.Visibility = coordForced || anyImage || isDrag ? Visibility.Visible : Visibility.Collapsed;
 
-            bool hasRepeat = anyClick || isWheel;
+            bool hasRepeat = anyClick || isWheel || isDrag;   // 拖动也要次数（拖几次），只是它没有"重复次数"
             mouseRepeat.Panel.Visibility = hasRepeat ? Visibility.Visible : Visibility.Collapsed;
-            mouseRepeat.CountLabel.Text = isWheel ? "滚动次数（0 为无限）" : "点击次数（0 为无限）";
+            mouseRepeat.CountLabel.Text = isWheel ? "滚动次数（0 为无限）"
+                                        : isDrag ? "拖动次数（0 为无限）"
+                                        : "点击次数（0 为无限）";
+            // 移动与拖动不给「重复次数」：移动重复等于原地不动；拖动要重复用上面的"拖动次数"就够了。
+            bool noStepRepeat = d == "鼠标" && (isMove || isDrag);
+            if (stepRepeatCard != null) stepRepeatCard.Visibility = noStepRepeat ? Visibility.Collapsed : Visibility.Visible;
             // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
             runRepeat.Panel.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
 
@@ -1949,7 +1956,7 @@ public partial class MainWindow
                         var (devE, nxE, nyE) = dragEnd.Read();
                         result.DragEndMonitor = devE; result.DragEndNormX = nxE; result.DragEndNormY = nyE;
                         result.Humanize = humanizeMoveCheck.IsChecked == true;
-                        result.LoopCount = 1;
+                        mouseRepeat.Apply(result);   // 拖动次数（连拖几次，中间按重复间隔停顿）
                     }
                     else if (a == "移动")
                     {
@@ -2049,7 +2056,9 @@ public partial class MainWindow
                 }
                 {
                     if (ra is "等待" or "激活窗口") runRepeat.Apply(result);   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
-                    stepRepeat.Apply(result);   // 整趟重复：所有动作类型通用
+                    // 整趟重复：卡片藏起来的动作（移动/拖动）强制回到 1，避免把隐藏控件里的残值写进去
+                    if (stepRepeatCard is { Visibility: Visibility.Visible }) stepRepeat.Apply(result);
+                    else result.RepeatCount = 1;
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
                     result.PreCondAction = hookPreCond; result.CondSuccessAction = hookCondOk; result.CondFailAction = hookCondFail;
                     result.PreRunAction = hookPreRun;
