@@ -672,10 +672,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         edit.Focus(); edit.SelectAll();
 
         bool done = false;
+        MouseButtonEventHandler? outsideClick = null;
         void Finish(bool commit)
         {
             if (done) return;
             done = true;
+            if (outsideClick != null) PreviewMouseDown -= outsideClick;
             edit.Visibility = Visibility.Collapsed;
             text.Visibility = Visibility.Visible;
             if (commit) ApplyPlanRename(plan, edit.Text);
@@ -685,7 +687,21 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             if (ev.Key == Key.Enter) { ev.Handled = true; Finish(true); }
             else if (ev.Key == Key.Escape) { ev.Handled = true; Finish(false); }
         };
-        edit.LostFocus += (_, _) => Finish(true);   // 点到别处＝确认（与资源管理器一致）
+        edit.LostFocus += (_, _) => Finish(true);   // 焦点被别的控件拿走＝确认
+        // 光靠 LostFocus 不够：点在【空白区域】（不可聚焦的背景）不会转移键盘焦点，LostFocus 压根不触发，
+        // 输入框就一直挂着。补一个窗口级的 PreviewMouseDown（隧道，先于一切点击处理）：
+        // 只要按下点不在输入框自己身上，一律按"确认"收尾——与资源管理器点空白结束改名一致。
+        outsideClick = (_, ev) =>
+        {
+            var d = ev.OriginalSource as DependencyObject;
+            while (d != null)
+            {
+                if (ReferenceEquals(d, edit)) return;   // 点在输入框内：继续编辑
+                d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+            }
+            Finish(true);
+        };
+        PreviewMouseDown += outsideClick;
     }
 
     /// <summary>改名的唯一入口：撤销、定时启动跟随、脏标记、列表刷新都在这里，别再各写一份。</summary>

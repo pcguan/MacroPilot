@@ -381,12 +381,14 @@
             <DockPanel>
               <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
                 <TextBlock Text="方案" FontSize="18" FontWeight="Bold" Margin="0,0,0,6" />
+                <!-- 图标分两行：上排=方案本身的增删改（基础），下排=围绕方案的功能（定时/导入导出/录制） -->
                 <StackPanel Orientation="Horizontal">
                   <Button Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="新建方案" Click="NewPlanIcon_Click" />
-                  <Button Style="{StaticResource IconButton}" Content="&#xE7C8;" ToolTip="录制新方案：做一遍操作，自动生成动作列表（点击 / 拖动 / 滚轮 / 按键 / 等待）" Click="RecordPlan_Click" />
-                  <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案" Click="RenamePlanIcon_Click" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案（双击方案名也可）" Click="RenamePlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="删除当前方案" Click="DeletePlanIcon_Click" />
-                  <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                  <Button Style="{StaticResource IconButton}" Content="&#xE7C8;" ToolTip="录制新方案：做一遍操作，自动生成动作列表（点击 / 拖动 / 滚轮 / 按键 / 等待）" Click="RecordPlan_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE823;" ToolTip="定时启动（全局：只让一个方案到点自动运行）" Click="Schedule_Click" />
                   <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="导入方案（可多选文件，单方案 / 多方案自动识别）" Click="Import_Click" />
