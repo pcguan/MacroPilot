@@ -493,7 +493,7 @@
                         </Border.ContextMenu>
                         <DockPanel LastChildFill="True">
                           <TextBlock DockPanel.Dock="Left" Text="•" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" />
-                          <TextBlock Name="ChildNote" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding Note}" />
+                          <TextBlock Name="ChildNote" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding RowTag}" ToolTip="{Binding RowTag}" />
                           <Border Name="ChildDisabledBadge" DockPanel.Dock="Right" Visibility="Collapsed" VerticalAlignment="Center" Margin="8,0,0,0" Background="#26F04747" BorderBrush="#F04747" BorderThickness="1" CornerRadius="9" Padding="8,1">
                             <TextBlock Text="已禁用" FontSize="11" FontWeight="SemiBold" Foreground="#F04747" />
                           </Border>
@@ -510,7 +510,7 @@
                         <Setter TargetName="ChildBorder" Property="Opacity" Value="0.5" />
                         <Setter TargetName="ChildDisabledBadge" Property="Visibility" Value="Visible" />
                       </DataTrigger>
-                      <DataTrigger Binding="{Binding Note}" Value="">
+                      <DataTrigger Binding="{Binding RowTag}" Value="">
                         <Setter TargetName="ChildNote" Property="Visibility" Value="Collapsed" />
                       </DataTrigger>
                       <DataTrigger Binding="{Binding IsFocused}" Value="True">
@@ -556,7 +556,7 @@
                           <DockPanel LastChildFill="True">
                             <CheckBox Name="RowCheck" DockPanel.Dock="Left" Visibility="Collapsed" VerticalAlignment="Center" Margin="0,0,10,0" IsChecked="{Binding IsChecked, Mode=TwoWay}" Checked="BatchCheck_Changed" Unchecked="BatchCheck_Changed" />
                             <TextBlock DockPanel.Dock="Left" MinWidth="32" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource Muted}" Text="{Binding DisplayIndex, StringFormat={}{0}.}" />
-                            <TextBlock Name="NoteText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding Note}" />
+                            <TextBlock Name="NoteText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding RowTag}" ToolTip="{Binding RowTag}" />
                             <StackPanel Orientation="Horizontal">
                               <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Display}" />
                               <TextBlock Name="GroupChevron" Visibility="Collapsed" VerticalAlignment="Center" Margin="6,0,0,0" FontSize="11" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Cursor="Hand" Foreground="{DynamicResource Accent}" Text="&#xE76C;" MouseLeftButtonDown="GroupChevron_MouseDown" />
@@ -604,7 +604,7 @@
                       <DataTrigger Binding="{Binding IsFocused}" Value="True">
                         <Setter TargetName="HeaderBorder" Property="Background" Value="{DynamicResource Selected}" />
                       </DataTrigger>
-                      <DataTrigger Binding="{Binding Note}" Value="">
+                      <DataTrigger Binding="{Binding RowTag}" Value="">
                         <Setter TargetName="NoteText" Property="Visibility" Value="Collapsed" />
                       </DataTrigger>
                       <DataTrigger Binding="{Binding IsExecuting}" Value="True">
@@ -684,12 +684,12 @@
                     <Border Name="RunRowBorder" CornerRadius="6" Padding="8,6" Background="#00FFFFFF">
                       <DockPanel LastChildFill="True">
                         <TextBlock DockPanel.Dock="Left" MinWidth="32" VerticalAlignment="Center" FontWeight="Bold" Foreground="{DynamicResource Muted}" Text="{Binding DisplayIndex, StringFormat={}{0}.}" />
-                        <TextBlock Name="RunNoteText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding Note}" />
+                        <TextBlock Name="RunNoteText" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Text="{Binding RowTag}" ToolTip="{Binding RowTag}" />
                         <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="{Binding Display}" />
                       </DockPanel>
                     </Border>
                     <DataTemplate.Triggers>
-                      <DataTrigger Binding="{Binding Note}" Value="">
+                      <DataTrigger Binding="{Binding RowTag}" Value="">
                         <Setter TargetName="RunNoteText" Property="Visibility" Value="Collapsed" />
                       </DataTrigger>
                       <DataTrigger Binding="{Binding IsExecuting}" Value="True">

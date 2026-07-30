@@ -271,10 +271,12 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     /// <summary>简易描述：有备注用备注，否则用动作本身的简述（不带循环/监听等后缀）。跳转目标下拉等紧凑场景用。</summary>
     [JsonIgnore] public string Brief => string.IsNullOrWhiteSpace(Note) ? BaseDesc() : Note.Trim();
 
+    /// <summary>动作行右侧的标签槽：**备注优先，其次别名**（一个槽位，避免行上又是前缀又是尾注）。空 = 不显示。</summary>
+    [JsonIgnore] public string RowTag => !string.IsNullOrWhiteSpace(Note) ? Note.Trim() : (Alias.Length > 0 ? $"〔{Alias}〕" : "");
+
     public override string ToString()
     {
         string desc = BaseDesc();
-        if (Alias.Length > 0) desc = $"〔{Alias}〕{desc}";   // 别名前缀：一眼看出哪些动作是跳转标签
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
         res += RepeatCount switch { 1 => "", 0 => "（无限重复）", _ => $"（重复 {RepeatCount} 次）" };
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
