@@ -383,6 +383,7 @@
                 <TextBlock Text="方案" FontSize="18" FontWeight="Bold" Margin="0,0,0,6" />
                 <StackPanel Orientation="Horizontal">
                   <Button Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="新建方案" Click="NewPlanIcon_Click" />
+                  <Button Style="{StaticResource IconButton}" Content="&#xE7C8;" ToolTip="录制新方案：做一遍操作，自动生成动作列表（点击 / 拖动 / 滚轮 / 按键 / 等待）" Click="RecordPlan_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE70F;" ToolTip="重命名当前方案" Click="RenamePlanIcon_Click" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="删除当前方案" Click="DeletePlanIcon_Click" />
                   <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
