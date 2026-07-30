@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using MacroPilot.Input;
@@ -91,8 +91,16 @@ public static class Harness
     /// <summary>等待动作（毫秒），用于测暂停/停止时序。</summary>
     public static MacroStep Wait(int ms) => new() { Type = "Wait", DurationMs = ms, LoopCount = 1 };
 
-    /// <summary>跳转到指定动作（按身份绑定）；times=最大重复次数，0 为不限。</summary>
+    private static int _aliasSeq;
+    /// <summary>跳转到指定动作（按【别名】绑定，与 UI 的新格式一致）；times=最大重复次数，0 为不限。</summary>
     public static MacroStep JumpTo(MacroStep target, int times = 0)
+    {
+        if (target.Alias.Length == 0) target.Alias = "L" + System.Threading.Interlocked.Increment(ref _aliasSeq);
+        return new() { Type = "Jump", JumpTargetAlias = target.Alias, JumpTimes = times, LoopCount = 1 };
+    }
+
+    /// <summary>旧格式：按身份 Id 绑定的跳转（验证历史存档的回退解析）。</summary>
+    public static MacroStep JumpToId(MacroStep target, int times = 0)
         => new() { Type = "Jump", JumpTargetId = target.Id, JumpTimes = times, LoopCount = 1 };
 
     /// <summary>只按序号的跳转（模拟旧存档，验证兼容路径）。</summary>

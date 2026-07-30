@@ -214,7 +214,7 @@ public class FlowTests
         Assert.Equal(new[] { "a", "a", "b" }, r.Calls);
     }
 
-    // ---- 跳转绑定动作身份（v0.4.1）----
+    // ---- 跳转绑定别名（v0.6.5 起的新格式；插入/删除/排序天然无关）----
 
     [Fact]
     public void 在目标之前插入动作后跳转仍指向同一个动作()
@@ -274,6 +274,35 @@ public class FlowTests
 
         var r = Run(plan);
         Assert.Equal(new[] { "head", "a", "x", "a", "x" }, r.Calls);
+    }
+
+    [Fact]
+    public void 旧存档按身份Id绑定的跳转仍可用()
+    {
+        // v0.4.1~v0.6.4 的存档：Jump 只有 JumpTargetId。运行期回退按 Id 解析。
+        var a = Key("a"); var b = Key("b");
+        var r = Run(Plan(a, b, JumpToId(a, 1)));
+        Assert.Equal(new[] { "a", "b", "a", "b" }, r.Calls);
+    }
+
+    [Fact]
+    public void 目标别名不存在时跳转不生效()
+    {
+        var j = new MacroStep { Type = "Jump", JumpTargetAlias = "不存在的标签", JumpTimes = 5 };
+        var r = Run(Plan(Key("a"), j, Key("b")));
+        Assert.Equal(new[] { "a", "b" }, r.Calls);
+        Assert.Equal("Done", r.Reason);
+    }
+
+    [Fact]
+    public void 重名别名取第一个()
+    {
+        var a1 = Key("a1"); a1.Alias = "同名";
+        var a2 = Key("a2"); a2.Alias = "同名";
+        var j = new MacroStep { Type = "Jump", JumpTargetAlias = "同名", JumpTimes = 1 };
+        var r = Run(Plan(a1, a2, j));
+        // 跳回第一个「同名」：a1 a2 → 跳到 a1 → a1 a2 → 结束
+        Assert.Equal(new[] { "a1", "a2", "a1", "a2" }, r.Calls);
     }
 
     [Fact]

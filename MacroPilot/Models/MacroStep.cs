@@ -114,8 +114,20 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         foreach (var c in Children) c.RenewId();
     }
 
-    // 跳转目标：JumpTargetId 才是真相（绑定动作本身）；JumpTarget 是它在顶层列表里的当前序号，
-    // 仅用于界面显示与兼容旧存档，由 MainWindow.RefreshIndices 按 Id 同步。JumpTimes=最大重复次数(0=无限)。
+    /// <summary>清空整棵子树的别名（粘贴副本用：别名是跳转标签，方案里出现两个同名标签会让跳转指错）。</summary>
+    public void ClearAliases()
+    {
+        Alias = "";
+        foreach (var (_, hook) in HookList()) hook.ClearAliases();
+        foreach (var c in Children) c.ClearAliases();
+    }
+
+    // 别名（跳转用标签）：给动作起个短名字，跳转按它选择目标。方案内应唯一（重名时跳转取第一个）。
+    public string Alias { get; set; } = "";
+
+    // 跳转目标：新格式按【别名】绑定（JumpTargetAlias）——插入/删除/排序都与它无关，也没有序号要同步。
+    // JumpTargetId / JumpTarget 是历史格式（身份 / 序号），只在读旧存档时作运行期回退，不再写入新数据。
+    public string JumpTargetAlias { get; set; } = "";
     public string JumpTargetId { get; set; } = "";
     public int JumpTarget { get; set; }
     public int JumpTimes { get; set; }
@@ -218,6 +230,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             Type = Type, Button = Button, Key = Key, Modifier = Modifier,
             HoldMs = HoldMs, DurationMs = DurationMs, HoldUnit = HoldUnit, DurationUnit = DurationUnit, X = X, Y = Y, Wheel = Wheel,
             MoveMonitor = MoveMonitor, MoveNormX = MoveNormX, MoveNormY = MoveNormY, Humanize = Humanize, ClickOffset = ClickOffset, Disabled = Disabled,
+            Alias = Alias, JumpTargetAlias = JumpTargetAlias,
             DragMode = DragMode, DragAnchor = DragAnchor, DragEndMonitor = DragEndMonitor, DragEndNormX = DragEndNormX, DragEndNormY = DragEndNormY,
             Text = Text, TextMode = TextMode, TextCharDelayMs = TextCharDelayMs, TextRandom = TextRandom,
             ClickImage = ClickImage, ClickImageMonitor = ClickImageMonitor,
@@ -261,6 +274,7 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public override string ToString()
     {
         string desc = BaseDesc();
+        if (Alias.Length > 0) desc = $"〔{Alias}〕{desc}";   // 别名前缀：一眼看出哪些动作是跳转标签
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
         res += RepeatCount switch { 1 => "", 0 => "（无限重复）", _ => $"（重复 {RepeatCount} 次）" };
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
@@ -289,7 +303,9 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
         "KeyTap" => $"按键 {KeyCn()}，按住 {FormatMs(HoldMs)}",
         "TextInput" => TextDisplay(),
         "ActivateWindow" => $"激活窗口 {WindowTargetCn()}",
-        "Jump" => JumpTarget >= 1 ? (JumpTimes > 0 ? $"跳转到动作 {JumpTarget}（最多 {JumpTimes} 次）" : $"跳转到动作 {JumpTarget}") : "跳转（未设置目标）",
+        "Jump" => JumpTargetAlias.Length > 0
+            ? (JumpTimes > 0 ? $"跳转到「{JumpTargetAlias}」（最多 {JumpTimes} 次）" : $"跳转到「{JumpTargetAlias}」")
+            : JumpTargetId.Length > 0 || JumpTarget >= 1 ? "跳转（旧格式目标，建议重新编辑选择别名）" : "跳转（未设置目标）",
         _ => Type
     };
 

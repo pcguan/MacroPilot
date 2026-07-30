@@ -993,7 +993,8 @@ public partial class MainWindow
             if (_clip.IsGroup) { ThemedDialog.Show("组合动作不能作为监听动作粘贴。", "无法粘贴", MessageBoxButton.OK, MessageBoxImage.Information); return; }
             var copy = _clip.Clone();
             copy.RenewId();                                                   // 新身份，避免与原件抢同一个跳转目标
-            copy.JumpTargetId = ""; copy.JumpTarget = 0; copy.JumpTimes = 0;   // 跳转对监听是 no-op，贴过来更没意义
+            copy.JumpTargetAlias = ""; copy.JumpTargetId = ""; copy.JumpTarget = 0; copy.JumpTimes = 0;   // 跳转对监听是 no-op，贴过来更没意义
+            copy.ClearAliases();   // 别名标签同样清空，避免与列表里的原件重名
             set(copy); Refresh();
         };
         // 剪贴板是全局的：在别处（动作列表 / 另一个挂点）复制后，本行的"粘贴"要立刻可用。
@@ -1690,24 +1691,29 @@ public partial class MainWindow
         var jumpPanel = SubGroup(null, jumpInner);
         jumpPanel.Visibility = Visibility.Collapsed; baseContent.Children.Add(jumpPanel);
         var jumpTargetCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 8), Height = 32 };
-        // 目标用 Tag 记住动作的【身份 Id】而不是序号：之后在它前面插入/删除动作，跳转仍指向同一个动作。
-        jumpTargetCombo.Items.Add(new ComboBoxItem { Content = "（选择目标动作）", Tag = "" });
-        int count = _plan?.Steps.Count ?? 0;
-        for (int n = 1; n <= count; n++)
-        {
-            // 有备注显示备注，否则显示动作简述（截断防超宽）
-            var tgt = _plan!.Steps[n - 1];
-            var brief = tgt.Brief;
-            if (brief.Length > 42) brief = brief[..42] + "…";
-            jumpTargetCombo.Items.Add(new ComboBoxItem { Content = $"{n}. {brief}", Tag = tgt.Id });
-        }
+        // 目标按【别名】选择（像 goto 的标签）：只有设了别名的动作才能被跳转。
+        // 与序号/身份彻底解耦——插入、删除、排序都不需要任何同步逻辑。
+        jumpTargetCombo.Items.Add(new ComboBoxItem { Content = "（选择目标别名）", Tag = "" });
+        if (_plan != null)
+            foreach (var tgt in _plan.Steps)
+            {
+                if (tgt.Alias.Length == 0) continue;
+                var brief = tgt.Brief;
+                if (brief.Length > 36) brief = brief[..36] + "…";
+                jumpTargetCombo.Items.Add(new ComboBoxItem { Content = $"「{tgt.Alias}」 {brief}", Tag = tgt.Alias });
+            }
         jumpTargetCombo.SelectedIndex = 0;
-        jumpInner.Children.Add(FieldLabel("跳转到"));
+        jumpInner.Children.Add(FieldLabel("跳转到（按别名）"));
         jumpInner.Children.Add(jumpTargetCombo);
+        jumpInner.Children.Add(new TextBlock
+        {
+            Text = "只有设置了「别名」的动作才会出现在这里；给目标动作填上别名（下方「别名与备注」卡片）即可被跳转。",
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+        });
         jumpInner.Children.Add(FieldLabel("最大重复次数（0 为不限）"));
         var jumpMaxText = new TextBox { Text = "0", Margin = new Thickness(0, 0, 0, 8), Height = 32 };
         jumpInner.Children.Add(jumpMaxText);
-        jumpInner.Children.Add(new TextBlock { Text = "每次执行到本动作就跳到指定序号继续（仅方案顶层生效）。最大重复次数是防死循环的上限：本轮内已跳次数达到上限后，该跳转不再生效、按顺序往下走；0 表示不设上限。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+        jumpInner.Children.Add(new TextBlock { Text = "每次执行到本动作就跳到指定别名的动作继续（仅方案顶层生效）。最大重复次数是防死循环的上限：本轮内已跳次数达到上限后，该跳转不再生效、按顺序往下走；0 表示不设上限。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
 
         // 运行类（等待/激活窗口）的 执行次数+重复间隔：与鼠标/键盘同一套 RepeatBlock，后续新类型照此办理。
         var runRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
@@ -1715,6 +1721,7 @@ public partial class MainWindow
         var stepRepeat = new RepeatBlock(this, "重复次数（0 为无限）", forRepeat: true, note: "每一趟都会【重新判定上面的运行条件、重新触发监听动作】，并各记一条日志。与上面各类动作里的「点击次数 / 按键次数 / 滚动次数 / 执行次数」不同——那个只是把动作本体多做几遍，条件只判一次、监听只走一遍。");
         baseContent.Children.Add(runRepeat.Panel);
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        var aliasText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var cond = BuildRunConditionEditor(null);    // 与方案级共用同一套控件与逻辑
 
         MacroStep? hookPreCond = source?.PreCondAction, hookCondOk = source?.CondSuccessAction, hookCondFail = source?.CondFailAction,
@@ -1740,7 +1747,9 @@ public partial class MainWindow
                 BuildHookRow(win, "运行失败后", () => hookFail, v => hookFail = v),
                 BuildHookRow(win, "运行结束后", () => hookComplete, v => hookComplete = v)));
 
-            sp.Children.Add(GroupCard("备注（可选）", noteText));
+            sp.Children.Add(GroupCard("别名与备注（可选）",
+                FieldLabel("别名（跳转用标签，方案内应唯一）"), aliasText,
+                FieldLabel("备注"), noteText));
         }
 
         // 主/次动作分明：确定=强调色实心（主动作），取消=描边空心（次动作）。底部固定不随内容滚动，上方加分割线。
@@ -2039,12 +2048,11 @@ public partial class MainWindow
                 else if (ra == "跳转")
                 {
                     if (jumpTargetCombo.SelectedIndex < 1)
-                        throw new InvalidOperationException("请选择跳转的目标动作。");
+                        throw new InvalidOperationException("请选择跳转的目标别名（目标动作要先设置别名）。");
                     result = new MacroStep
                     {
                         Type = "Jump",
-                        JumpTargetId = (jumpTargetCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
-                        JumpTarget = jumpTargetCombo.SelectedIndex,   // 仅作显示用，RefreshIndices 会按 Id 重新同步
+                        JumpTargetAlias = (jumpTargetCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                         JumpTimes = Math.Max(0, ParseInt(jumpMaxText.Text, 0)),
                     };
                 }
@@ -2064,6 +2072,7 @@ public partial class MainWindow
                     result.PreRunAction = hookPreRun;
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
+                    result.Alias = aliasText.Text.Trim();
                 }
                 if (settingsChanged) PersistSettings(); // 持久化默认时长等设置，不提交未保存的方案修改
                 win.DialogResult = true;
@@ -2144,15 +2153,15 @@ public partial class MainWindow
             }
             mouseRepeat.Load(source); kbRepeat.Load(source); runRepeat.Load(source); textRepeat.Load(source);
             LoadRunCondition(cond, source);   // 与方案级同一份回填逻辑
-            // 回填按身份找，找不到（目标已被删除/移入组合）就停在"（选择目标动作）"
-            if (source.JumpTargetId.Length > 0)
+            // 回填按别名找；旧格式（Id/序号）没有别名，停在提示项由用户重选（运行期仍按旧字段回退可跑）
+            if (source.JumpTargetAlias.Length > 0)
             {
                 for (int n = 1; n < jumpTargetCombo.Items.Count; n++)
-                    if ((jumpTargetCombo.Items[n] as ComboBoxItem)?.Tag as string == source.JumpTargetId) { jumpTargetCombo.SelectedIndex = n; break; }
+                    if ((jumpTargetCombo.Items[n] as ComboBoxItem)?.Tag as string == source.JumpTargetAlias) { jumpTargetCombo.SelectedIndex = n; break; }
             }
-            else if (source.JumpTarget >= 1 && source.JumpTarget <= count) jumpTargetCombo.SelectedIndex = source.JumpTarget;   // 只有序号的旧数据
             jumpMaxText.Text = Math.Max(0, source.JumpTimes).ToString();
             noteText.Text = source.Note;
+            aliasText.Text = source.Alias;
             stepRepeat.Load(source);
         }
 
@@ -2252,7 +2261,10 @@ public partial class MainWindow
             BuildHookRow(win, "运行结束后", () => hookComplete, v => hookComplete = v)));
 
         var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        sp.Children.Add(GroupCard("备注（可选）", noteText));
+        var aliasText = new TextBox { Text = source.Alias, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
+        sp.Children.Add(GroupCard("别名与备注（可选）",
+            FieldLabel("别名（跳转用标签，方案内应唯一）"), aliasText,
+            FieldLabel("备注"), noteText));
 
         var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
         var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
@@ -2271,6 +2283,7 @@ public partial class MainWindow
                 PreRunAction = hookPreRun,
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
+                Alias = aliasText.Text.Trim(),
             };
             try { groupRepeat.Apply(result); groupStepRepeat.Apply(result); }
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }

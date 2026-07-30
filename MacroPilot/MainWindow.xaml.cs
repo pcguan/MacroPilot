@@ -861,8 +861,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             if (SameStepContent(edited, _step)) return;
             PushUndo();
-            // 编辑=整项替换成新对象：把旧对象的身份过继给它，指向本步的跳转才不会失效。
+            // 编辑=整项替换成新对象：把旧对象的身份过继给它（旧格式跳转仍按 Id 回退解析）。
             edited.Id = _step.Id;
+            // 别名改名要跟随：方案里所有指向旧别名的跳转一起改，否则它们全部悬空。
+            string oldAlias = _step.Alias, newAlias = edited.Alias;
+            if (oldAlias.Length > 0 && oldAlias != newAlias)
+                foreach (var st in MacroStep.Flatten(_plan.Steps))
+                    if (st.Type == "Jump" && st.JumpTargetAlias == oldAlias) st.JumpTargetAlias = newAlias;
             _plan.Steps[idx] = edited;
             RefreshIndices(); StepsList.SelectedIndex = idx; MarkDirty();
         }
@@ -890,8 +895,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var parentGroup = target != null ? FindParentGroup(target) : null;
         PushUndo();
         var pasted = _clip.Clone();
-        pasted.RenewId();                              // 副本必须是新身份，否则跳转会同时指向原件与副本
-        pasted.JumpTargetId = ""; pasted.JumpTarget = 0; pasted.JumpTimes = 0;   // 复制来的跳转目标在新位置无意义
+        pasted.RenewId();          // 副本必须是新身份（旧格式跳转按 Id 解析，不能与原件撞）
+        pasted.ClearAliases();     // 别名是跳转标签：方案里出现两个同名标签会让跳转指错，副本一律清空
+        // 注意 JumpTargetAlias【保留】：粘贴一个"跳转到「战斗」"的动作，指向的还是那个标签，语义自然成立
         if (parentGroup != null && !_clip.IsGroup)
         {
             // 聚焦在组合内部的子动作：作为兄弟子动作粘到该子动作之后（组合不嵌套组合）。
@@ -1011,22 +1017,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_plan == null) return;
         var steps = _plan.Steps;
-        // 跳转目标跟随动作本身：JumpTargetId 绑定的是目标对象，插入/删除/排序都不会指错，
-        // 这里只负责把"当前序号"同步到 JumpTarget 供界面显示（也让旧版格式保持可读）。
-        // 组合内与监听里的跳转同样指向顶层序号，故用 Flatten 递归遍历——只扫顶层会漏掉它们。
-        foreach (var s in MacroStep.Flatten(steps))
-        {
-            if (s.Type != "Jump") continue;
-            // 只有序号的旧存档：按当前顺序解析出目标身份（一次性，之后就与序号无关了）
-            if (s.JumpTargetId.Length == 0 && s.JumpTarget >= 1 && s.JumpTarget <= steps.Count)
-                s.JumpTargetId = steps[s.JumpTarget - 1].Id;
-            int ni = -1;
-            if (s.JumpTargetId.Length > 0)
-                for (int k = 0; k < steps.Count; k++) if (steps[k].Id == s.JumpTargetId) { ni = k; break; }
-            // 目标不在顶层（被删除/移入组合）→ 显示序号置 0 表示当前不可达；
-            // 但【保留 JumpTargetId】，这样撤销删除或把目标移回顶层后，跳转会自动恢复。
-            s.JumpTarget = ni + 1;
-        }
+        // 跳转已改为按【别名】绑定：目标是不是第几个与它无关，插入/删除/排序不需要任何同步。
+        // （旧格式的 JumpTargetId/JumpTarget 只在运行期作回退解析，这里不再维护。）
         for (int i = 0; i < steps.Count; i++) steps[i].DisplayIndex = i + 1;
     }
 

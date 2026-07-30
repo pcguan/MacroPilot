@@ -269,15 +269,23 @@ public sealed class MacroRunner
 
     // 跳转目标定位：JumpTargetId（绑定动作本身，增删排序都不会指错）优先；
     // 只有序号的旧存档回退用 JumpTarget。目标不在顶层（被删/移入组合）返回 -1，即不跳。
+    // 解析跳转目标在顶层的下标：新格式按【别名】（首个同名者）；旧存档回退身份 Id、再回退序号。
     private static int JumpIndex(MacroStep jump, System.Collections.Generic.IList<MacroStep> steps)
     {
+        if (jump.JumpTargetAlias.Length > 0)
+        {
+            for (int k = 0; k < steps.Count; k++)
+                if (steps[k].Alias == jump.JumpTargetAlias) return k;
+            return -1;   // 目标别名不存在（被改名/删除）→ 跳转不生效
+        }
         if (jump.JumpTargetId.Length > 0)
         {
             for (int k = 0; k < steps.Count; k++)
                 if (steps[k].Id == jump.JumpTargetId) return k;
             return -1;
         }
-        return jump.JumpTarget >= 1 && jump.JumpTarget <= steps.Count ? jump.JumpTarget - 1 : -1;
+        int ti = jump.JumpTarget - 1;
+        return ti >= 0 && ti < steps.Count ? ti : -1;
     }
 
     // 组合：高亮整组，逐个子动作记日志(执行中→成功/失败)，支持组合自身循环。
