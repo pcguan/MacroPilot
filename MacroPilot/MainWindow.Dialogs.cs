@@ -1037,19 +1037,38 @@ public partial class MainWindow
     /// 条件列表编辑块：满足方式（与/或）+ 条件列表 + 添加按钮。
     /// 运行条件（BuildRunConditionPanel）与「重复直到条件满足」的停止条件（UntilBlock）共用同一份。
     /// </summary>
-    private StackPanel BuildConditionListBlock(System.Collections.Generic.List<ConditionItem> items, ComboBox logicCombo, out Action refresh)
+    private StackPanel BuildConditionListBlock(System.Collections.Generic.List<ConditionItem> items, ComboBox logicCombo, TextBox exprBox, out Action refresh)
     {
         var block = new StackPanel();
-        // ---- 满足方式：多条时才有意义，单条时藏起来 ----
+        // ---- 满足方式：多条时才有意义，单条时藏起来（自定义表达式模式下始终显示）----
         logicCombo.Items.Clear();
         logicCombo.Items.Add(new ComboBoxItem { Content = "全部满足（与）", Tag = "And" });
         logicCombo.Items.Add(new ComboBoxItem { Content = "任一满足（或）", Tag = "Or" });
+        logicCombo.Items.Add(new ComboBoxItem { Content = "自定义表达式", Tag = "Expr" });
         logicCombo.Height = 32; logicCombo.Width = 150;
         if (logicCombo.SelectedIndex < 0) logicCombo.SelectedIndex = 0;
         var logicRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
         logicRow.Children.Add(new TextBlock { Text = "满足方式", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
         logicRow.Children.Add(logicCombo);
         block.Children.Add(logicRow);
+
+        // ---- 自定义表达式：@序号 引用列表里的条件，支持 && || ! 与括号 ----
+        var exprRow = new StackPanel { Margin = new Thickness(0, 0, 0, 10), Visibility = Visibility.Collapsed };
+        exprBox.Height = 32;
+        exprRow.Children.Add(exprBox);
+        exprRow.Children.Add(new TextBlock
+        {
+            Text = "用 @序号 引用下方条件，支持 &&（与）、||（或）、!（非）和括号。例：(@1 && @2) || @3",
+            Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+        });
+        block.Children.Add(exprRow);
+
+        bool ExprMode() => logicCombo.SelectedIndex == 2;
+        void RefreshLogicUi()
+        {
+            logicRow.Visibility = items.Count > 1 || ExprMode() ? Visibility.Visible : Visibility.Collapsed;
+            exprRow.Visibility = ExprMode() ? Visibility.Visible : Visibility.Collapsed;
+        }
 
         // ---- 条件列表 ----
         var listPanel = new StackPanel();
@@ -1065,7 +1084,7 @@ public partial class MainWindow
         void RefreshList()
         {
             listPanel.Children.Clear();
-            logicRow.Visibility = items.Count > 1 ? Visibility.Visible : Visibility.Collapsed;   // 只有一条时"与/或"没意义
+            RefreshLogicUi();
             if (items.Count == 0) { listPanel.Children.Add(emptyNote); return; }
             for (int i = 0; i < items.Count; i++)
             {
@@ -1086,7 +1105,7 @@ public partial class MainWindow
                 // 多条时前面标个序号，配合"与/或"看得清是第几条
                 var label = new TextBlock
                 {
-                    Text = (items.Count > 1 ? $"{idx + 1}. " : "") + it.ToString(),
+                    Text = (items.Count > 1 || ExprMode() ? $"{idx + 1}. " : "") + it.ToString(),
                     VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
                     Foreground = it.IsValid ? (Brush)FindResource("Ink") : (Brush)FindResource("Danger"),
                 };
@@ -1103,6 +1122,7 @@ public partial class MainWindow
             var r = ShowConditionItemDialog(null);
             if (r != null) { items.Add(r); RefreshList(); }
         };
+        logicCombo.SelectionChanged += (_, _) => RefreshLogicUi();
         refresh = RefreshList;
         RefreshList();
         return block;
@@ -1119,7 +1139,7 @@ public partial class MainWindow
         var retryTimeout = ed.RetryTimeout;
         var detail = new StackPanel();
         enabled.Content = "启用运行条件";
-        detail.Children.Add(BuildConditionListBlock(items, logicCombo, out var refreshItems));
+        detail.Children.Add(BuildConditionListBlock(items, logicCombo, ed.Expr, out var refreshItems));
         ed.RefreshItems = refreshItems;   // 供回填（LoadRunCondition）在填完条件后刷新列表
 
         // ---- 重复检查（对整组条件生效）----
@@ -1362,6 +1382,23 @@ public partial class MainWindow
         return alias;
     }
     private static string Truncate(string s, int n) => s.Length > n ? s[..n] + "…" : s;
+
+    /// <summary>
+    /// 从"满足方式"控件解析要写入模型的 logic 值："And" / "Or" / "Expr:表达式"。
+    /// 表达式模式：先规整全角、再语法+序号范围校验；且所有条件必须配置完整（表达式按序号引用，
+    /// 保存时过滤半成品会让序号错位）。不合法抛 InvalidOperationException，由调用方统一提示。
+    /// </summary>
+    private static string ResolveLogic(ComboBox logicCombo, TextBox exprBox, System.Collections.Generic.List<ConditionItem> items)
+    {
+        string tag = (logicCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "And";
+        if (tag != "Expr") return tag;
+        if (items.Exists(i => !i.IsValid))
+            throw new InvalidOperationException("自定义表达式按序号引用条件，所有条件都必须配置完整（列表里不能有红色的未完成条目）。");
+        string expr = Services.CondExpr.Normalize(exprBox.Text.Trim());
+        var err = Services.CondExpr.Validate(expr, items.Count);
+        if (err != null) throw new InvalidOperationException("表达式无效：" + err);
+        return Services.CondExpr.Prefix + expr;
+    }
 
     private MacroStep? ShowAddActionDialog(MacroStep? source = null, bool allowAlias = true)
     {
@@ -3096,6 +3133,7 @@ public partial class MainWindow
         private readonly Border _untilBorder;
         private readonly System.Collections.Generic.List<ConditionItem> _items = new();
         private readonly ComboBox _logic = new();
+        private readonly TextBox _expr = new();
         private readonly Action _refreshItems;
         private readonly TextBox _intervalVal = new() { Width = 84, Height = 32, Text = "1" };
         private readonly ComboBox _intervalUnit = new();
@@ -3134,7 +3172,7 @@ public partial class MainWindow
 
             var inner = new StackPanel();
             inner.Children.Add(FieldLabel("停止条件（每趟执行完检查一次，满足即结束）"));
-            inner.Children.Add(owner.BuildConditionListBlock(_items, _logic, out _refreshItems));
+            inner.Children.Add(owner.BuildConditionListBlock(_items, _logic, _expr, out _refreshItems));
             inner.Children.Add(Row("每趟间隔", _intervalVal, UnitBox(_intervalUnit, 1), Hint("（0 = 立刻再来一趟）")));
             inner.Children.Add(Row("最多趟数", _maxCount, Hint("趟（0 = 不限）")));
             inner.Children.Add(Row("最多时长", _timeoutVal, UnitBox(_timeoutUnit, 1), Hint("（0 = 不限）")));
@@ -3167,7 +3205,8 @@ public partial class MainWindow
             _items.Clear();
             foreach (var it in sSrc.UntilConditions) _items.Add(it.Clone());   // 副本：取消编辑不影响原对象
             _refreshItems();
-            _logic.SelectedIndex = string.Equals(sSrc.UntilLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            if (Services.CondExpr.IsExpr(sSrc.UntilLogic)) { _logic.SelectedIndex = 2; _expr.Text = Services.CondExpr.Get(sSrc.UntilLogic); }
+            else _logic.SelectedIndex = string.Equals(sSrc.UntilLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
             int u = Math.Clamp(sSrc.RepeatDelayUnit, 0, 3);
             _intervalUnit.SelectedIndex = u;
             _intervalVal.Text = FormatDelayValue(Math.Max(0, sSrc.RepeatDelayMs), u);
@@ -3187,7 +3226,7 @@ public partial class MainWindow
                 r.RepeatUntil = true;
                 r.UntilConditions = new();
                 foreach (var it in valid) r.UntilConditions.Add(it.Clone());
-                r.UntilLogic = (_logic.SelectedItem as ComboBoxItem)?.Tag as string ?? "And";
+                r.UntilLogic = ResolveLogic(_logic, _expr, _items);
                 int u = Math.Clamp(_intervalUnit.SelectedIndex, 0, 3);
                 r.RepeatDelayMs = (int)Math.Round(Math.Max(0, ParseDouble(_intervalVal.Text, 1)) * LoopUnitFactor(u));
                 r.RepeatDelayUnit = u;

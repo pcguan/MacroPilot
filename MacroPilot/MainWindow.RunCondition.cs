@@ -19,7 +19,8 @@ public partial class MainWindow
     private sealed class RunConditionEditor
     {
         public readonly CheckBox Enabled = new();
-        public readonly ComboBox LogicCombo = new();                       // 与 / 或
+        public readonly ComboBox LogicCombo = new();                       // 与 / 或 / 自定义表达式
+        public readonly System.Windows.Controls.TextBox Expr = new();      // 自定义表达式内容（LogicCombo 选第 3 项时生效）
         public readonly System.Collections.Generic.List<ConditionItem> Items = new();   // 条件列表（编辑期副本）
         public readonly CheckBox Retry = new();                            // 条件不满足时重复检查
         public readonly System.Windows.Controls.TextBox RetryInterval = new(), RetryMax = new(), RetryTimeout = new();
@@ -47,7 +48,8 @@ public partial class MainWindow
         foreach (var it in src.RunConditions) ed.Items.Add(it.Clone());   // 副本：取消编辑时不影响原对象
         ed.RefreshItems();
         ed.Enabled.IsChecked = RunCondition.Has(src);
-        ed.LogicCombo.SelectedIndex = string.Equals(src.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        if (CondExpr.IsExpr(src.RunConditionLogic)) { ed.LogicCombo.SelectedIndex = 2; ed.Expr.Text = CondExpr.Get(src.RunConditionLogic); }
+        else ed.LogicCombo.SelectedIndex = string.Equals(src.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         ed.Retry.IsChecked = src.RunConditionRetry;
         // 间隔 0 是合法值（=立刻重判），不能像以前那样把 0 当"没设置"顶成 1000
         int iv = Math.Max(0, src.RunConditionRetryIntervalMs);
@@ -70,7 +72,7 @@ public partial class MainWindow
         var valid = ed.Items.FindAll(i => i.IsValid);
         if (valid.Count == 0) throw new InvalidOperationException("运行条件已启用，请至少添加一条有效的条件。");
         foreach (var it in valid) dst.RunConditions.Add(it.Clone());
-        dst.RunConditionLogic = (ed.LogicCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "And";
+        dst.RunConditionLogic = ResolveLogic(ed.LogicCombo, ed.Expr, ed.Items);
         ApplyRetry(ed, dst);
     }
 

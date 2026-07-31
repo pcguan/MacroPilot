@@ -565,10 +565,15 @@ public sealed class MacroRunner
         return EvaluateItems(step.RunConditions, step.RunConditionLogic, out conditionText, ct);
     }
 
-    // 判定一组条件：运行条件与「直到条件满足」的停止条件共用（同一套与/或、短路与轮内共享抓屏）。
+    // 判定一组条件：运行条件与「直到条件满足」的停止条件共用（同一套与/或/表达式、短路与轮内共享抓屏）。
     private bool EvaluateItems(System.Collections.Generic.List<ConditionItem> items, string logic,
                                out string conditionText, CancellationToken ct)
     {
+        // 自定义表达式（"Expr:(@1 && @2) || @3"）：编辑器保存前已校验；这里再兜一次底——
+        // 表达式失效（如旧档手改）就退回"全部满足"，别让方案卡死在一条判不动的条件上。
+        if (CondExpr.IsExpr(logic) && CondExpr.Validate(CondExpr.Get(logic), items.Count) == null)
+            return EvaluateExpr(items, CondExpr.Get(logic), out conditionText, ct);
+
         bool or = string.Equals(logic, "Or", StringComparison.OrdinalIgnoreCase);
         bool acc = !or;                          // And 从 true 起累积；Or 从 false 起累积
         var parts = new System.Collections.Generic.List<string>();
@@ -592,6 +597,38 @@ public sealed class MacroRunner
         }
         conditionText = string.Join(or ? " 或 " : " 且 ", parts);
         return acc;
+    }
+
+    // 按自定义表达式判定：@N 引用第 N 条（1 起）。逐条记忆化——同一条件被引用多次只判一次；
+    // && / || 由表达式树正常短路，被跳过的条件完全不抓屏不搜索。
+    private bool EvaluateExpr(System.Collections.Generic.List<ConditionItem> items, string expr,
+                              out string conditionText, CancellationToken ct)
+    {
+        var parts = new System.Collections.Generic.List<string>();
+        var memo = new bool?[items.Count];
+        bool result;
+        _roundShots = new();                     // 本轮判定内共享抓屏（与 And/Or 路径同一机制）
+        try
+        {
+            bool ItemVal(int i)
+            {
+                if (memo[i] is bool b) return b;
+                var it = items[i];
+                string t = "条件未配置完整";
+                bool v = it.IsValid && EvaluateOne(it, out t, ct);
+                parts.Add($"@{i + 1} {t}");
+                memo[i] = v;
+                return v;
+            }
+            result = CondExpr.Eval(expr, items.Count, ItemVal);
+        }
+        finally
+        {
+            foreach (var kv in _roundShots) kv.Value?.Dispose();
+            _roundShots = null;
+        }
+        conditionText = string.Join("；", parts) + $"　⇒ {expr} {(result ? "成立" : "不成立")}";
+        return result;
     }
 
     /// <summary>判定单条条件。</summary>
