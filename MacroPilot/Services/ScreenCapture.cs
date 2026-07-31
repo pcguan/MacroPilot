@@ -30,6 +30,7 @@ public static class ScreenCapture
     private static readonly object _lock = new();
     private static ID3D11Device? _device;
     private static ID3D11DeviceContext? _context;
+    private static IDXGIAdapter1? _adapter;   // Probe 选中的那个适配器（有输出的）；枚举输出一律用它
     private static readonly Dictionary<int, OutputSession> _sessions = new();   // 键 = 输出下标
 
     [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")]
@@ -45,26 +46,44 @@ public static class ScreenCapture
     }
 
     /// <summary>
-    /// 启动时探测一次：能建出 D3D11 硬件设备 + 主输出的桌面复制即认为现代路径可用。
-    /// 失败静默回退 GDI（老驱动/虚拟机/远程会话都属正常情况，不是错误）。
+    /// 启动时探测一次：遍历所有适配器，找到【带显示输出的硬件适配器】并在它上面验证桌面复制。
+    /// 【不能用"默认适配器"】——corp-win 实测系统里有两个同名 Intel 适配器，默认设备落在没有输出的
+    /// 那个上，导致明明支持却被误判为不支持。软件渲染器（Basic Render Driver）与无输出适配器直接跳过。
+    /// 失败静默回退 GDI（SSH/服务会话枚举不到任何输出、老驱动、虚拟机都属正常情况，不是错误）。
     /// </summary>
     public static void Probe()
     {
         try
         {
-            var r = D3D11.D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport, null, out var dev);
-            if (r.Failure || dev == null) { ModernAvailable = false; return; }
-            using var dxgi = dev.QueryInterface<IDXGIDevice>();
-            using var adapter = dxgi.GetAdapter();
-            if (adapter.EnumOutputs(0u, out var output0).Failure || output0 == null) { dev.Dispose(); ModernAvailable = false; return; }
-            using (output0)
-            using (var o1 = output0.QueryInterface<IDXGIOutput1>())
-            using (var dup = o1.DuplicateOutput(dev))
+            if (DXGI.CreateDXGIFactory1(out IDXGIFactory1? factory).Failure || factory == null) { ModernAvailable = false; return; }
+            using (factory)
             {
-                ModernAvailable = dup != null;
+                for (uint ai = 0; ; ai++)
+                {
+                    if (factory.EnumAdapters1(ai, out var adapter).Failure || adapter == null) break;
+                    if ((adapter.Description1.Flags & AdapterFlags.Software) != 0) { adapter.Dispose(); continue; }
+                    if (adapter.EnumOutputs(0u, out var o0).Failure || o0 == null) { adapter.Dispose(); continue; }
+                    using (o0)
+                    {
+                        // 指定适配器时 DriverType 必须是 Unknown（D3D11 的规定）
+                        var r = D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport, null, out var dev);
+                        if (r.Failure || dev == null) { adapter.Dispose(); continue; }
+                        try
+                        {
+                            using var o1 = o0.QueryInterface<IDXGIOutput1>();
+                            using var dup = o1.DuplicateOutput(dev);
+                            _device = dev;
+                            _context = dev.ImmediateContext;
+                            _adapter = adapter;   // 持有：之后枚举输出/建会话都用它
+                            ModernAvailable = true;
+                            return;
+                        }
+                        catch { dev.Dispose(); }
+                    }
+                    adapter.Dispose();
+                }
             }
-            _device = dev;
-            _context = dev.ImmediateContext;
+            ModernAvailable = false;
         }
         catch { ModernAvailable = false; }
     }
@@ -141,11 +160,10 @@ public static class ScreenCapture
     private static int FindOutput(int vx, int vy, int w, int h, out OutputSession? sess)
     {
         sess = null;
-        using var dxgi = _device!.QueryInterface<IDXGIDevice>();
-        using var adapter = dxgi.GetAdapter();
+        if (_adapter == null) return -1;
         for (int i = 0; ; i++)
         {
-            if (adapter.EnumOutputs((uint)i, out var output).Failure || output == null) break;
+            if (_adapter.EnumOutputs((uint)i, out var output).Failure || output == null) break;
             using (output)
             {
                 var rc = output.Description.DesktopCoordinates;
@@ -168,9 +186,7 @@ public static class ScreenCapture
     {
         try
         {
-            using var dxgi = _device!.QueryInterface<IDXGIDevice>();
-            using var adapter = dxgi.GetAdapter();
-            if (adapter.EnumOutputs((uint)idx, out var output).Failure || output == null) { sess.Broken = true; return false; }
+            if (_adapter == null || _adapter.EnumOutputs((uint)idx, out var output).Failure || output == null) { sess.Broken = true; return false; }
             using (output)
             using (var o1 = output.QueryInterface<IDXGIOutput1>())
             {
