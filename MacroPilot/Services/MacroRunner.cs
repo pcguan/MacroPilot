@@ -430,26 +430,43 @@ public sealed class MacroRunner
         catch { }
     }
 
-    // 图片条件模板缓存：base64+PNG 解码一次即缓存 Bitmap（键=图片内容，内容变了自动失效）；一次运行结束在 finally 里释放。
-    private readonly System.Collections.Generic.Dictionary<ConditionItem, (string key, System.Drawing.Bitmap bmp)> _tplCache = new();
-    private System.Drawing.Bitmap? TemplateFor(ConditionItem item)
+    // 图片模板缓存：键=图片引用字符串（file:hash / 旧内联 base64）——内容寻址，引用变了键就变，天然无失效问题。
+    // 运行条件与「点击图片/移动图片」共用；同一 Bitmap 实例复用还让 ScreenMatch 的模板预处理缓存（按实例）持续命中。
+    // 一次运行结束在 finally 里统一释放。
+    private readonly System.Collections.Generic.Dictionary<string, System.Drawing.Bitmap> _tplCache = new();
+    private System.Drawing.Bitmap? TemplateBitmap(string img)
     {
-        var img = item.Image;
         if (string.IsNullOrEmpty(img)) return null;
-        if (_tplCache.TryGetValue(item, out var c))
-        {
-            if (c.key == img) return c.bmp;
-            c.bmp.Dispose(); _tplCache.Remove(item);   // 图片被换过 → 旧缓存作废
-        }
+        if (_tplCache.TryGetValue(img, out var bmp)) return bmp;
         var bytes = ImageStore.Bytes(img);   // 引用(file:hash)读文件 / 旧内联 base64 都支持
         if (bytes == null) return null;
-        try { var bmp = ScreenMatch.FromPng(bytes); _tplCache[item] = (img, bmp); return bmp; }
+        try { bmp = ScreenMatch.FromPng(bytes); _tplCache[img] = bmp; return bmp; }
         catch { return null; }
     }
+    private System.Drawing.Bitmap? TemplateFor(ConditionItem item) => TemplateBitmap(item.Image);
     private void DisposeTemplateCache()
     {
-        foreach (var kv in _tplCache) { try { kv.Value.bmp.Dispose(); } catch { } }
+        foreach (var kv in _tplCache) { try { kv.Value.Dispose(); } catch { } }
         _tplCache.Clear();
+    }
+
+    // ---- 一轮判定内共享抓屏 ----
+    // 多条图片条件常盯着同一块屏幕区域（与/或组合）：同一轮判定里对同一（区域）只抓一次屏，
+    // 其余条件复用（几十毫秒内画面视为同帧）。轮与轮之间必须重抓——画面会变，这正是轮询的意义。
+    private System.Collections.Generic.Dictionary<(int, int, int, int), System.Drawing.Bitmap?>? _roundShots;
+    private System.Drawing.Bitmap? RoundCapture(int rx, int ry, int rw, int rh)
+    {
+        if (_roundShots == null)   // 不在判定轮里（点击图片单次定位）：直接抓
+        {
+            try { return ScreenCapture.Capture(rx, ry, rw, rh); } catch { return null; }
+        }
+        var key = (rx, ry, rw, rh);
+        if (!_roundShots.TryGetValue(key, out var bmp))
+        {
+            try { bmp = ScreenCapture.Capture(rx, ry, rw, rh); } catch { bmp = null; }
+            _roundShots[key] = bmp;
+        }
+        return bmp;
     }
 
     // 运行条件门 + 条件类监听：条件判断前 → 判定 → 判断成功后/判断失败后。
@@ -512,14 +529,23 @@ public sealed class MacroRunner
         bool or = string.Equals(step.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase);
         bool acc = !or;                          // And 从 true 起累积；Or 从 false 起累积
         var parts = new System.Collections.Generic.List<string>();
-        foreach (var item in step.RunConditions)
+        _roundShots = new();                     // 本轮判定内共享抓屏（多条同区域的图片条件只抓一次）
+        try
         {
-            if (!item.IsValid) continue;         // 半成品条目不参与判定，避免误判为不满足
-            bool one = EvaluateOne(item, out var text, ct);
-            parts.Add(text);
-            acc = or ? (acc || one) : (acc && one);
-            // 短路：And 遇假、Or 遇真即可停——图片条件要抓屏搜索，能省一次是一次。
-            if (or ? acc : !acc) break;
+            foreach (var item in step.RunConditions)
+            {
+                if (!item.IsValid) continue;         // 半成品条目不参与判定，避免误判为不满足
+                bool one = EvaluateOne(item, out var text, ct);
+                parts.Add(text);
+                acc = or ? (acc || one) : (acc && one);
+                // 短路：And 遇假、Or 遇真即可停——图片条件要抓屏搜索，能省一次是一次。
+                if (or ? acc : !acc) break;
+            }
+        }
+        finally
+        {
+            foreach (var kv in _roundShots) kv.Value?.Dispose();
+            _roundShots = null;
         }
         conditionText = string.Join(or ? " 或 " : " 且 ", parts);
         return acc;
@@ -546,7 +572,9 @@ public sealed class MacroRunner
             }
             else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
             double thr = Math.Clamp(c.Threshold, 0.5, 1.0);
-            var hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out double best, ct);
+            var shot = RoundCapture(rx, ry, rw, rh);
+            if (shot == null) { text = "抓屏失败，视为未出现"; return c.Invert; }
+            var hits = ScreenMatch.FindIn(shot, tpl, thr, out double best, ct, rx, ry);
             bool found = hits.Count > 0;
             text = found
                 ? $"目标图片已出现（命中 {hits.Count} 个，最高相似度 {best:0.00} / 阈值 {thr:0.00}）"
@@ -806,8 +834,8 @@ public sealed class MacroRunner
     // 区域内搜模板 → 返回第 N 个命中的中心点。label 只用于日志/报错措辞。
     private (int cx, int cy) LocateImage(MacroStep step, string label, CancellationToken ct)
     {
-        var bytes = ImageStore.Bytes(step.ClickImage);
-        if (bytes == null) throw new InvalidOperationException($"{label}：未设置模板图片。");
+        var tpl = TemplateBitmap(step.ClickImage)
+                  ?? throw new InvalidOperationException($"{label}：未设置模板图片。");
 
         // 限制区域：屏内相对像素 → 按该屏当前位置还原绝对区域；未设区域则搜整块绑定屏（默认主屏；
         // 绑定屏在本机不存在时 ByDevice 已回退主屏——常见于方案导入自别的主机）。
@@ -826,10 +854,11 @@ public sealed class MacroRunner
         else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
 
         double thr = Math.Clamp(step.ClickImageThreshold, 0.5, 1.0);
+        var shot = RoundCapture(rx, ry, rw, rh) ?? throw new InvalidOperationException($"{label}：抓屏失败。");
         System.Collections.Generic.List<(int cx, int cy, double score)> hits;
         double best;
-        using (var tpl = ScreenMatch.FromPng(bytes))
-            hits = ScreenMatch.FindMatches(tpl, rx, ry, rw, rh, thr, out best, ct);
+        try { hits = ScreenMatch.FindIn(shot, tpl, thr, out best, ct, rx, ry); }
+        finally { if (_roundShots == null) shot.Dispose(); }   // 共享轮里的由 Evaluate 统一释放
 
         if (hits.Count == 0)
             throw new InvalidOperationException(best > 0

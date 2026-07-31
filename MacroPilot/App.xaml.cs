@@ -96,6 +96,10 @@ public partial class App : Application
         // 上次运行若异常退出、没来得及还原被临时改成 1:1 的系统鼠标设置（关加速/速度=10），这里据备份还原。
         Input.Ch9329Device.RecoverMouseSettingsOnStartup();
 
+        // 抓屏能力探测：进程启动时做一次（不是每次方案运行时）——老驱动/虚拟机/远程会话建不出
+        // DXGI 桌面复制就整场回退 GDI CopyFromScreen。结果记在 ScreenCapture.ModeDesc，运行日志会带上。
+        try { ScreenCapture.Probe(); } catch { }
+
         var doc = Storage.Load();
 
         // 按需提权：配置了 RunAsAdmin 且当前非管理员则 runas 重启

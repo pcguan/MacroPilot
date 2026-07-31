@@ -30,14 +30,8 @@ public static class ScreenMatch
     }
     private const double DiagSlack = 0.15;   // 统计"最高相似度"时相对阈值放宽的幅度（仅供诊断，不影响命中判定）
 
-    /// <summary>抓取虚拟桌面某区域（虚拟像素）为 Bitmap（调用方负责 Dispose）。</summary>
-    public static Bitmap CaptureRegion(int vx, int vy, int w, int h)
-    {
-        var bmp = new Bitmap(Math.Max(1, w), Math.Max(1, h), PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(bmp);
-        g.CopyFromScreen(vx, vy, 0, 0, new Size(bmp.Width, bmp.Height), CopyPixelOperation.SourceCopy);
-        return bmp;
-    }
+    /// <summary>抓取虚拟桌面某区域（虚拟像素）为 Bitmap（调用方负责 Dispose）。现代/GDI 由 ScreenCapture 按启动探测选路。</summary>
+    public static Bitmap CaptureRegion(int vx, int vy, int w, int h) => ScreenCapture.Capture(vx, vy, w, h);
 
     public static byte[] ToPng(Bitmap bmp)
     {
@@ -140,16 +134,15 @@ public static class ScreenMatch
         int regionW = shot.Width, regionH = shot.Height;
         if (tw <= 0 || th <= 0 || regionW < tw || regionH < th) return result;
 
-        var dt = template.LockBits(new Rectangle(0, 0, tw, th), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        // 模板侧预处理走缓存（内容不变就不重算）；屏幕侧每次都是新画面，照常拷出
+        var prep = PrepFor(template);
         var ds = shot.LockBits(new Rectangle(0, 0, regionW, regionH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var tbuf = new byte[dt.Stride * th];
         var sbuf = new byte[ds.Stride * regionH];
-        Marshal.Copy(dt.Scan0, tbuf, 0, tbuf.Length);
         Marshal.Copy(ds.Scan0, sbuf, 0, sbuf.Length);
-        int tStride = dt.Stride, sStride = ds.Stride;
-        template.UnlockBits(dt); shot.UnlockBits(ds);   // shot 由调用方释放（FindMatches 用完即弃，离线验证要复用）
+        int sStride = ds.Stride;
+        shot.UnlockBits(ds);   // shot 由调用方释放（FindMatches 用完即弃，离线验证要复用）
 
-        var full = new Matcher(tbuf, tStride, tw, th, sbuf, sStride, regionW, regionH);
+        var full = new Matcher(prep, sbuf, sStride, regionW, regionH);
         var raw = new List<(int x, int y, double score)>();
         double best = 0;
 
@@ -167,7 +160,18 @@ public static class ScreenMatch
         bool coarseUsed = false;
         if (scale > 1)
         {
-            var (ctb, ctStride, ctw, cth) = Decimate(null, tbuf, tStride, tw, th, 0, 0, scale);
+            if (!prep.Coarse.TryGetValue(scale, out var ctpl))
+            {
+                // 缩略模板要从原始字节算：prep 里没存 tbuf（省内存），这里按需锁一次模板位图
+                var dt2 = template.LockBits(new Rectangle(0, 0, tw, th), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                var tbuf2 = new byte[dt2.Stride * th];
+                Marshal.Copy(dt2.Scan0, tbuf2, 0, tbuf2.Length);
+                int tStride2 = dt2.Stride;
+                template.UnlockBits(dt2);
+                ctpl = Decimate(null, tbuf2, tStride2, tw, th, 0, 0, scale);
+                lock (prep.Coarse) prep.Coarse[scale] = ctpl;
+            }
+            var (ctb, ctStride, ctw, cth) = ctpl;
             if (ctw >= 6 && cth >= 4)
             {
                 var sat = new Sat(sbuf, sStride, regionW, regionH);
@@ -335,23 +339,25 @@ public static class ScreenMatch
     }
 
     /// <summary>
-    /// 一次匹配所需的预处理与扫描：模板像素按【梯度权重降序】排好，配合预算早退。
-    /// 抽成类是为了让"缩略图粗筛"和"原图精验"共用同一套判定——精度不打折的前提就在这里。
+    /// 模板侧的预处理结果（只与模板内容有关）：梯度权重、按权重降序的像素顺序、预取的三通道值。
+    /// 这套是 O(n log n) 的，重复检查每秒轮询时逐次重算纯属浪费——按模板位图缓存
+    /// （ConditionalWeakTable：条目随模板位图一起被回收，天然无须手动失效）。
     /// </summary>
-    private sealed class Matcher
+    private sealed class TemplatePrep
     {
-        private readonly byte[] _s;
-        private readonly int _sStride, _rw, _rh, _tw, _th, _n;
-        private readonly int[] _wS, _sOff;
-        private readonly byte[] _tB, _tG, _tR;
-        private readonly long _totalW;
+        public readonly int Tw, Th, N;
+        public readonly long TotalW;
+        public readonly int[] WS, PX, PY;          // 权重（降序） + 每个位置对应的模板内坐标
+        public readonly byte[] TB, TG, TR;
+        // 粗筛用的缩略模板也只与模板有关：按 (scale, 相位恒 0) 缓存
+        public readonly System.Collections.Generic.Dictionary<int, (byte[] buf, int stride, int w, int h)> Coarse = new();
 
-        public Matcher(byte[] tbuf, int tStride, int tw, int th, byte[] sbuf, int sStride, int rw, int rh)
+        public TemplatePrep(byte[] tbuf, int tStride, int tw, int th)
         {
-            _s = sbuf; _sStride = sStride; _rw = rw; _rh = rh; _tw = tw; _th = th; _n = tw * th;
+            Tw = tw; Th = th; N = tw * th;
             // 权重 = 1 + min(15, 亮度梯度/6)：梯度取与右/下邻的亮度差绝对值的较大者。
-            var weight = new int[_n];
-            var lum = new float[_n];
+            var weight = new int[N];
+            var lum = new float[N];
             for (int y = 0; y < th; y++)
             {
                 int row = y * tStride;
@@ -371,21 +377,62 @@ public static class ScreenMatch
                     int w = 1 + Math.Min(15, (int)(Math.Max(gx, gy) / 6));
                     weight[i] = w; total += w;
                 }
-            _totalW = total;
-            // 结构像素优先：按权重降序排列（同时预取排好序的模板 BGR 与屏幕偏移，避免内层反查）。
-            var order = new int[_n];
-            for (int i = 0; i < _n; i++) order[i] = i;
+            TotalW = total;
+            // 结构像素优先：按权重降序排列（同时预取排好序的模板 BGR，避免内层反查）。
+            var order = new int[N];
+            for (int i = 0; i < N; i++) order[i] = i;
             Array.Sort(order, (a, b) => weight[b].CompareTo(weight[a]));
-            _wS = new int[_n]; _tB = new byte[_n]; _tG = new byte[_n]; _tR = new byte[_n]; _sOff = new int[_n];
-            for (int k = 0; k < _n; k++)
+            WS = new int[N]; TB = new byte[N]; TG = new byte[N]; TR = new byte[N]; PX = new int[N]; PY = new int[N];
+            for (int k = 0; k < N; k++)
             {
                 int i = order[k]; int y = i / tw, x = i % tw;
-                _wS[k] = weight[i];
+                WS[k] = weight[i]; PX[k] = x; PY[k] = y;
                 int ti = y * tStride + x * 4;
-                _tB[k] = tbuf[ti]; _tG[k] = tbuf[ti + 1]; _tR[k] = tbuf[ti + 2];
-                _sOff[k] = y * _sStride + x * 4;   // 相对滑窗左上角的屏幕缓冲偏移
+                TB[k] = tbuf[ti]; TG[k] = tbuf[ti + 1]; TR[k] = tbuf[ti + 2];
             }
         }
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Bitmap, TemplatePrep> _prepCache = new();
+
+    private static TemplatePrep PrepFor(Bitmap template)
+    {
+        return _prepCache.GetValue(template, t =>
+        {
+            int tw = t.Width, th = t.Height;
+            var dt = t.LockBits(new Rectangle(0, 0, tw, th), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            var tbuf = new byte[dt.Stride * th];
+            Marshal.Copy(dt.Scan0, tbuf, 0, tbuf.Length);
+            int stride = dt.Stride;
+            t.UnlockBits(dt);
+            return new TemplatePrep(tbuf, stride, tw, th);
+        });
+    }
+
+    /// <summary>
+    /// 一次匹配所需的扫描器：模板侧用缓存好的预处理，屏幕侧只需在构造时把"模板内坐标"换算成
+    /// 当前屏幕缓冲的偏移（O(n)，相比省掉的 O(n log n) 排序可忽略）。
+    /// 粗筛与精验共用同一套判定——精度不打折的前提就在这里。
+    /// </summary>
+    private sealed class Matcher
+    {
+        private readonly byte[] _s;
+        private readonly int _sStride, _rw, _rh, _tw, _th, _n;
+        private readonly int[] _wS, _sOff;
+        private readonly byte[] _tB, _tG, _tR;
+        private readonly long _totalW;
+
+        public Matcher(TemplatePrep p, byte[] sbuf, int sStride, int rw, int rh)
+        {
+            _s = sbuf; _sStride = sStride; _rw = rw; _rh = rh;
+            _tw = p.Tw; _th = p.Th; _n = p.N; _totalW = p.TotalW;
+            _wS = p.WS; _tB = p.TB; _tG = p.TG; _tR = p.TR;
+            _sOff = new int[_n];
+            for (int k = 0; k < _n; k++) _sOff[k] = p.PY[k] * sStride + p.PX[k] * 4;   // 相对滑窗左上角的屏幕缓冲偏移
+        }
+
+        public Matcher(byte[] tbuf, int tStride, int tw, int th, byte[] sbuf, int sStride, int rw, int rh)
+            : this(new TemplatePrep(tbuf, tStride, tw, th), sbuf, sStride, rw, rh) { }
 
         /// <summary>
         /// 扫描 [x0,x1]×[y0,y1] 这些左上角位置。hitThr=判为命中的阈值；diagThr=早退门槛（比 hitThr 低，

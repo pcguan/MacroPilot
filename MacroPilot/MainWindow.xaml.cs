@@ -1118,7 +1118,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _planLoopText = ""; RunPlanLoopText.Text = "";   // 清上一轮的方案循环显示
         SetNav(NavRun, PageRun);
         string loopLabel = plan.LoopCount == 0 ? "无限循环" : (plan.LoopCount == 1 ? "执行 1 次" : $"循环 {plan.LoopCount} 次");
-        AddLog("Info", $"▶ 开始运行：{displayName}（{_backend.Describe} · {loopLabel}）");
+        AddLog("Info", $"▶ 开始运行：{displayName}（{_backend.Describe} · {loopLabel} · 抓屏 {Services.ScreenCapture.ModeDesc}）");
 
         _runDisplayName = displayName;
         // 运行器线程只"入队/置标志"（线程安全、不阻塞），UI 由定时器批量刷新——避免日志多时阻塞执行、影响计时精度。

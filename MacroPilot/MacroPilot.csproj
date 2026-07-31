@@ -9,7 +9,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.6.6</Version>
+    <Version>0.6.7</Version>
     <AssemblyTitle>MacroPilot</AssemblyTitle>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
@@ -24,6 +24,9 @@
     <PackageReference Include="WPF-UI" Version="4.3.0" />
     <PackageReference Include="System.IO.Ports" Version="8.0.0" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+    <!-- DXGI 桌面复制（现代抓屏）。Vortice 是维护中的 DirectX 绑定；老驱动/远程会话建不出复制会话时
+         由 ScreenCapture.Probe 判定并整场回退 GDI，这两个包只是"能力"，不是硬依赖。 -->
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
   </ItemGroup>
 
 </Project>
