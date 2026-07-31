@@ -572,15 +572,20 @@ public sealed class MacroRunner
             }
             else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
             double thr = Math.Clamp(c.Threshold, 0.5, 1.0);
+            // 计时含抓屏+搜索（同轮共享抓屏时第二条起自然不含抓屏——记录的就是真实开销）。
+            // 用户凭它判断"该不该缩小限制区域/换更有结构的模板"，也能直接看出上面那类慢格子。
+            var swMatch = System.Diagnostics.Stopwatch.StartNew();
             var shot = RoundCapture(rx, ry, rw, rh);
             if (shot == null) { text = "抓屏失败，视为未出现"; return c.Invert; }
             var hits = ScreenMatch.FindIn(shot, tpl, thr, out double best, ct, rx, ry);
+            swMatch.Stop();
+            string cost = $"，耗时 {swMatch.ElapsedMilliseconds}ms";
             bool found = hits.Count > 0;
             text = found
-                ? $"目标图片已出现（命中 {hits.Count} 个，最高相似度 {best:0.00} / 阈值 {thr:0.00}）"
+                ? $"目标图片已出现（命中 {hits.Count} 个，最高相似度 {best:0.00} / 阈值 {thr:0.00}{cost}）"
                 : best > 0
-                    ? $"目标图片未出现（区域内最高相似度 {best:0.00} / 阈值 {thr:0.00}）"
-                    : $"目标图片未出现（区域内最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}）";
+                    ? $"目标图片未出现（区域内最高相似度 {best:0.00} / 阈值 {thr:0.00}{cost}）"
+                    : $"目标图片未出现（区域内最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}{cost}）";
             return c.Invert ? !found : found;
         }
         if (c.Type != "TimeRange") { text = ""; return true; }
@@ -854,16 +859,19 @@ public sealed class MacroRunner
         else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
 
         double thr = Math.Clamp(step.ClickImageThreshold, 0.5, 1.0);
+        var swMatch = System.Diagnostics.Stopwatch.StartNew();
         var shot = RoundCapture(rx, ry, rw, rh) ?? throw new InvalidOperationException($"{label}：抓屏失败。");
         System.Collections.Generic.List<(int cx, int cy, double score)> hits;
         double best;
         try { hits = ScreenMatch.FindIn(shot, tpl, thr, out best, ct, rx, ry); }
         finally { if (_roundShots == null) shot.Dispose(); }   // 共享轮里的由 Evaluate 统一释放
+        swMatch.Stop();
+        string cost = $"，耗时 {swMatch.ElapsedMilliseconds}ms";
 
         if (hits.Count == 0)
             throw new InvalidOperationException(best > 0
-                ? $"{label}：区域内未找到匹配（最高相似度 {best:0.00} / 阈值 {thr:0.00}）。"
-                : $"{label}：区域内未找到匹配（最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}）。");
+                ? $"{label}：区域内未找到匹配（最高相似度 {best:0.00} / 阈值 {thr:0.00}{cost}）。"
+                : $"{label}：区域内未找到匹配（最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}{cost}）。");
         int idx = Math.Max(1, step.ClickImageIndex);
         if (idx > hits.Count)
             throw new InvalidOperationException($"{label}：只找到 {hits.Count} 个匹配，不足第 {idx} 个。");
@@ -873,7 +881,7 @@ public sealed class MacroRunner
         string detail = hits.Count > 1
             ? "（" + string.Join("、", hits.GetRange(0, Math.Min(5, hits.Count)).ConvertAll(h => $"({h.cx},{h.cy})")) + (hits.Count > 5 ? "…" : "") + "）"
             : "";
-        Log?.Invoke("Info", $"{label}：命中 {hits.Count} 个{detail}，取第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}。");
+        Log?.Invoke("Info", $"{label}：命中 {hits.Count} 个{detail}，取第 {idx} 个 ({cx}, {cy})，相似度 {score:0.00}{cost}。");
         return (cx, cy);
     }
 
