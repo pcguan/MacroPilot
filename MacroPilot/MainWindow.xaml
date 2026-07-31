@@ -390,7 +390,13 @@
                   </StackPanel>
                 </DockPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,2,0,0">
-                  <Button Style="{StaticResource IconButton}" Content="&#xE7C8;" ToolTip="录制新方案：做一遍操作，自动生成动作列表（点击 / 拖动 / 滚轮 / 按键 / 等待）" Click="RecordPlan_Click" />
+                  <!-- 录制图标 = 细描边圆环 + 红色小圆心（现代录制按钮范式），比单个实心圆点轻盈 -->
+                  <Button Style="{StaticResource IconButton}" ToolTip="录制新方案：做一遍操作，自动生成动作列表（点击 / 拖动 / 滚轮 / 按键 / 等待）" Click="RecordPlan_Click">
+                    <Grid>
+                      <TextBlock Text="&#xF138;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                      <TextBlock Text="&#xF137;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="8" Foreground="#E81123" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+                  </Button>
                   <Button Style="{StaticResource IconButton}" Content="&#xE823;" ToolTip="定时启动（全局：只让一个方案到点自动运行）" Click="Schedule_Click" />
                   <Border Width="1" Margin="4,6" Background="{DynamicResource Line}" />
                   <Button Style="{StaticResource IconButton}" Content="&#xE896;" ToolTip="导入方案（可多选文件，单方案 / 多方案自动识别）" Click="Import_Click" />

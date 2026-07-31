@@ -328,7 +328,7 @@ public sealed class MacroRunner
             if (group.LoopDelayMs > 0) Wait(Jitter(group.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
         }
         RunHook(group.SuccessAction, "运行成功后", ct);
-        RunHook(group.CompleteAction, "运行结束后", ct);
+        if (!_completeDeferred.Contains(group)) RunHook(group.CompleteAction, "运行结束后", ct);   // 整趟重复时由 RepeatCycle 收尾统一触发一次
     }
 
     /// <summary>
@@ -336,21 +336,38 @@ public sealed class MacroRunner
     /// 与动作自身的【执行次数 LoopCount】是两回事——后者只重复动作本体（条件判一次、监听走一遍），
     /// 前者每一趟都重新判条件、重新触发监听。中途产生跳转就不再重复（跳转优先，否则永远跳不出去）。
     /// </summary>
+    // 重复执行时的监听语义：每一趟都算一次「运行成功 / 失败」（照常每趟触发），
+    // 但「运行结束后」＝这个动作的所有趟数全部结束，只触发一次（含被跳转提前结束；停止/取消不触发）。
+    // 实现：趟内挂起该步骤的 CompleteAction（RunLeafOnce / RunGroup 见此集合就跳过），循环收尾统一补一次。
+    private readonly System.Collections.Generic.HashSet<MacroStep> _completeDeferred = new();
+
     private void RepeatCycle(MacroStep step, CancellationToken ct, Action once)
     {
-        if (step.HasUntilCondition) { RepeatUntilCycle(step, ct, once); return; }
-        int reps = Math.Max(0, step.RepeatCount);
-        int done = 0;
-        while (!ct.IsCancellationRequested)
+        bool multi = step.HasUntilCondition || step.RepeatCount != 1;
+        if (!multi) { Gate(ct); once(); return; }   // 单趟：结束监听由趟内正常触发，行为与历史一致
+
+        _completeDeferred.Add(step);
+        try
         {
-            Gate(ct);
-            once();
-            done++;
-            if (_pendingJump != null) break;
-            if (reps == 1) break;
-            if (reps != 0 && done >= reps) break;
-            if (step.RepeatDelayMs > 0) Wait(Jitter(step.RepeatDelayMs), ct);
+            if (step.HasUntilCondition) RepeatUntilCycle(step, ct, once);
+            else
+            {
+                int reps = Math.Max(0, step.RepeatCount);
+                int done = 0;
+                while (!ct.IsCancellationRequested)
+                {
+                    Gate(ct);
+                    once();
+                    done++;
+                    if (_pendingJump != null) break;
+                    if (reps != 0 && done >= reps) break;
+                    if (step.RepeatDelayMs > 0) Wait(Jitter(step.RepeatDelayMs), ct);
+                }
+            }
         }
+        finally { _completeDeferred.Remove(step); }
+        ct.ThrowIfCancellationRequested();   // 循环因取消退出时不触发结束监听（与单趟被停止时一致）
+        RunHook(step.CompleteAction, "运行结束后", ct);
     }
 
     /// <summary>
@@ -445,7 +462,7 @@ public sealed class MacroRunner
             ActEnd?.Invoke("执行成功", "Success");
             RunHook(step.SuccessAction, "运行成功后", ct);
         }
-        RunHook(step.CompleteAction, "运行结束后", ct);
+        if (!_completeDeferred.Contains(step)) RunHook(step.CompleteAction, "运行结束后", ct);   // 整趟重复时由 RepeatCycle 收尾统一触发一次
         return true;
     }
 

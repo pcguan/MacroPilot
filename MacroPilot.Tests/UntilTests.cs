@@ -101,6 +101,15 @@ public class UntilTests
     }
 
     [Fact]
+    public void 直到模式运行成功每趟一次运行结束只一次()
+    {
+        var s = Until(Key("a"), Never(), max: 2);
+        s.SuccessAction = Key("ok"); s.CompleteAction = Key("done");
+        var r = Run(Plan(s));
+        Assert.Equal(new[] { "a", "ok", "a", "ok", "done" }, r.Calls);
+    }
+
+    [Fact]
     public void 克隆深拷贝停止条件()
     {
         var s = Until(Key("a"), Never(), max: 4, timeoutMs: 9000);

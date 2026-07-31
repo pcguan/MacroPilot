@@ -103,14 +103,45 @@ public class FlowTests
     }
 
     [Fact]
-    public void 重复次数每趟都触发监听()
+    public void 重复次数每趟触发运行前而运行结束只在全部趟后一次()
     {
         var s = Key("a");
         s.PreRunAction = Key("pre");
         s.CompleteAction = Key("done");
         s.RepeatCount = 2; s.RepeatDelayMs = 0;
         var r = Run(Plan(s));
-        Assert.Equal(new[] { "pre", "a", "done", "pre", "a", "done" }, r.Calls);
+        Assert.Equal(new[] { "pre", "a", "pre", "a", "done" }, r.Calls);
+    }
+
+    [Fact]
+    public void 重复时运行成功每趟一次而运行结束只一次()
+    {
+        var s = Key("a");
+        s.SuccessAction = Key("ok"); s.CompleteAction = Key("done");
+        s.RepeatCount = 3; s.RepeatDelayMs = 0;
+        var r = Run(Plan(s));
+        Assert.Equal(new[] { "a", "ok", "a", "ok", "a", "ok", "done" }, r.Calls);
+    }
+
+    [Fact]
+    public void 组合整趟重复时运行结束也只触发一次()
+    {
+        var g = Group(Key("x"), Key("y"));
+        g.SuccessAction = Key("ok"); g.CompleteAction = Key("done");
+        g.RepeatCount = 2; g.RepeatDelayMs = 0;
+        var r = Run(Plan(g));
+        Assert.Equal(new[] { "x", "y", "ok", "x", "y", "ok", "done" }, r.Calls);
+    }
+
+    [Fact]
+    public void 跳转打断重复时运行结束仍触发一次()
+    {
+        var a = Key("a");
+        var j = JumpTo(a, 1); j.RepeatCount = 5; j.RepeatDelayMs = 0;
+        j.CompleteAction = Key("done");
+        var r = Run(Plan(a, j));
+        // 第一次经过 j：跳转生效、重复被打断 → done 一次；第二次经过 j：上限已到不再跳，单趟结束 → done 一次
+        Assert.Equal(new[] { "a", "done", "a", "done" }, r.Calls);
     }
 
     [Fact]
