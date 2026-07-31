@@ -256,11 +256,19 @@ public sealed class MacroRunner
             var jumpSrc = _pendingJump; _pendingJump = null;
             if (jumpSrc != null)
             {
+                // 跳转不生效的两种情况必须留痕：目标恰好是顺序下一步时"失效"与"生效"流程一模一样，
+                // 不记日志用户根本无法察觉限制到底有没有起作用（corp-win 实排查过一次）。
+                string jname = jumpSrc.JumpTargetAlias.Length > 0 ? $"跳转到「{jumpSrc.JumpTargetAlias}」" : "跳转";
                 int ti = JumpIndex(jumpSrc, steps);
-                if (ti >= 0)
+                if (ti < 0)
+                {
+                    Log?.Invoke("Warning", $"{jname}的目标不存在（可能已被删除或改名），跳转不生效，按顺序继续。");
+                }
+                else
                 {
                     jumpUsed.TryGetValue(jumpSrc, out var used);
                     if (jumpSrc.JumpTimes <= 0 || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = ti; continue; }
+                    Log?.Invoke("Warning", $"{jname}已达 {jumpSrc.JumpTimes} 次上限，本轮内不再生效，按顺序继续。");
                 }
             }
             i++;

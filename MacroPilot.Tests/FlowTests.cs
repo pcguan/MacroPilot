@@ -175,6 +175,25 @@ public class FlowTests
     }
 
     [Fact]
+    public void 跳转达到上限时记日志并顺序继续()
+    {
+        var a = Key("a");
+        var j = JumpTo(a, 1);
+        var r = Run(Plan(a, j, Key("b")));
+        Assert.Equal(new[] { "a", "a", "b" }, r.Calls);   // 跳 1 次后失效，顺序走到 b
+        Assert.True(r.LogHas("次上限"));
+    }
+
+    [Fact]
+    public void 跳转目标不存在时记日志并顺序继续()
+    {
+        var j = new MacroStep { Type = "Jump", JumpTargetAlias = "不存在的别名", LoopCount = 1 };
+        var r = Run(Plan(Key("a"), j, Key("b")));
+        Assert.Equal(new[] { "a", "b" }, r.Calls);
+        Assert.True(r.LogHas("目标不存在"));
+    }
+
+    [Fact]
     public void 拖动次数按执行次数重复本体()
     {
         // 拖动没有"重复次数"，但要能连拖几次：走的是执行次数(LoopCount)，条件仍只判一次
