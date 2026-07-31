@@ -1006,7 +1006,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         PushUndo();
         int at = _plan.Steps.IndexOf(sel[0]);
         var children = new ObservableCollection<MacroStep>();
-        foreach (var s in sel) { s.IsChecked = false; children.Add(s); }   // 整体入组：被选中的组合作为嵌套子组合原样保留，不再打散合并
+        foreach (var s in sel) { s.IsChecked = false; s.ClearAliases(); children.Add(s); }   // 整体入组：被选中的组合作为嵌套子组合原样保留，不再打散合并；离开顶层后别名不再可跳转，一并清空
         foreach (var s in sel) _plan.Steps.Remove(s);
         var g = new MacroStep { Type = "Group", Children = children };
         _plan.Steps.Insert(Math.Min(at, _plan.Steps.Count), g);
@@ -2235,7 +2235,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_step is not { IsGroup: true }) return;
         var g = _step!;
-        var ns = ShowAddActionDialog();
+        var ns = ShowAddActionDialog(allowAlias: false);
         if (ns != null) { PushUndo(); g.Children.Add(ns); RefreshIndices(); MarkDirty(); }
     }
     private void Ungroup()
@@ -2285,7 +2285,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         var g = FindParentGroup(child); if (g == null) return;
         int idx = g.Children.IndexOf(child); if (idx < 0) return;
-        var edited = child.IsGroup ? ShowEditGroupDialog(child) : ShowAddActionDialog(child); // 子动作可以是嵌套组合
+        var edited = child.IsGroup ? ShowEditGroupDialog(child, allowAlias: false) : ShowAddActionDialog(child, allowAlias: false); // 子动作可以是嵌套组合
         if (edited != null)
         {
             if (SameStepContent(edited, child)) return;
@@ -2304,7 +2304,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         var g = FindParentGroup(child); if (g == null) return;
         int idx = g.Children.IndexOf(child); if (idx < 0) return;
-        var ns = ShowAddActionDialog();
+        var ns = ShowAddActionDialog(allowAlias: false);
         if (ns != null) { PushUndo(); g.Children.Insert(Math.Clamp(idx + offset, 0, g.Children.Count), ns); MarkDirty(); }
     }
     private void RemoveChildFromGroup(MacroStep child)

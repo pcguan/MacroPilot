@@ -229,9 +229,9 @@ public partial class MainWindow
 
     private (byte[] png, int vx, int vy, int w, int h)? CaptureTargetImage(Window dialog)
     {
-        // 屏幕序号标签是常显置顶窗口，会被拍进冻结快照/目标图——截图期间先藏起来，截完若原本在显示则恢复。
-        bool hadIds = _idScreensByDialog.TryGetValue(dialog, out var ids) && ids.Count > 0;
-        HideIdScreens(dialog);
+        // 屏幕序号标签是常显置顶窗口，会被拍进冻结快照/目标图——截图期间把【所有对话框】的标签
+        // 都藏起来（嵌套对话框各管一份，只藏当前这份还会拍进父级的），截完恢复原样。
+        var idsSuspended = SuspendIdScreens();
 
         var mainH = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
@@ -1057,7 +1057,7 @@ public partial class MainWindow
         snapshot.Dispose();
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
-        if (hadIds) ShowIdScreens(dialog);
+        ResumeIdScreens(idsSuspended);
         return png == null ? null : (png, rx, ry, rw, rh);
     }
 

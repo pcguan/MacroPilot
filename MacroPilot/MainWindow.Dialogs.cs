@@ -159,6 +159,7 @@ public partial class MainWindow
         // 拾取期间把编辑窗口与本体下沉到底层，让目标屏上的应用透过透明覆盖层清晰可见。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);  // SWP_NOSIZE|NOMOVE|NOACTIVATE
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var idsSuspended = SuspendIdScreens();
 
         var accent = (Brush)FindResource("Accent");
         var overlays = new List<Window>();
@@ -302,6 +303,7 @@ public partial class MainWindow
         // 拾取结束：把本体与编辑窗口切回前台。
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
+        ResumeIdScreens(idsSuspended);
         return result;
     }
 
@@ -313,6 +315,7 @@ public partial class MainWindow
         // 与点选一致：预览期间把编辑窗口与本体下沉，露出目标屏内容。
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var idsSuspended = SuspendIdScreens();
         var (ox, oy, vw, vh) = VirtualBounds();
         var overlay = new Window
         {
@@ -376,6 +379,7 @@ public partial class MainWindow
         overlay.ShowDialog();
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
+        ResumeIdScreens(idsSuspended);
     }
 
     private static (int ox, int oy, int w, int h) VirtualBounds()
@@ -400,6 +404,19 @@ public partial class MainWindow
         if (!_idScreensByDialog.TryGetValue(owner, out var wins)) return;
         foreach (var w in wins) { try { w.Close(); } catch { } }
         _idScreensByDialog.Remove(owner);
+    }
+
+    // 截屏 / 点选坐标 / 区域与位置预览期间，把【所有对话框】的屏幕序号标签一并藏起来：
+    // 标签是常显置顶窗口，既会被拍进冻结快照，也会盖住点选画面。返回原本在显示的对话框列表，结束后凭它恢复。
+    private List<Window> SuspendIdScreens()
+    {
+        var owners = new List<Window>(_idScreensByDialog.Keys);
+        foreach (var o in owners) HideIdScreens(o);
+        return owners;
+    }
+    private void ResumeIdScreens(List<Window> owners)
+    {
+        foreach (var o in owners) { try { ShowIdScreens(o); } catch { } }
     }
 
     private List<Window> IdentifyScreens()
@@ -676,6 +693,7 @@ public partial class MainWindow
         var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var idsSuspended = SuspendIdScreens();
         var (ox, oy, vw, vh) = VirtualBounds();
         var snapshot = Services.ScreenMatch.CaptureRegion(ox, oy, vw, vh);
         var overlay = new Window
@@ -720,6 +738,7 @@ public partial class MainWindow
         overlay.ShowDialog();
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
+        ResumeIdScreens(idsSuspended);
     }
 
     // 编辑限制区域：冻屏后在快照上显示一个【可拖动·可缩放】的矩形（body 拖动整体移动、四角拖动缩放），
@@ -730,6 +749,7 @@ public partial class MainWindow
         var dlgH = new System.Windows.Interop.WindowInteropHelper(dialog).Handle;
         SetWindowPos(dlgH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
         SetWindowPos(mainH, HWND_BOTTOM, 0, 0, 0, 0, 0x13);
+        var idsSuspended = SuspendIdScreens();
         System.Threading.Thread.Sleep(120);
         // 自动框窗用的窗口矩形表：必须在【覆盖层显示之前】枚举（覆盖层置顶后只会命中它自己）。
         var winRects = EnumWindowRects();
@@ -947,6 +967,7 @@ public partial class MainWindow
         snapshot.Dispose();
         Services.WindowActivator.ActivateHwnd(mainH);
         Services.WindowActivator.ActivateHwnd(dlgH);
+        ResumeIdScreens(idsSuspended);
         return outv;
     }
 
@@ -978,7 +999,7 @@ public partial class MainWindow
             pasteBtn.IsEnabled = _clip != null && !_clip.IsGroup;
         }
         // 监听动作＝完整动作：用与外层同款的完整对话框（可配循环/运行条件/备注，且能继续配监听——递归下去）。
-        setBtn.Click += (_, _) => { var s = ShowAddActionDialog(get()); if (s != null) { set(s); Refresh(); } };
+        setBtn.Click += (_, _) => { var s = ShowAddActionDialog(get(), allowAlias: false); if (s != null) { set(s); Refresh(); } };
         clearBtn.Click += (_, _) => { set(null); Refresh(); };
         copyBtn.Click += (_, _) =>
         {
@@ -1328,7 +1349,9 @@ public partial class MainWindow
     }
 
     // ---------- 动作编辑对话框 ----------
-    private MacroStep? ShowAddActionDialog(MacroStep? source = null)
+    // allowAlias：只有【方案顶层】的动作允许设置别名——跳转目标只在顶层解析，内层别名根本没法被跳到。
+    // 组合子动作 / 监听动作编辑一律传 false（界面上只留备注，保存时清空别名）。
+    private MacroStep? ShowAddActionDialog(MacroStep? source = null, bool allowAlias = true)
     {
         string capturedKey = "";
         byte capturedModifier = 0;
@@ -1759,9 +1782,11 @@ public partial class MainWindow
                 BuildHookRow(win, "运行失败后", () => hookFail, v => hookFail = v),
                 BuildHookRow(win, "运行结束后", () => hookComplete, v => hookComplete = v)));
 
-            sp.Children.Add(GroupCard("别名与备注（可选）",
-                FieldLabel("别名（跳转用标签，方案内应唯一）"), aliasText,
-                FieldLabel("备注"), noteText));
+            sp.Children.Add(allowAlias
+                ? GroupCard("别名与备注（可选）",
+                    FieldLabel("别名（跳转用标签，方案内应唯一）"), aliasText,
+                    FieldLabel("备注"), noteText)
+                : GroupCard("备注（可选）", noteText));
         }
 
         // 主/次动作分明：确定=强调色实心（主动作），取消=描边空心（次动作）。底部固定不随内容滚动，上方加分割线。
@@ -1878,7 +1903,8 @@ public partial class MainWindow
                                         : isDrag ? "拖动次数（0 为无限）"
                                         : "点击次数（0 为无限）";
             // 移动与拖动不给「重复次数」：移动重复等于原地不动；拖动要重复用上面的"拖动次数"就够了。
-            bool noStepRepeat = d == "鼠标" && (isMove || isDrag);
+            // 跳转也不给：它有自己的"最大重复次数"防死循环，重复执行一个 goto 没有意义。
+            bool noStepRepeat = (d == "鼠标" && (isMove || isDrag)) || (d == "运行" && ra == "跳转");
             if (stepRepeatCard != null) stepRepeatCard.Visibility = noStepRepeat ? Visibility.Collapsed : Visibility.Visible;
             // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
             runRepeat.Panel.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;
@@ -2084,7 +2110,7 @@ public partial class MainWindow
                     result.PreRunAction = hookPreRun;
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
-                    result.Alias = aliasText.Text.Trim();
+                    result.Alias = allowAlias ? aliasText.Text.Trim() : "";
                 }
                 if (settingsChanged) PersistSettings(); // 持久化默认时长等设置，不提交未保存的方案修改
                 win.DialogResult = true;
@@ -2183,7 +2209,7 @@ public partial class MainWindow
     }
 
     // ---------- 组合编辑对话框 ----------
-    private MacroStep? ShowEditGroupDialog(MacroStep source)
+    private MacroStep? ShowEditGroupDialog(MacroStep source, bool allowAlias = true)
     {
         var win = MakeDialog("编辑组合");
         var grid = new Grid { Margin = new Thickness(20, 20, 6, 20) }; // 右侧小边距，让滚动条贴近窗口右缘
@@ -2228,7 +2254,7 @@ public partial class MainWindow
                 var edit = new Button { Content = "编辑", Width = 48, Height = 26, Margin = new Thickness(4, 0, 0, 0), FontSize = 12 };
                 edit.Click += (_, _) =>
                 {
-                    var s = item.IsGroup ? ShowEditGroupDialog(item) : ShowAddActionDialog(item);   // 子项可为嵌套组合
+                    var s = item.IsGroup ? ShowEditGroupDialog(item, allowAlias: false) : ShowAddActionDialog(item, allowAlias: false);   // 子项可为嵌套组合
                     if (s != null && SerializeStep(s) != SerializeStep(item)) { working[idx] = s; Rebuild(); }
                 };
                 var up = new Button { Content = "↑", Width = 30, Height = 26, Margin = new Thickness(4, 0, 0, 0), FontSize = 12, IsEnabled = idx > 0 };
@@ -2242,7 +2268,7 @@ public partial class MainWindow
                 childList.Children.Add(g);
             }
         }
-        addBtn.Click += (_, _) => { var s = ShowAddActionDialog(); if (s != null) { working.Add(s); Rebuild(); } };
+        addBtn.Click += (_, _) => { var s = ShowAddActionDialog(allowAlias: false); if (s != null) { working.Add(s); Rebuild(); } };
         Rebuild();
 
         // 执行次数+重复间隔：与动作对话框同一套 RepeatBlock，放进「组合内容」卡（即组合的基础设置）。
@@ -2275,9 +2301,11 @@ public partial class MainWindow
 
         var noteText = new TextBox { Text = source.Note, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var aliasText = new TextBox { Text = source.Alias, Margin = new Thickness(0, 0, 0, 14), Height = 32 };
-        sp.Children.Add(GroupCard("别名与备注（可选）",
-            FieldLabel("别名（跳转用标签，方案内应唯一）"), aliasText,
-            FieldLabel("备注"), noteText));
+        sp.Children.Add(allowAlias
+            ? GroupCard("别名与备注（可选）",
+                FieldLabel("别名（跳转用标签，方案内应唯一）"), aliasText,
+                FieldLabel("备注"), noteText)
+            : GroupCard("备注（可选）", noteText));
 
         var okBtn = new Button { Content = "确定", Width = 88, Height = 36, IsDefault = true, Style = (Style)FindResource("PrimaryButton"), Margin = new Thickness(0, 0, 10, 0) };
         var cancelBtn = new Button { Content = "取消", Width = 88, Height = 36, IsCancel = true, Style = (Style)FindResource("GhostButton"), Margin = new Thickness(0) };
@@ -2296,7 +2324,7 @@ public partial class MainWindow
                 PreRunAction = hookPreRun,
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
-                Alias = aliasText.Text.Trim(),
+                Alias = allowAlias ? aliasText.Text.Trim() : "",
             };
             try { groupRepeat.Apply(result); groupUntil.Apply(result); }
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
