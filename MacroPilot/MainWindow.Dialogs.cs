@@ -1071,7 +1071,7 @@ public partial class MainWindow
             {
                 int idx = i;
                 var it = items[i];
-                var row = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 6) };
+                var row = new DockPanel { LastChildFill = true };   // 行高由 32px 图标按钮决定，别再额外加内边距——多条堆叠时空白很显眼
                 var ops = new StackPanel { Orientation = Orientation.Horizontal };
                 var edit = new Button { Style = (Style)FindResource("IconButton"), FontSize = 15, Content = "", ToolTip = "编辑该条件" };
                 var del = new Button { Style = (Style)FindResource("IconButton"), FontSize = 15, Content = "", ToolTip = "删除该条件" };
@@ -1351,6 +1351,18 @@ public partial class MainWindow
     // ---------- 动作编辑对话框 ----------
     // allowAlias：只有【方案顶层】的动作允许设置别名——跳转目标只在顶层解析，内层别名根本没法被跳到。
     // 组合子动作 / 监听动作编辑一律传 false（界面上只留备注，保存时清空别名）。
+    /// <summary>校验并返回规整后的别名：方案内必须唯一（编辑时不与自己比）。冲突抛异常，由调用方统一提示。</summary>
+    private string RequireUniqueAlias(string raw, MacroStep? self)
+    {
+        string alias = (raw ?? "").Trim();
+        if (alias.Length == 0 || _plan == null) return alias;
+        foreach (var t in _plan.Steps)
+            if (!ReferenceEquals(t, self) && t.Alias == alias)
+                throw new InvalidOperationException($"别名「{alias}」已被动作 {t.DisplayIndex}（{Truncate(t.Brief, 24)}）使用，方案内别名必须唯一。");
+        return alias;
+    }
+    private static string Truncate(string s, int n) => s.Length > n ? s[..n] + "…" : s;
+
     private MacroStep? ShowAddActionDialog(MacroStep? source = null, bool allowAlias = true)
     {
         string capturedKey = "";
@@ -2110,7 +2122,7 @@ public partial class MainWindow
                     result.PreRunAction = hookPreRun;
                     result.SuccessAction = hookSuccess; result.CompleteAction = hookComplete; result.FailAction = hookFail;
                     result.Note = noteText.Text.Trim();
-                    result.Alias = allowAlias ? aliasText.Text.Trim() : "";
+                    result.Alias = allowAlias ? RequireUniqueAlias(aliasText.Text, source) : "";
                 }
                 if (settingsChanged) PersistSettings(); // 持久化默认时长等设置，不提交未保存的方案修改
                 win.DialogResult = true;
@@ -2317,6 +2329,12 @@ public partial class MainWindow
         MacroStep? result = null;
         okBtn.Click += (_, _) =>
         {
+            string alias = "";
+            if (allowAlias)
+            {
+                try { alias = RequireUniqueAlias(aliasText.Text, source); }
+                catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
+            }
             result = new MacroStep
             {
                 Type = "Group", Children = new ObservableCollection<MacroStep>(working),
@@ -2324,7 +2342,7 @@ public partial class MainWindow
                 PreRunAction = hookPreRun,
                 SuccessAction = hookSuccess, CompleteAction = hookComplete, FailAction = hookFail,
                 Note = noteText.Text.Trim(),
-                Alias = allowAlias ? aliasText.Text.Trim() : "",
+                Alias = alias,
             };
             try { groupRepeat.Apply(result); groupUntil.Apply(result); }
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
