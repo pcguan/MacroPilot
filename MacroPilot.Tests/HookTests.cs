@@ -43,7 +43,7 @@ public class HookTests
     }
 
     [Fact]
-    public void 条件判定失败时只跑条件前和判断失败后()
+    public void 条件判定失败时跑条件前判断失败后与结束后()
     {
         var s = Key("main"); s.CondNever();
         s.PreCondAction = Key("preCond");
@@ -54,8 +54,8 @@ public class HookTests
         s.CompleteAction = Key("done");
 
         var r = Run(Plan(s));
-        // 动作本体、运行前、成功、结束 全都不该跑
-        Assert.Equal(new[] { "preCond", "condFail" }, r.Calls);
+        // 动作本体、运行前、成功 不该跑；「运行结束后」按定夺的语义：条件跳过也算一次结束，照样触发
+        Assert.Equal(new[] { "preCond", "condFail", "done" }, r.Calls);
     }
 
     [Fact]

@@ -974,6 +974,15 @@ public partial class MainWindow
     private FrameworkElement BuildHookRow(Window owner, string label, Func<MacroStep?> get, Action<MacroStep?> set)
     {
         var row = new DockPanel { Margin = new Thickness(0, 4, 0, 4), LastChildFill = true };
+        // 触发时机的确切语义挂在行提示上（悬停展示）——重复执行时"成功/失败每趟、结束只一次"很难从名字看出来
+        row.ToolTip = label switch
+        {
+            "运行结束后" => "动作运行结束后，再运行这个监听动作。\n如果动作设置了重复次数 / 直到条件满足，会在【所有趟数全部结束后】触发一次。\n正常结束、失败结束、条件不满足被跳过等原因的结束都会进入本监听；\n因跳转生效而跳出的，不会进入本监听。",
+            "运行成功后" => "本趟执行成功后触发；动作重复执行时【每一趟】都会触发一次。",
+            "运行失败后" => "本趟执行失败后触发；动作重复执行时【每一趟】都会触发一次。",
+            "运行前" => "本趟动作本体执行前触发；动作重复执行时【每一趟】都会触发一次。",
+            _ => null,
+        };
         var lbl = new TextBlock { Text = label, Width = 100, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
         DockPanel.SetDock(lbl, Dock.Left); row.Children.Add(lbl);
         var clearBtn = new Button { Content = "清除", Width = 56, Height = 32, Margin = new Thickness(8, 0, 0, 0) };

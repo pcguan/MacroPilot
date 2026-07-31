@@ -206,12 +206,16 @@ public sealed class MacroRunner
     }
 
     // Jump 动作执行时上报到这里（无论它在顶层、组合内还是监听里），由 RunTop 在当前顶层步骤结束后统一消费。
+    // 生效与否在【执行点】就裁决完毕（见 RunOne 的 Jump 分支）：_pendingJump 非空 ⇔ 必然跳出。
     private MacroStep? _pendingJump;
+    private System.Collections.Generic.IList<MacroStep> _topSteps = System.Array.Empty<MacroStep>();
+    private readonly System.Collections.Generic.Dictionary<MacroStep, int> _jumpUsed = new();   // 已跳次数按 Jump 实例计（本轮内）
 
     // 顶层动作序列
     private void RunTop(System.Collections.Generic.IList<MacroStep> steps, CancellationToken ct)
     {
-        var jumpUsed = new System.Collections.Generic.Dictionary<MacroStep, int>();   // 已跳次数按 Jump 实例计（本轮内）
+        _topSteps = steps;      // 跳转执行点解析目标/上限要用
+        _jumpUsed.Clear();      // 上限按【轮】计（与历史一致：每轮重新给额度）
         _pendingJump = null;
         int i = 0;
         while (i < steps.Count)
@@ -236,6 +240,7 @@ public sealed class MacroRunner
                     if (!GateHooks(step, out var conditionText, ct))
                     {
                         Log?.Invoke("Info", prefix + $"{step.Display}，条件不满足，已跳过（{conditionText}）");
+                        CompleteHook(step, ct);   // 条件跳过也算一次"结束"
                     }
                     else
                     {
@@ -256,20 +261,9 @@ public sealed class MacroRunner
             var jumpSrc = _pendingJump; _pendingJump = null;
             if (jumpSrc != null)
             {
-                // 跳转不生效的两种情况必须留痕：目标恰好是顺序下一步时"失效"与"生效"流程一模一样，
-                // 不记日志用户根本无法察觉限制到底有没有起作用（corp-win 实排查过一次）。
-                string jname = jumpSrc.JumpTargetAlias.Length > 0 ? $"跳转到「{jumpSrc.JumpTargetAlias}」" : "跳转";
+                // 生效性（目标存在/未达上限）已在执行点裁决并记过日志，这里只负责真正跳
                 int ti = JumpIndex(jumpSrc, steps);
-                if (ti < 0)
-                {
-                    Log?.Invoke("Warning", $"{jname}的目标不存在（可能已被删除或改名），跳转不生效，按顺序继续。");
-                }
-                else
-                {
-                    jumpUsed.TryGetValue(jumpSrc, out var used);
-                    if (jumpSrc.JumpTimes <= 0 || used < jumpSrc.JumpTimes) { jumpUsed[jumpSrc] = used + 1; i = ti; continue; }
-                    Log?.Invoke("Warning", $"{jname}已达 {jumpSrc.JumpTimes} 次上限，本轮内不再生效，按顺序继续。");
-                }
+                if (ti >= 0) { i = ti; continue; }
             }
             i++;
         }
@@ -323,7 +317,11 @@ public sealed class MacroRunner
                                 Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合（{child.Children.Count} 个动作）");
                                 RunGroup(child, ct, depth + 1);
                             }
-                            else Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合条件不满足，已跳过（{reason}）");
+                            else
+                            {
+                                Log?.Invoke("Info", $"{indent}└ 子 {k + 1}/{group.Children.Count}：组合条件不满足，已跳过（{reason}）");
+                                CompleteHook(child, ct);   // 条件跳过也算一次"结束"
+                            }
                         });
                     }
                     else RunLeaf(child, $"{indent}└ 子 {k + 1}/{group.Children.Count}：{child.Display}", ct);
@@ -336,7 +334,7 @@ public sealed class MacroRunner
             if (group.LoopDelayMs > 0) Wait(Jitter(group.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
         }
         RunHook(group.SuccessAction, "运行成功后", ct);
-        if (!_completeDeferred.Contains(group)) RunHook(group.CompleteAction, "运行结束后", ct);   // 整趟重复时由 RepeatCycle 收尾统一触发一次
+        CompleteHook(group, ct);
     }
 
     /// <summary>
@@ -344,6 +342,18 @@ public sealed class MacroRunner
     /// 与动作自身的【执行次数 LoopCount】是两回事——后者只重复动作本体（条件判一次、监听走一遍），
     /// 前者每一趟都重新判条件、重新触发监听。中途产生跳转就不再重复（跳转优先，否则永远跳不出去）。
     /// </summary>
+    /// <summary>
+    /// 「运行结束后」的统一入口（语义已定）：动作运行结束后触发；正常结束、失败结束、
+    /// 条件不满足被跳过——都算结束、都触发；已登记将生效的跳转（跳出）——不触发。
+    /// 设置了重复的动作趟内一律不触发，由 RepeatCycle 在全部趟结束后统一触发一次。
+    /// </summary>
+    private void CompleteHook(MacroStep step, CancellationToken ct)
+    {
+        if (_completeDeferred.Contains(step)) return;
+        if (_pendingJump != null) return;
+        RunHook(step.CompleteAction, "运行结束后", ct);
+    }
+
     // 重复执行时的监听语义：每一趟都算一次「运行成功 / 失败」（照常每趟触发），
     // 但「运行结束后」＝这个动作的所有趟数全部结束，只触发一次（含被跳转提前结束；停止/取消不触发）。
     // 实现：趟内挂起该步骤的 CompleteAction（RunLeafOnce / RunGroup 见此集合就跳过），循环收尾统一补一次。
@@ -375,7 +385,7 @@ public sealed class MacroRunner
         }
         finally { _completeDeferred.Remove(step); }
         ct.ThrowIfCancellationRequested();   // 循环因取消退出时不触发结束监听（与单趟被停止时一致）
-        RunHook(step.CompleteAction, "运行结束后", ct);
+        CompleteHook(step, ct);
     }
 
     /// <summary>
@@ -430,6 +440,7 @@ public sealed class MacroRunner
             ActBegin?.Invoke(body);
             ActEnd?.Invoke("已跳过", "Warning");
             Log?.Invoke("Info", $"条件不满足，跳过动作：{conditionText}");
+            CompleteHook(step, ct);   // 条件跳过也算一次"结束"（语义已定：正常/失败/跳过都进结束监听）
             return false;
         }
 
@@ -470,7 +481,7 @@ public sealed class MacroRunner
             ActEnd?.Invoke("执行成功", "Success");
             RunHook(step.SuccessAction, "运行成功后", ct);
         }
-        if (!_completeDeferred.Contains(step)) RunHook(step.CompleteAction, "运行结束后", ct);   // 整趟重复时由 RepeatCycle 收尾统一触发一次
+        CompleteHook(step, ct);
         return true;
     }
 
@@ -484,7 +495,11 @@ public sealed class MacroRunner
             if (hook.IsGroup)
             {
                 if (GateHooks(hook, out var reason, ct)) { Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合（{hook.Children.Count} 个动作）"); RunGroup(hook, ct); }
-                else Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合条件不满足，跳过（{reason}）");
+                else
+                {
+                    Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合条件不满足，跳过（{reason}）");
+                    CompleteHook(hook, ct);   // 条件跳过也算一次"结束"
+                }
             }
             else RunLeaf(hook, $"    ↳ 监听（{kind}）：{hook.Display}", ct);
         }
@@ -782,7 +797,27 @@ public sealed class MacroRunner
             case "TextInput": TypeText(step, ct); break;
             case "MouseWheel": _backend.MouseWheel(step.Wheel); break;
             // 跳转动作：上报给 RunTop，在当前顶层步骤结束后跳到目标序号（在组合内/监听里执行也生效）。
-            case "Jump": _pendingJump = step; break;
+            case "Jump":
+            {
+                // 生效与否当场裁决、当场留痕——目标恰好是顺序下一步时"失效"与"生效"流程一模一样，
+                // 不记日志用户无法察觉上限有没有起作用（corp-win 实排查过一次）。
+                // 也因此 _pendingJump 非空 ⇔ 必然跳出，「运行结束后」的"跳出不触发"才能精确成立。
+                string jname = step.JumpTargetAlias.Length > 0 ? $"跳转到「{step.JumpTargetAlias}」" : "跳转";
+                if (JumpIndex(step, _topSteps) < 0)
+                {
+                    Log?.Invoke("Warning", $"{jname}的目标不存在（可能已被删除或改名），跳转不生效，按顺序继续。");
+                    break;
+                }
+                _jumpUsed.TryGetValue(step, out var used);
+                if (step.JumpTimes > 0 && used >= step.JumpTimes)
+                {
+                    Log?.Invoke("Warning", $"{jname}已达 {step.JumpTimes} 次上限，本轮内不再生效，按顺序继续。");
+                    break;
+                }
+                _jumpUsed[step] = used + 1;
+                _pendingJump = step;
+                break;
+            }
             case "ActivateWindow":
                 if (step.TargetProcess == WindowActivator.DesktopSentinel)
                 {

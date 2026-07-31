@@ -134,14 +134,24 @@ public class FlowTests
     }
 
     [Fact]
-    public void 跳转打断重复时运行结束仍触发一次()
+    public void 跳转生效跳出时不触发运行结束_失效后正常触发()
     {
         var a = Key("a");
         var j = JumpTo(a, 1); j.RepeatCount = 5; j.RepeatDelayMs = 0;
         j.CompleteAction = Key("done");
         var r = Run(Plan(a, j));
-        // 第一次经过 j：跳转生效、重复被打断 → done 一次；第二次经过 j：上限已到不再跳，单趟结束 → done 一次
-        Assert.Equal(new[] { "a", "done", "a", "done" }, r.Calls);
+        // 第一次经过 j：跳转生效跳出 → 不触发结束；第二次：上限已到跳转失效，5 趟执行完 → 结束一次
+        Assert.Equal(new[] { "a", "a", "done" }, r.Calls);
+        Assert.True(r.LogHas("次上限"));
+    }
+
+    [Fact]
+    public void 条件跳过的动作也触发运行结束()
+    {
+        var s = Key("a"); s.CondNever();
+        s.CompleteAction = Key("done");
+        var r = Run(Plan(s));
+        Assert.Equal(new[] { "done" }, r.Calls);   // 本体没执行，但"结束"发生了
     }
 
     [Fact]
