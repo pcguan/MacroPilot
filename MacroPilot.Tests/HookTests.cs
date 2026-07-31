@@ -67,7 +67,7 @@ public class HookTests
         s.FailAction = Key("fail");
         s.CompleteAction = Key("done");
 
-        var r = Run(Plan(s, Key("next")), failOnKey: "boom");
+        var r = Run(Plan(s, Key("next")), failOnKey: "boom");   // 设了失败监听 → 不触发方案级失败暂停
         Assert.Equal(new[] { "preRun", "boom", "fail", "done", "next" }, r.Calls);
         Assert.Equal("Done", r.Reason);   // 单个动作失败不该中断整个方案
     }

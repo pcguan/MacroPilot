@@ -11,6 +11,8 @@ public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
     public string Name { get => _name; set { if (_name != value) { _name = value; Raise(nameof(Name)); } } }
 
     public int LoopCount { get; set; } = 1;      // 0=无限
+    // 动作执行失败时立即暂停（默认开）。例外：动作自身设了「运行失败后」监听 → 失败交由监听处理、不暂停。
+    public bool PauseOnFail { get; set; } = true;
     public int LoopDelayMs { get; set; }         // 每圈之间的延时（始终以毫秒存储）
     public int LoopDelayUnit { get; set; }       // 仅 UI 显示单位：0=毫秒 1=秒 2=分钟 3=小时
 

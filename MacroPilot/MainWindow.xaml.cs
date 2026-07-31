@@ -1072,6 +1072,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var run = new MacroPlan
         {
             Name = src.Name, LoopCount = src.LoopCount, LoopDelayMs = src.LoopDelayMs,
+            PauseOnFail = src.PauseOnFail,
             Steps = steps,
         };
         // 运行条件整体拷贝：原先手写字段列表，漏了图片条件的图片/屏幕/矩形/阈值（方案级「图片出现」

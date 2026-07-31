@@ -115,6 +115,17 @@ public partial class MainWindow
             FieldLabel("循环次数（0 为无限）"), loopCountText,
             FieldLabel("每轮之间的间隔"), delayRow));
 
+        // ---- 失败处理 ----
+        var pauseChk = new CheckBox { Content = "动作执行失败时立即暂停（F9 继续）", IsChecked = plan.PauseOnFail };
+        sp.Children.Add(GroupCard("失败处理",
+            pauseChk,
+            new TextBlock
+            {
+                Text = "动作失败通常意味着画面或状态与预期不符，自动暂停可避免后续误操作。\n若动作自身设置了「运行失败后」监听，则它的失败交由监听处理，不触发暂停。",
+                Foreground = (System.Windows.Media.Brush)FindResource("Muted"),
+                FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0),
+            }));
+
         // ---- 运行条件（与动作级同一套控件与逻辑）----
         var ed = BuildRunConditionEditor(plan);
         ed.Panel.Margin = new Thickness(0, 0, 0, 6);
@@ -150,10 +161,13 @@ public partial class MainWindow
 
                 // 条件是否有变：整体序列化后比较，别再手写字段列表——历史上每加一个字段都得记得补一行，
                 // 漏了就"改了不标脏、不落盘"。条件已升级成列表，逐字段比更不现实。
+                bool pause = pauseChk.IsChecked == true;
                 changed = loops != plan.LoopCount || delayMs != plan.LoopDelayMs || u != plan.LoopDelayUnit
+                          || pause != plan.PauseOnFail
                           || RunCondition.Snapshot(probe) != RunCondition.Snapshot(plan);
 
                 plan.LoopCount = loops; plan.LoopDelayMs = delayMs; plan.LoopDelayUnit = u;
+                plan.PauseOnFail = pause;
                 RunCondition.Copy(probe, plan);
                 win.DialogResult = true;
             }

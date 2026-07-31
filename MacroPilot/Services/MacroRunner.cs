@@ -28,6 +28,7 @@ public sealed class MacroRunner
 
     public bool IsRunning => _task is { IsCompleted: false };
     public bool IsPaused { get; private set; }
+    private bool _pauseOnFail = true;   // 方案配置：动作失败立即暂停（有「运行失败后」监听的动作除外）
 
     public event Action<MacroStep, bool>? StepStateChanged;  // (step, isExecuting)
     public event Action<string, string>? Log;                // (level, message) 普通日志行
@@ -47,6 +48,7 @@ public sealed class MacroRunner
         _gate.Set();
         IsPaused = false;
         _jitterMs = Math.Max(0, jitterMs);
+        _pauseOnFail = plan.PauseOnFail;
         var ct = _cts.Token;
         _task = Task.Run(() =>
         {
@@ -472,7 +474,15 @@ public sealed class MacroRunner
             StepStateChanged?.Invoke(step, false);
             ActEnd?.Invoke("执行失败", "Fail");
             Log?.Invoke("Error", $"执行失败：{ex.Message}");
-            RunHook(step.FailAction, "运行失败后", ct);
+            if (step.FailAction != null)
+            {
+                RunHook(step.FailAction, "运行失败后", ct);   // 设了失败监听：失败交由监听处理，不触发方案的失败暂停
+            }
+            else if (_pauseOnFail)
+            {
+                Pause();   // 先置暂停再记日志：日志回调里就能看到已暂停的状态
+                Log?.Invoke("Warning", "动作执行失败，已按方案设置自动暂停（F9 继续，F11 停止）。");
+            }
         }
         if (ok)
         {
