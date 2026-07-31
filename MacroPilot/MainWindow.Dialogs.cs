@@ -1099,7 +1099,17 @@ public partial class MainWindow
                     var r = ShowConditionItemDialog(items[idx]);
                     if (r != null) { items[idx] = r; RefreshList(); }
                 };
-                del.Click += (_, _) => { items.RemoveAt(idx); RefreshList(); };
+                del.Click += (_, _) =>
+                {
+                    if (ExprMode() && exprBox.Text.Trim().Length > 0)
+                    {
+                        // 表达式跟随删除：对该条的引用整段消失（与/或取剩下的一边），后面的序号自动前移
+                        var nx = Services.CondExpr.RemoveRef(exprBox.Text, idx + 1, items.Count);
+                        if (nx != null) exprBox.Text = nx;
+                    }
+                    items.RemoveAt(idx);
+                    RefreshList();
+                };
                 ops.Children.Add(edit); ops.Children.Add(del);
                 DockPanel.SetDock(ops, Dock.Right); row.Children.Add(ops);
                 // 多条时前面标个序号，配合"与/或"看得清是第几条
@@ -1953,7 +1963,8 @@ public partial class MainWindow
                                         : "点击次数（0 为无限）";
             // 移动与拖动不给「重复次数」：移动重复等于原地不动；拖动要重复用上面的"拖动次数"就够了。
             // 跳转也不给：它有自己的"最大重复次数"防死循环，重复执行一个 goto 没有意义。
-            bool noStepRepeat = (d == "鼠标" && (isMove || isDrag)) || (d == "运行" && ra == "跳转");
+            // 注意 ra 非空即代表当前在「运行」类目（Dev() 在运行类目下返回空串，别拿 d 判类目）。
+            bool noStepRepeat = (d == "鼠标" && (isMove || isDrag)) || ra == "跳转";
             if (stepRepeatCard != null) stepRepeatCard.Visibility = noStepRepeat ? Visibility.Collapsed : Visibility.Visible;
             // 运行类的 执行次数+重复间隔：等待/激活窗口显示；跳转有自己的跳转次数，不显示。
             runRepeat.Panel.Visibility = ra is "等待" or "激活窗口" ? Visibility.Visible : Visibility.Collapsed;

@@ -30,6 +30,52 @@ public static class CondExpr
     public static bool Eval(string expr, int itemCount, Func<int, bool> item)
         => Parse(Normalize(expr), itemCount).Eval(item);
 
+    /// <summary>
+    /// 条件列表删除第 removed 条（1 起）后改写表达式：对它的引用整段消失（与/或少了一边就取另一边，
+    /// !@N 随之消失），其余引用的序号自动前移对准新列表。返回改写结果（空串 = 表达式已无内容）；
+    /// 原表达式本身非法时返回 null，调用方保持原文不动。
+    /// </summary>
+    public static string? RemoveRef(string expr, int removed, int itemCount)
+    {
+        Node root;
+        try { root = Parse(Normalize(expr), itemCount); }
+        catch (FormatException) { return null; }
+        var stripped = Strip(root, removed - 1);
+        return stripped == null ? "" : Render(stripped, 0);
+    }
+
+    private static Node? Strip(Node n, int removed) => n switch
+    {
+        Ref r => r.I == removed ? null : new Ref { I = r.I > removed ? r.I - 1 : r.I },
+        Not t => Strip(t.X, removed) is Node x ? new Not { X = x } : null,
+        AndN a => (Strip(a.L, removed), Strip(a.R, removed)) switch
+        {
+            (null, null) => null,
+            (Node l, null) => l,
+            (null, Node r) => r,
+            (Node l, Node r) => new AndN { L = l, R = r },
+        },
+        OrN o => (Strip(o.L, removed), Strip(o.R, removed)) switch
+        {
+            (null, null) => null,
+            (Node l, null) => l,
+            (null, Node r) => r,
+            (Node l, Node r) => new OrN { L = l, R = r },
+        },
+        _ => n,
+    };
+
+    // prec：0=|| 层、1=&& 层、2=原子（! 的操作数）。子表达式优先级低于所处环境时补括号。
+    private static string Render(Node n, int prec) => n switch
+    {
+        Ref r => "@" + (r.I + 1),
+        Not t => "!" + Render(t.X, 2),
+        AndN a => Wrap(Render(a.L, 1) + " && " + Render(a.R, 1), prec > 1),
+        OrN o => Wrap(Render(o.L, 0) + " || " + Render(o.R, 0), prec > 0),
+        _ => "",
+    };
+    private static string Wrap(string s, bool need) => need ? "(" + s + ")" : s;
+
     // ---- 递归下降：expr := term ('||' term)* ；term := factor ('&&' factor)* ；factor := '!' factor | '(' expr ')' | '@' 数字
     private abstract class Node { public abstract bool Eval(Func<int, bool> item); }
     private sealed class Ref : Node { public int I; public override bool Eval(Func<int, bool> f) => f(I); }

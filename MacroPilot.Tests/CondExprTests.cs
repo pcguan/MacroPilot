@@ -58,6 +58,22 @@ public class CondExprTests
     public void 语法校验(string expr, int n, bool ok)
         => Assert.Equal(ok, CondExpr.Validate(expr, n) == null);
 
+    [Theory]
+    [InlineData("(@1 && @2) || @3", 2, 3, "@1 || @2")]        // @2 消失，@3 前移成 @2
+    [InlineData("@1 && @2", 1, 2, "@1")]                       // 原 @2 前移
+    [InlineData("!@2 && @1", 2, 2, "@1")]                      // !@2 整段消失
+    [InlineData("@1", 1, 1, "")]                               // 删光
+    [InlineData("!(@1 || @2) && @3", 3, 3, "!(@1 || @2)")]     // 括号该保留时保留
+    [InlineData("(@1 || @2) && @3", 1, 3, "@1 && @2")]         // 剩单边时多余括号去掉
+    [InlineData("(@1 || @2) && @3", 4, 4, "(@1 || @2) && @3")] // 删除未被引用的条件：表达式原样保留（括号也在）
+    [InlineData("@2 || (@1 && @3)", 1, 3, "@1 || @2")]         // 删 @1：@2→@1，(@1 && @3) 只剩 @3（前移为 @2）
+    public void 删除条件后表达式自动改写(string expr, int removed, int n, string expected)
+        => Assert.Equal(expected, CondExpr.RemoveRef(expr, removed, n));
+
+    [Fact]
+    public void 原表达式非法时改写返回_null_保持原文()
+        => Assert.Null(CondExpr.RemoveRef("@1 &&", 1, 2));
+
     // ---- 运行期联动：Expr 模式的运行条件 / 停止条件 ----
 
     [Fact]
