@@ -97,6 +97,17 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     public int RepeatDelayMs { get; set; } = 1000;
     public int RepeatDelayUnit { get; set; } = 1;
 
+    // 【重复直到条件满足】：RepeatUntil=true 时重复不再按固定趟数（RepeatCount 不参与），而是每趟
+    // 执行完判定一次 UntilConditions（结构同运行条件：多条按与/或组合），满足即结束该动作；
+    // 不满足则等 RepeatDelayMs（复用"每趟之间的间隔"）后再来一趟。每一趟里运行条件/监听照常生效。
+    // UntilMaxCount / UntilTimeoutMs 是保护上限（0=不限，两者同时生效、先到者停）。
+    public bool RepeatUntil { get; set; }
+    public System.Collections.Generic.List<ConditionItem> UntilConditions { get; set; } = new();
+    public string UntilLogic { get; set; } = "And";
+    public int UntilMaxCount { get; set; }
+    public int UntilTimeoutMs { get; set; }
+    public int UntilTimeoutUnit { get; set; } = 1;
+
     // 动作的稳定身份：跳转靠它绑定目标，因此插入/删除/排序都不会指错。
     // 懒生成——新建对象时不占 Guid，首次读取（含序列化）才生成；反序列化时用存档里的值。
     private string _id = "";
@@ -213,6 +224,17 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     }
     [JsonIgnore] public bool HasRunCondition => RunCondition.Has(this);   // 与方案级同一判定
 
+    /// <summary>「直到条件满足」是否真正生效（模式开启且至少有一条有效停止条件；与执行侧同一口径）。</summary>
+    [JsonIgnore] public bool HasUntilCondition
+    {
+        get
+        {
+            if (!RepeatUntil || UntilConditions == null) return false;
+            foreach (var it in UntilConditions) if (it.IsValid) return true;
+            return false;
+        }
+    }
+
     private bool _isChecked, _isExpanded, _isExecuting, _isFocused;
     private int _displayIndex;
     [JsonIgnore] public bool IsChecked { get => _isChecked; set { if (_isChecked != value) { _isChecked = value; Raise(nameof(IsChecked)); } } }
@@ -241,6 +263,9 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
             TargetProcess = TargetProcess, TargetTitle = TargetTitle, TargetPid = TargetPid,
             LoopCount = LoopCount, LoopDelayMs = LoopDelayMs, LoopDelayUnit = LoopDelayUnit,
             RepeatCount = RepeatCount, RepeatDelayMs = RepeatDelayMs, RepeatDelayUnit = RepeatDelayUnit,
+            RepeatUntil = RepeatUntil, UntilLogic = UntilLogic, UntilMaxCount = UntilMaxCount,
+            UntilTimeoutMs = UntilTimeoutMs, UntilTimeoutUnit = UntilTimeoutUnit,
+            UntilConditions = System.Linq.Enumerable.ToList(System.Linq.Enumerable.Select(UntilConditions, i => i.Clone())),
             Id = Id, JumpTargetId = JumpTargetId, JumpTarget = JumpTarget, JumpTimes = JumpTimes, Note = Note,
             DisplayIndex = DisplayIndex,   // 运行页跑的是克隆副本，带上序号否则运行列表全显 0.（编辑页会 RefreshIndices 重算，不受影响）
             PreCondAction = PreCondAction?.Clone(), CondSuccessAction = CondSuccessAction?.Clone(),
@@ -278,7 +303,8 @@ public sealed class MacroStep : INotifyPropertyChanged, IRunCondition
     {
         string desc = BaseDesc();
         string res = LoopCount switch { 1 => desc, 0 => $"{desc}（无限循环）", _ => $"{desc}（循环 {LoopCount} 次）" };
-        res += RepeatCount switch { 1 => "", 0 => "（无限重复）", _ => $"（重复 {RepeatCount} 次）" };
+        res += HasUntilCondition ? "（重复直到条件满足）"
+             : RepeatCount switch { 1 => "", 0 => "（无限重复）", _ => $"（重复 {RepeatCount} 次）" };
         // 运行条件不在动作流程缩略图中显示（仍在运行时生效、编辑对话框里可配）。
         if (HasListener)
         {

@@ -338,6 +338,7 @@ public sealed class MacroRunner
     /// </summary>
     private void RepeatCycle(MacroStep step, CancellationToken ct, Action once)
     {
+        if (step.HasUntilCondition) { RepeatUntilCycle(step, ct, once); return; }
         int reps = Math.Max(0, step.RepeatCount);
         int done = 0;
         while (!ct.IsCancellationRequested)
@@ -349,6 +350,42 @@ public sealed class MacroRunner
             if (reps == 1) break;
             if (reps != 0 && done >= reps) break;
             if (step.RepeatDelayMs > 0) Wait(Jitter(step.RepeatDelayMs), ct);
+        }
+    }
+
+    /// <summary>
+    /// 【重复直到条件满足】＝do-while：每趟照常"判运行条件 → 监听 → 本体"，趟末判定一次停止条件
+    /// （结构同运行条件：多条与/或），满足即结束该动作；不满足按"每趟间隔"等待后再来一趟。
+    /// 次数/时长上限 0=不限、同时生效先到者停——到上限仍未满足只记警告并继续后续动作（不算执行失败）。
+    /// 跳转仍然优先：趟内产生跳转就立刻结束重复（与固定趟数一致，否则永远跳不出去）。
+    /// </summary>
+    private void RepeatUntilCycle(MacroStep step, CancellationToken ct, Action once)
+    {
+        int interval = Math.Max(0, step.RepeatDelayMs);
+        int max = Math.Max(0, step.UntilMaxCount);
+        int timeout = Math.Max(0, step.UntilTimeoutMs);
+        Log?.Invoke("Info", $"重复执行，直到停止条件满足（{RetryDesc(interval, max, timeout)}）…");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        // 日志节流与重复检查同款：间隔很小（尤其 0）时每趟都记会灌满 UI 线程。
+        bool verboseLog = interval >= 200;
+        var logClock = System.Diagnostics.Stopwatch.StartNew();
+        int done = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            Gate(ct);
+            once();
+            done++;
+            if (_pendingJump != null) return;
+            bool ok = EvaluateItems(step.UntilConditions, step.UntilLogic, out var text, ct);
+            if (verboseLog || ok || done <= 5 || logClock.ElapsedMilliseconds >= 500)
+            {
+                Log?.Invoke("Info", $"　停止条件检查 第 {done} 趟：{text}");
+                logClock.Restart();
+            }
+            if (ok) { Log?.Invoke("Info", $"停止条件已满足，结束重复（共执行 {done} 趟）。"); return; }
+            if (max > 0 && done >= max) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {max} 趟上限），结束重复。"); return; }
+            if (timeout > 0 && clock.ElapsedMilliseconds >= timeout) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {timeout} 毫秒时限），结束重复。"); return; }
+            if (interval > 0) Wait(Jitter(interval), ct);
         }
     }
 
@@ -525,14 +562,20 @@ public sealed class MacroRunner
         conditionText = "";
         RunCondition.Normalize(step);            // 幂等：历史存档的单条字段在这里并入列表
         if (!RunCondition.Has(step)) return true;
+        return EvaluateItems(step.RunConditions, step.RunConditionLogic, out conditionText, ct);
+    }
 
-        bool or = string.Equals(step.RunConditionLogic, "Or", StringComparison.OrdinalIgnoreCase);
+    // 判定一组条件：运行条件与「直到条件满足」的停止条件共用（同一套与/或、短路与轮内共享抓屏）。
+    private bool EvaluateItems(System.Collections.Generic.List<ConditionItem> items, string logic,
+                               out string conditionText, CancellationToken ct)
+    {
+        bool or = string.Equals(logic, "Or", StringComparison.OrdinalIgnoreCase);
         bool acc = !or;                          // And 从 true 起累积；Or 从 false 起累积
         var parts = new System.Collections.Generic.List<string>();
         _roundShots = new();                     // 本轮判定内共享抓屏（多条同区域的图片条件只抓一次）
         try
         {
-            foreach (var item in step.RunConditions)
+            foreach (var item in items)
             {
                 if (!item.IsValid) continue;         // 半成品条目不参与判定，避免误判为不满足
                 bool one = EvaluateOne(item, out var text, ct);

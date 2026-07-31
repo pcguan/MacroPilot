@@ -1012,18 +1012,13 @@ public partial class MainWindow
     /// 每条条件的具体内容在子对话框里编辑（<see cref="ShowConditionItemDialog"/>），
     /// 列表这里只展示摘要 + 编辑/删除，避免多条时把面板撑成一大坨。
     /// </summary>
-    private StackPanel BuildRunConditionPanel(RunConditionEditor ed)
+    /// <summary>
+    /// 条件列表编辑块：满足方式（与/或）+ 条件列表 + 添加按钮。
+    /// 运行条件（BuildRunConditionPanel）与「重复直到条件满足」的停止条件（UntilBlock）共用同一份。
+    /// </summary>
+    private StackPanel BuildConditionListBlock(System.Collections.Generic.List<ConditionItem> items, ComboBox logicCombo, out Action refresh)
     {
-        var enabled = ed.Enabled;
-        var items = ed.Items;
-        var logicCombo = ed.LogicCombo;
-        var retry = ed.Retry;
-        var retryInterval = ed.RetryInterval;
-        var retryMax = ed.RetryMax;
-        var retryTimeout = ed.RetryTimeout;
-        var detail = new StackPanel();
-        enabled.Content = "启用运行条件";
-
+        var block = new StackPanel();
         // ---- 满足方式：多条时才有意义，单条时藏起来 ----
         logicCombo.Items.Clear();
         logicCombo.Items.Add(new ComboBoxItem { Content = "全部满足（与）", Tag = "And" });
@@ -1033,13 +1028,13 @@ public partial class MainWindow
         var logicRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
         logicRow.Children.Add(new TextBlock { Text = "满足方式", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
         logicRow.Children.Add(logicCombo);
-        detail.Children.Add(logicRow);
+        block.Children.Add(logicRow);
 
         // ---- 条件列表 ----
         var listPanel = new StackPanel();
-        detail.Children.Add(listPanel);
+        block.Children.Add(listPanel);
         var addBtn = new Button { Content = "添加条件", Height = 32, MinWidth = 88, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 0) };
-        detail.Children.Add(addBtn);
+        block.Children.Add(addBtn);
         var emptyNote = new TextBlock
         {
             Text = "还没有条件：点「添加条件」新增一条（时间段或图片出现）。",
@@ -1087,8 +1082,24 @@ public partial class MainWindow
             var r = ShowConditionItemDialog(null);
             if (r != null) { items.Add(r); RefreshList(); }
         };
-        ed.RefreshItems = RefreshList;   // 供回填（LoadRunCondition）在填完条件后刷新列表
+        refresh = RefreshList;
         RefreshList();
+        return block;
+    }
+
+    private StackPanel BuildRunConditionPanel(RunConditionEditor ed)
+    {
+        var enabled = ed.Enabled;
+        var items = ed.Items;
+        var logicCombo = ed.LogicCombo;
+        var retry = ed.Retry;
+        var retryInterval = ed.RetryInterval;
+        var retryMax = ed.RetryMax;
+        var retryTimeout = ed.RetryTimeout;
+        var detail = new StackPanel();
+        enabled.Content = "启用运行条件";
+        detail.Children.Add(BuildConditionListBlock(items, logicCombo, out var refreshItems));
+        ed.RefreshItems = refreshItems;   // 供回填（LoadRunCondition）在填完条件后刷新列表
 
         // ---- 重复检查（对整组条件生效）----
         retry.Content = "条件不满足时重复检查，直到满足";
@@ -1719,6 +1730,7 @@ public partial class MainWindow
         var runRepeat = new RepeatBlock(this, "执行次数（0 为无限）");
         Border? stepRepeatCard = null;
         var stepRepeat = new RepeatBlock(this, "重复次数（0 为无限）", forRepeat: true, note: "每一趟都会【重新判定上面的运行条件、重新触发监听动作】，并各记一条日志。与上面各类动作里的「点击次数 / 按键次数 / 滚动次数 / 执行次数」不同——那个只是把动作本体多做几遍，条件只判一次、监听只走一遍。");
+        var stepUntil = new UntilBlock(this, stepRepeat);
         baseContent.Children.Add(runRepeat.Panel);
         var noteText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
         var aliasText = new TextBox { Text = "", Margin = new Thickness(0, 0, 0, 14), Height = 32 };
@@ -1733,7 +1745,7 @@ public partial class MainWindow
             condPanel.Margin = new Thickness(0, 0, 0, 4);
             sp.Children.Add(GroupCard("运行条件", condPanel));   // 独立成卡
             // 「重复次数」紧跟运行条件：它的意义就是"整趟重复，每趟重新判条件"，放一起才看得懂
-            stepRepeatCard = GroupCard("重复", stepRepeat.Panel);
+            stepRepeatCard = GroupCard("重复", stepUntil.Panel);
             sp.Children.Add(stepRepeatCard);
 
             var hookNote = new TextBlock { Text = "在动作生命周期的各节点追加执行一个完整动作（可含循环、运行条件、组合，并能继续挂自己的监听）。「条件」类监听仅在本动作设置了运行条件时触发。", Foreground = (Brush)FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
@@ -2065,8 +2077,8 @@ public partial class MainWindow
                 {
                     if (ra is "等待" or "激活窗口") runRepeat.Apply(result);   // 鼠标/键盘的次数已由各自 RepeatBlock 写过
                     // 整趟重复：卡片藏起来的动作（移动/拖动）强制回到 1，避免把隐藏控件里的残值写进去
-                    if (stepRepeatCard is { Visibility: Visibility.Visible }) stepRepeat.Apply(result);
-                    else result.RepeatCount = 1;
+                    if (stepRepeatCard is { Visibility: Visibility.Visible }) stepUntil.Apply(result);
+                    else { result.RepeatCount = 1; result.RepeatUntil = false; result.UntilConditions = new(); }
                     ApplyRunCondition(cond, result);   // 与方案级同一份写回逻辑（校验失败抛异常，下面统一提示）
                     result.PreCondAction = hookPreCond; result.CondSuccessAction = hookCondOk; result.CondFailAction = hookCondFail;
                     result.PreRunAction = hookPreRun;
@@ -2162,7 +2174,7 @@ public partial class MainWindow
             jumpMaxText.Text = Math.Max(0, source.JumpTimes).ToString();
             noteText.Text = source.Note;
             aliasText.Text = source.Alias;
-            stepRepeat.Load(source);
+            stepUntil.Load(source);
         }
 
         win.Content = grid;
@@ -2243,8 +2255,9 @@ public partial class MainWindow
         condPanel.Margin = new Thickness(0, 0, 0, 4);
         sp.Children.Add(GroupCard("运行条件", condPanel));   // 与动作对话框一致：运行条件独立成卡
         var groupStepRepeat = new RepeatBlock(this, "重复次数（0 为无限）", forRepeat: true, note: "每一趟都会【重新判定上面的运行条件、重新触发监听动作】，并各记一条日志。与上面各类动作里的「点击次数 / 按键次数 / 滚动次数 / 执行次数」不同——那个只是把动作本体多做几遍，条件只判一次、监听只走一遍。");
-        groupStepRepeat.Load(source);
-        sp.Children.Add(GroupCard("重复", groupStepRepeat.Panel));
+        var groupUntil = new UntilBlock(this, groupStepRepeat);
+        groupUntil.Load(source);
+        sp.Children.Add(GroupCard("重复", groupUntil.Panel));
 
         MacroStep? hookPreCond = source.PreCondAction, hookCondOk = source.CondSuccessAction, hookCondFail = source.CondFailAction,
                    hookPreRun = source.PreRunAction,
@@ -2285,7 +2298,7 @@ public partial class MainWindow
                 Note = noteText.Text.Trim(),
                 Alias = aliasText.Text.Trim(),
             };
-            try { groupRepeat.Apply(result); groupStepRepeat.Apply(result); }
+            try { groupRepeat.Apply(result); groupUntil.Apply(result); }
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
             try { ApplyRunCondition(cond, result); }   // 与方案级/动作级同一份写回逻辑
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
@@ -3021,6 +3034,129 @@ public partial class MainWindow
             double f = u switch { 0 => 1, 2 => 60000, 3 => 3600000, _ => 1000 };
             double v = (_forRepeat ? sSrc.RepeatDelayMs : sSrc.LoopDelayMs) / f;
             _delayVal.Text = v % 1.0 == 0 ? ((long)v).ToString() : v.ToString("0.###");
+        }
+    }
+
+    /// <summary>
+    /// 「重复」卡的整体块：重复方式（固定次数 / 直到条件满足）二选一 + 对应面板。
+    /// 直到模式＝do-while：每趟照常判运行条件、走监听、执行本体，趟末判定停止条件，满足即结束；
+    /// 每趟间隔复用 RepeatDelayMs，趟数/时长上限 0=不限（同时生效、先到者停）。
+    /// </summary>
+    private sealed class UntilBlock
+    {
+        private readonly RepeatBlock _fixed;
+        public readonly StackPanel Panel = new();
+        public readonly ComboBox Mode = new() { Height = 32, Width = 170 };
+        private readonly Border _untilBorder;
+        private readonly System.Collections.Generic.List<ConditionItem> _items = new();
+        private readonly ComboBox _logic = new();
+        private readonly Action _refreshItems;
+        private readonly TextBox _intervalVal = new() { Width = 84, Height = 32, Text = "1" };
+        private readonly ComboBox _intervalUnit = new();
+        private readonly TextBox _maxCount = new() { Width = 74, Height = 32, Text = "0" };
+        private readonly TextBox _timeoutVal = new() { Width = 84, Height = 32, Text = "0" };
+        private readonly ComboBox _timeoutUnit = new();
+
+        public UntilBlock(MainWindow owner, RepeatBlock fixedBlock)
+        {
+            _fixed = fixedBlock;
+            Mode.Items.Add("固定次数"); Mode.Items.Add("直到条件满足");
+            Mode.SelectedIndex = 0;
+            var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
+            modeRow.Children.Add(new TextBlock { Text = "重复方式", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+            modeRow.Children.Add(Mode);
+
+            ComboBox UnitBox(ComboBox cb, int def)
+            {
+                foreach (var n in new[] { "毫秒", "秒", "分钟", "小时" }) cb.Items.Add(n);
+                cb.SelectedIndex = def; cb.Width = 88; cb.Height = 32; cb.Margin = new Thickness(6, 0, 0, 0);
+                return cb;
+            }
+            StackPanel Row(string label, params UIElement[] cells)
+            {
+                var r = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
+                r.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Width = 60 });
+                foreach (var c in cells) r.Children.Add(c);
+                return r;
+            }
+            TextBlock Hint(string t) => new()
+            {
+                Text = t, VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Brush)owner.FindResource("Muted"), Margin = new Thickness(6, 0, 0, 0),
+            };
+            foreach (var tb in new[] { _intervalVal, _maxCount, _timeoutVal }) tb.VerticalAlignment = VerticalAlignment.Center;
+
+            var inner = new StackPanel();
+            inner.Children.Add(FieldLabel("停止条件（每趟执行完检查一次，满足即结束）"));
+            inner.Children.Add(owner.BuildConditionListBlock(_items, _logic, out _refreshItems));
+            inner.Children.Add(Row("每趟间隔", _intervalVal, UnitBox(_intervalUnit, 1), Hint("（0 = 立刻再来一趟）")));
+            inner.Children.Add(Row("最多趟数", _maxCount, Hint("趟（0 = 不限）")));
+            inner.Children.Add(Row("最多时长", _timeoutVal, UnitBox(_timeoutUnit, 1), Hint("（0 = 不限）")));
+            inner.Children.Add(new TextBlock
+            {
+                Text = "每一趟都会照常判定运行条件、触发监听并执行动作，趟末检查上面的停止条件，满足即结束该动作。\n两个上限同时生效、先到者停；到上限仍未满足则结束重复并继续后续动作（不算执行失败）。",
+                Foreground = (Brush)owner.FindResource("Muted"), FontSize = 12,
+                TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0),
+            });
+            _untilBorder = owner.SubGroup(null, inner);
+            _untilBorder.Visibility = Visibility.Collapsed;
+
+            Panel.Children.Add(modeRow);
+            Panel.Children.Add(_fixed.Panel);
+            Panel.Children.Add(_untilBorder);
+            Mode.SelectionChanged += (_, _) => RefreshMode();
+        }
+
+        private void RefreshMode()
+        {
+            bool until = Mode.SelectedIndex == 1;
+            _fixed.Panel.Visibility = until ? Visibility.Collapsed : Visibility.Visible;
+            _untilBorder.Visibility = until ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        public void Load(MacroStep sSrc)
+        {
+            _fixed.Load(sSrc);
+            Mode.SelectedIndex = sSrc.RepeatUntil ? 1 : 0;
+            _items.Clear();
+            foreach (var it in sSrc.UntilConditions) _items.Add(it.Clone());   // 副本：取消编辑不影响原对象
+            _refreshItems();
+            _logic.SelectedIndex = string.Equals(sSrc.UntilLogic, "Or", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            int u = Math.Clamp(sSrc.RepeatDelayUnit, 0, 3);
+            _intervalUnit.SelectedIndex = u;
+            _intervalVal.Text = FormatDelayValue(Math.Max(0, sSrc.RepeatDelayMs), u);
+            _maxCount.Text = Math.Max(0, sSrc.UntilMaxCount).ToString();
+            int tu = Math.Clamp(sSrc.UntilTimeoutUnit, 0, 3);
+            _timeoutUnit.SelectedIndex = tu;
+            _timeoutVal.Text = FormatDelayValue(Math.Max(0, sSrc.UntilTimeoutMs), tu);
+            RefreshMode();
+        }
+
+        public void Apply(MacroStep r)
+        {
+            if (Mode.SelectedIndex == 1)
+            {
+                var valid = _items.FindAll(i => i.IsValid);
+                if (valid.Count == 0) throw new InvalidOperationException("重复方式已选「直到条件满足」，请至少添加一条有效的停止条件。");
+                r.RepeatUntil = true;
+                r.UntilConditions = new();
+                foreach (var it in valid) r.UntilConditions.Add(it.Clone());
+                r.UntilLogic = (_logic.SelectedItem as ComboBoxItem)?.Tag as string ?? "And";
+                int u = Math.Clamp(_intervalUnit.SelectedIndex, 0, 3);
+                r.RepeatDelayMs = (int)Math.Round(Math.Max(0, ParseDouble(_intervalVal.Text, 1)) * LoopUnitFactor(u));
+                r.RepeatDelayUnit = u;
+                r.UntilMaxCount = Math.Max(0, ParseInt(_maxCount.Text, 0));
+                int tu = Math.Clamp(_timeoutUnit.SelectedIndex, 0, 3);
+                r.UntilTimeoutMs = (int)Math.Round(Math.Max(0, ParseDouble(_timeoutVal.Text, 0)) * LoopUnitFactor(tu));
+                r.UntilTimeoutUnit = tu;
+                r.RepeatCount = 1;   // 直到模式下固定趟数不参与，回写默认防旧残值
+            }
+            else
+            {
+                r.RepeatUntil = false;
+                r.UntilConditions = new();
+                _fixed.Apply(r);
+            }
         }
     }
 

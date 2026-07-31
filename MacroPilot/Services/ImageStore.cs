@@ -71,22 +71,37 @@ public static class ImageStore
     private static void ExternalizeCond(IRunCondition c)
     {
         RunCondition.Normalize(c);
-        foreach (var it in c.RunConditions)
+        ExternalizeItems(c.RunConditions);
+    }
+    private static void InlineCond(IRunCondition c)
+    {
+        RunCondition.Normalize(c);
+        InlineItems(c.RunConditions);
+    }
+    private static void CollectCond(IRunCondition c, HashSet<string> into)
+    {
+        RunCondition.Normalize(c);
+        CollectItems(c.RunConditions, into);
+    }
+
+    // 条件列表的逐条处理：运行条件与「重复直到条件满足」的停止条件（MacroStep.UntilConditions）共用。
+    // 新增放图片的条件列表字段时必须同时挂进这三处，否则模板会被 Sweep 当孤儿删掉、导出也不自包含。
+    private static void ExternalizeItems(List<ConditionItem> items)
+    {
+        foreach (var it in items)
             if (!string.IsNullOrEmpty(it.Image) && !IsRef(it.Image))
             {
                 try { it.Image = Ref(Convert.FromBase64String(it.Image)); } catch { }
             }
     }
-    private static void InlineCond(IRunCondition c)
+    private static void InlineItems(List<ConditionItem> items)
     {
-        RunCondition.Normalize(c);
-        foreach (var it in c.RunConditions)
+        foreach (var it in items)
             if (!string.IsNullOrEmpty(it.Image)) it.Image = ToBase64(it.Image);
     }
-    private static void CollectCond(IRunCondition c, HashSet<string> into)
+    private static void CollectItems(List<ConditionItem> items, HashSet<string> into)
     {
-        RunCondition.Normalize(c);
-        foreach (var it in c.RunConditions)
+        foreach (var it in items)
             if (!string.IsNullOrEmpty(it.Image) && IsRef(it.Image)) into.Add(it.Image[Prefix.Length..]);
     }
 
@@ -95,17 +110,20 @@ public static class ImageStore
     private static void ExternalizeStep(MacroStep s)
     {
         ExternalizeCond(s);
+        ExternalizeItems(s.UntilConditions);
         var img = s.ClickImage;
         if (!string.IsNullOrEmpty(img) && !IsRef(img)) { try { s.ClickImage = Ref(Convert.FromBase64String(img)); } catch { } }
     }
     private static void InlineStep(MacroStep s)
     {
         InlineCond(s);
+        InlineItems(s.UntilConditions);
         if (!string.IsNullOrEmpty(s.ClickImage)) s.ClickImage = ToBase64(s.ClickImage);
     }
     private static void CollectStep(MacroStep s, HashSet<string> into)
     {
         CollectCond(s, into);
+        CollectItems(s.UntilConditions, into);
         var img = s.ClickImage;
         if (!string.IsNullOrEmpty(img) && IsRef(img)) into.Add(img[Prefix.Length..]);
     }
