@@ -22,6 +22,16 @@ public class RunConditionTests
         var s = Key("a"); s.CondAlways();
         var r = Run(Plan(s));
         Assert.Equal(new[] { "a" }, r.Calls);
+        Assert.True(r.LogHas("条件满足"));   // 判断【通过】也要留痕（含实际观测），不再静默
+    }
+
+    [Fact]
+    public void 方案级条件满足时也记录判定日志()
+    {
+        var p = Plan(Key("a")); p.CondAlways();
+        var r = Run(p);
+        Assert.Equal(new[] { "a" }, r.Calls);
+        Assert.True(r.LogHas("方案运行条件满足"));
     }
 
     [Fact]

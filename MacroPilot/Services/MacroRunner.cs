@@ -94,7 +94,8 @@ public sealed class MacroRunner
                         if (planWaitMs > 0 && ct.WaitHandle.WaitOne(planWaitMs)) break;
                         continue;
                     }
-                    if (waitingWindow) { waitingWindow = false; planWaited = 0; planWaitClock.Reset(); Log?.Invoke("Info", "▶ 运行条件已满足，开始执行。"); }
+                    if (waitingWindow) { waitingWindow = false; planWaited = 0; planWaitClock.Reset(); Log?.Invoke("Info", $"▶ 运行条件已满足（{planCond}），开始执行。"); }
+                    else if (RunCondition.Has(plan)) Log?.Invoke("Info", $"方案运行条件满足（{planCond}）。");
                     _lap = laps + 1;
                     PlanLoopChanged?.Invoke($"第 {_lap}{LoopTot(_planLoops)} 轮");
                     Log?.Invoke("Info", $"— 第 {_lap}{LoopTot(_planLoops)} 轮 —");
@@ -563,6 +564,8 @@ public sealed class MacroRunner
         bool hasCond = RunCondition.Has(step);
         if (hasCond) RunHook(step.PreCondAction, "条件判断前", ct);
         bool ok = Evaluate(step, out conditionText, ct);
+        // 判断【通过】也留痕（带实际匹配度/耗时）——此前只有跳过才记，用户无法确认"到底判没判"。
+        if (hasCond && ok) Log?.Invoke("Info", $"条件满足（{conditionText}）。");
         // 重复检查：不满足时按间隔重判，直到满足 / 到次数上限 / 到时长上限（Wait 内已处理暂停/停止）。
         // 间隔 0 = 立刻重判（不等待）；次数与时长两个上限【同时生效】，先到者结束。
         if (hasCond && !ok && step.RunConditionRetry)
