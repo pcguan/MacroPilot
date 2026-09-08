@@ -973,9 +973,18 @@ public sealed class MacroRunner
     }
 
     // 点击图片：定位 → 移到中心 → 点击。移动图片：只定位 + 移动，不点击（两者共用 LocateImage）。
+    // 点击次数>1 时【只有第一圈定位】（用户定夺）：后续各圈直接点首圈坐标，不再重新确认位置。
+    // 每一【趟】（重复次数/直到条件满足）都是新的一轮本体循环，_stepLoop 回到 1 → 自然重新定位。
+    private (int cx, int cy) _imageClickPt;
     private void ClickImage(MacroStep step, CancellationToken ct)
     {
-        var (cx, cy) = LocateImage(step, "点击图片", ct);
+        if (_stepLoop <= 1)
+        {
+            _imageClickPt = LocateImage(step, "点击图片", ct);
+            if (step.LoopCount != 1)
+                Log?.Invoke("Info", $"点击次数 {(step.LoopCount == 0 ? "无限" : step.LoopCount.ToString())}：后续点击沿用该坐标，不再重新定位。");
+        }
+        var (cx, cy) = _imageClickPt;
         ct.ThrowIfCancellationRequested();
         if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
         ct.ThrowIfCancellationRequested();
