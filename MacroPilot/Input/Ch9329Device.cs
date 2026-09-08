@@ -179,7 +179,7 @@ public sealed class Ch9329Device : IInputBackend
         primary ??= (mons.Count > 0 ? mons[0] : new ScreenInfo.Monitor("", 0, 0, 1920, 1080, true));
 
         // 目标在主屏 → 0x04 一发精确到位。
-        if (primary.Contains(vx, vy)) { SendAbs04(primary, vx, vy, "主屏"); return; }
+        if (primary.Contains(vx, vy)) { SendAbs04(primary, vx, vy, "主屏"); EnsureArrived(vx, vy); return; }
 
         target ??= NearestMonitor(vx, vy, mons, primary);
         var (cx, cy) = ScreenInfo.CursorPos();
@@ -193,6 +193,7 @@ public sealed class Ch9329Device : IInputBackend
             sb?.Append($"  强制1:1: 加速已关={a0} 原指针速度={_savedSpeed}(移动期临时设为10)\n");
             try { RelativeConverge(vx, vy, sb, "定位"); } finally { RestoreMouseAccel(); }
             FlushMove(sb, vx, vy);
+            EnsureArrived(vx, vy);
             return;
         }
 
@@ -207,6 +208,7 @@ public sealed class Ch9329Device : IInputBackend
             sb?.Append($"  强制1:1: 加速已关={a1}\n");
             try { RelativeConverge(vx, vy, sb, "定位"); } finally { RestoreMouseAccel(); }
             FlushMove(sb, vx, vy);
+            EnsureArrived(vx, vy);
             return;
         }
 
@@ -231,6 +233,7 @@ public sealed class Ch9329Device : IInputBackend
         }
         finally { RestoreMouseAccel(); }
         FlushMove(sb, vx, vy);
+        EnsureArrived(vx, vy);
     }
 
     // 用 0x04 绝对定位把光标送到主屏上的 (px,py)（须在主屏范围内）。tag 仅用于日志。
@@ -256,11 +259,17 @@ public sealed class Ch9329Device : IInputBackend
     {
         const int MaxIter = 200, FrameWaitMs = 150;
         int stuck = 0, prevDx = 0, prevDy = 0, dampX = 1, dampY = 1;
+        int best = int.MaxValue, noGain = 0;   // 发散检测：距离长期不缩小＝有外力在拽指针（如游戏鼠标捕获）
         for (int i = 0; i < MaxIter; i++)
         {
             var (cx, cy) = ScreenInfo.CursorPos();
             int dx = tx - cx, dy = ty - cy;
             if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1) { _lastFrames = i; sb?.Append($"  [{tag}] 到位@帧{i} ({cx},{cy})\n"); return true; }
+            // 发散快速失败：正常收敛（含阻尼振荡）几帧内距离必创新低；连续 12 帧毫无进展只能是
+            // 前台应用在不停重置/圈禁指针（全屏游戏的鼠标捕获），再跑下去就是肉眼可见的"乱转圈"。
+            int dist = Math.Max(Math.Abs(dx), Math.Abs(dy));
+            if (dist < best) { best = dist; noGain = 0; }
+            else if (++noGain >= 12) { _lastFrames = i; sb?.Append($"  [{tag}] 发散(连续 12 帧未接近目标，指针疑似被前台应用干预)@帧{i}\n"); return false; }
             // 冲过头（残差符号翻转）→ 该轴发送量减半、自带阻尼：即便系统加速没关成功(增益>1)也能收敛，不会在目标两侧永久振荡到 200 帧。
             if (prevDx != 0 && Math.Sign(dx) != Math.Sign(prevDx)) dampX = Math.Min(dampX * 2, 64); else if (prevDx != 0) dampX = Math.Max(1, dampX / 2);
             if (prevDy != 0 && Math.Sign(dy) != Math.Sign(prevDy)) dampY = Math.Min(dampY * 2, 64); else if (prevDy != 0) dampY = Math.Max(1, dampY / 2);
@@ -390,6 +399,16 @@ public sealed class Ch9329Device : IInputBackend
         var parts = new List<string>();
         foreach (var m in path) parts.Add(m.Primary ? $"主屏{m.Number}" : $"屏{m.Number}");
         return string.Join("→", parts);
+    }
+
+    // 移动收尾校验：光标没落到目标附近就抛错——静默返回会让紧随其后的点击点在错误位置上，
+    // 宁可本步「执行失败」（走失败监听 / 失败暂停）。典型诱因：前台全屏游戏捕获并不断重置指针。
+    private static void EnsureArrived(int vx, int vy)
+    {
+        var (fx, fy) = ScreenInfo.CursorPos();
+        if (Math.Abs(vx - fx) <= 6 && Math.Abs(vy - fy) <= 6) return;
+        throw new InvalidOperationException(
+            $"鼠标未能移动到目标位置（目标 ({vx},{vy})，实际 ({fx},{fy})）。前台应用可能锁定或不断重置指针（如游戏的鼠标捕获），已中止本动作；可先激活目标所在屏幕的窗口再执行本动作。");
     }
 
     private static void FlushMove(System.Text.StringBuilder? sb, int vx, int vy)
