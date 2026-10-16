@@ -16,7 +16,7 @@
 
 ## 1. 本地修改源码
 
-改完代码后**版本号 +1**（开发阶段用 `0.0.N`），两处必须同步：
+改完代码后**在当前版本基础上递增版本号**（通常递增补丁号，例如 `0.6.21` → `0.6.22`；不要重置回 `0.0.N`），两处必须同步：
 
 - `MacroPilot/MacroPilot.csproj` 的 `<Version>`
 - `MacroPilotInstaller_Flutter_WPF/lib/app_meta.dart` 的 `appVersion`
@@ -25,17 +25,13 @@
 
 ## 2. 推送到 corp-win 跑测试 + 编译构建
 
-直接 scp 源码上去（**不要**绕 GitHub clone——源码本体不到 1 MB，直推更快）：
+统一用 `tools/sync_corpwin.sh` 同步源码。脚本按自身位置确定源码根目录，先本地暂存并检查关键文件，再清理和上传远端；构建产物、Git 元数据及本地会话资料（`.codex-memory` / `.claude` / `.codex` / `AGENTS.md` 等）不会上传。不要临时另写 `tar` / `scp` 流程：
 
 ```bash
 cd win/ch9329/wpf
-D=/tmp/.../src && rm -rf $D && mkdir -p $D
-tar -cf - --exclude=.git --exclude=bin --exclude=obj --exclude=build \
-          --exclude=.dart_tool --exclude=windows --exclude=stage_payload \
-          --exclude=archive.7z --exclude=payload . | tar -xf - -C $D
-scp -rq $D/. corp-win:'C:/Users/pengcheng.guan/MacroPilot_src/'
+bash tools/sync_corpwin.sh
 
-# 先跑单元测试：业务逻辑（运行条件/监听挂点/循环跳转/克隆完整性）全在这里把关，失败就别往下走
+# 先跑单元测试，失败就别往下走
 ssh corp-win 'cd /d %USERPROFILE%\MacroPilot_src\MacroPilot.Tests && dotnet test -v q --nologo'
 
 ssh corp-win 'cd /d %USERPROFILE%\MacroPilot_src\MacroPilotInstaller_Flutter_WPF && echo. | build.bat'
@@ -45,8 +41,8 @@ ssh corp-win 'cd /d %USERPROFILE%\MacroPilot_src\MacroPilotInstaller_Flutter_WPF
 
 **测试或构建失败就回第 1 步修，别继续往下走。**
 
-> 测试工程见 `MacroPilot.Tests/`（xUnit）：用 `FakeBackend` 顶掉真实键鼠输出，只断言"方案跑出来的动作序列"，
-> 不依赖硬件、也不会真的动鼠标。**改了模型字段务必跑一遍**——`ModelIntegrityTests` 会用反射查
+> 测试工程见 `MacroPilot.Tests/`（xUnit）：`FakeBackend` 验证动作序列、条件与表达式、监听、循环跳转、停止暂停、失败暂停和「重复直到条件满足」；另有合成位图搜图、录制编译、标注几何、模型完整性、方案保存/恢复及更新哈希/换源测试。
+> 单测不产生真实键鼠输入，也不替代 Win32/串口、桌面抓屏、UI 和更新安装的实际环境验证。**改了模型字段务必跑一遍**——`ModelIntegrityTests` 会用反射查
 > `Clone` / `RunCondition.Copy` 有没有漏拷（历史上因此出过两次实际影响运行的 bug）。
 > 测试项目不进安装包（`build.bat` 只 publish `MacroPilot.csproj`，已验证 payload 里没有 Tests 文件）。
  构建成功后核对产物版本号确实是新版：
@@ -77,10 +73,16 @@ ssh corp-win 'rmdir /s /q %USERPROFILE%\MacroPilot_src & del /q %USERPROFILE%\De
 ## 4. 提交并 push 到 GitHub
 
 ```bash
-git add -A && git commit -m "..." && git push origin HEAD
+git status --short
+git -c core.whitespace=cr-at-eol diff --check
+# 仅列本次修改的文件；下面是文档修订的示例，按实际改动调整路径
+git add -- RELEASE.md README.md
+git diff --cached
+git commit
+git push origin HEAD
 ```
 
-push 走 SSH（`~/.ssh/id_ed25519` 已认证为 GitHub 用户 `pcguan`），不需要 token。commit message 结尾带 `Co-Authored-By:` 行。
+按文件选择提交，检查暂存 diff 后再提交，不使用 `git add -A` 把无关改动或本地资料一并带入。push 走已配置的 GitHub SSH 身份并遵循公网代理约定。commit message 结尾保留 `Co-Authored-By:`，使用本次实际协作者的姓名和邮箱；由 Codex 完成的改动不要沿用历史 Claude 署名。格式检查允许 Windows 批处理所需的 CRLF 行尾。
 
 ## 5. 维护两个源的发布文件
 
@@ -95,7 +97,7 @@ python3 tools/make_release_meta.py ../release
 **GitHub 源**——建 release 再传资产，**三个都要传**（少了 `version.json` 回退源就拿不到清单）：
 
 ```bash
-TK=$(cat /root/workspace/claude_code/.claude/macropilot_gh_token)
+TK=$(cat /root/workspace/codex/.claude/macropilot_gh_token)
 # POST /repos/pcguan/MacroPilot/releases  {tag_name:vX, target_commitish:main, body:<changelog 条目>}
 # POST https://uploads.github.com/repos/pcguan/MacroPilot/releases/<id>/assets?name=<文件名>
 ```
@@ -118,10 +120,10 @@ ssh nas 'chmod 644 /vol3/1000/HDD2/tool/docker/nginx/html/macropilot/*'
 
 ```bash
 # 自建源
-curl -s https://nas.pcguan.cn/macropilot/version.json | head -3
+curl -fsS -x http://192.168.33.9:7890 https://nas.pcguan.cn/macropilot/version.json | head -3
 
 # GitHub 源（记得带代理）
-curl -sL -x http://192.168.33.9:7890 https://github.com/pcguan/MacroPilot/releases/latest/download/version.json | head -3
+curl -fsSL -x http://192.168.33.9:7890 https://github.com/pcguan/MacroPilot/releases/latest/download/version.json | head -3
 ```
 
 外加一处**零成本**检查：读一下 release 的资产列表，确认三个资产都在（就是上传时已经在调的那个 API，不产生下载）。
@@ -140,9 +142,13 @@ curl -s -x http://192.168.33.9:7890 -H "Authorization: token $TK" \
 
 ## 客户端拿到更新的路径
 
-本体启动 1.5 秒后查一次、之后每 30 秒轮询，按**有序多源回退**读同格式的 `version.json`（普通静态文件，不走 GitHub API，因此不受未鉴权限流影响）：
+`AutoUpdate` 控制**启动时自动安装更新**：开启时，启动检查发现新版就进入下载更新；关闭时跳过这次启动检查。两种模式都保留每 30 秒后台检查，发现新版在底部状态栏提醒，由用户选择更新或关闭提醒。手动「检查更新」也可随时使用。
+
+检查按**有序多源回退**读同格式的 `version.json`（普通静态文件，不走 GitHub API，因此不受未鉴权限流影响）：
 
 1. `https://nas.pcguan.cn/macropilot/` —— 自建源，国内直连快，主力
 2. `https://github.com/pcguan/MacroPilot/releases/latest/download/` —— 源头 / 海外回退
 
-单源 10 秒短超时，谁先应答用谁；全失败沿用上次缓存、不打扰。版本只比 `Major.Minor.Build` 且**严格大于**才算新版。发现新版在底部状态栏提醒（可立即更新 / 关闭提醒）。更新走 2.8 MB 的本体 zip：下载 → 校验 SHA-256（不匹配就换源重下）→ 改名备份旧目录 → 解压覆盖 → 从备份拷回 `unins\` → 失败回滚 → 重启本体。
+按上述顺序逐源尝试，单源超时 10 秒，采用第一个有效清单；全失败沿用上次缓存。清单中每个已声明资产必须提供 64 位十六进制 SHA-256，缺失或格式错误会拒绝该清单并尝试下一源。版本只比 `Major.Minor.Build` 且**严格大于**才算新版。更新优先用本体 zip：下载 → 校验 SHA-256（不匹配就换源重下）→ 改名备份旧目录 → 解压覆盖 → 从备份拷回 `unins\` → 失败回滚 → 重启本体。
+
+下载与校验由本体进度窗显示；本体退出后，PowerShell 助手通过可见进度小窗显示覆盖、回滚和重启过程（隐藏的是控制台）。运行中的方案或未保存修改会先走处理流程，不应把更新描述为始终无交互。

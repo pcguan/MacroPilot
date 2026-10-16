@@ -116,7 +116,7 @@ public partial class MainWindow
             FieldLabel("每轮之间的间隔"), delayRow));
 
         // ---- 失败处理 ----
-        var pauseChk = new CheckBox { Content = "动作执行失败时立即暂停（F9 继续）", IsChecked = plan.PauseOnFail };
+        var pauseChk = new CheckBox { Content = "动作执行失败时立即暂停（F10 继续）", IsChecked = plan.PauseOnFail };
         sp.Children.Add(GroupCard("失败处理",
             pauseChk,
             new TextBlock

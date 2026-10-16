@@ -1,7 +1,7 @@
 @echo off
 setlocal
 REM Build MacroPilotInstaller_Flutter.exe (Flutter UI + 7z SFX single-exe).
-REM Replaces the Inno approach; old ..\MacroPilotInstaller\ is kept intact.
+REM Packages the WPF app with the Flutter installer UI.
 REM Needs: Flutter SDK + VS C++ Build Tools + dotnet8 + 7-Zip.
 REM Output -> Desktop\MacroPilotInstaller_Flutter.exe (single exe, no extra folders).
 
@@ -48,8 +48,8 @@ popd
 if errorlevel 1 ( echo [FAILED] pack runner & exit /b 1 )
 
 echo == [5/6] build SFX single exe straight to Desktop ==
-REM Pre-iconized SFX stub comes from 7zSD_icon.zip (icon baked on a clean machine;
-REM rcedit is blocked by this machine's EDR). Extracting here runs interactively so it survives.
+REM Extract the pre-iconized SFX stub from the tracked build input.
+REM This build also works through a non-interactive SSH session.
 "%SEVENZIP%" e "%HERE%sfx\7zSD_icon.zip" -o"%HERE%sfx" -y >nul
 if not exist "%HERE%sfx\7zSD_icon.sfx" ( echo [FAILED] extract icon stub & exit /b 1 )
 for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "DESK=%%D"

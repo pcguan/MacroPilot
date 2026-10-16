@@ -15,7 +15,7 @@ public sealed class UpdateAsset
 {
     public required string Name { get; init; }
     public long Size { get; init; }
-    public string? Sha256 { get; init; }   // 可为空（老清单）；有则下载后强校验
+    public string? Sha256 { get; init; }   // 清单必须提供 64 位十六进制 SHA-256；解析和下载入口都会校验
 }
 
 public sealed class UpdateInfo
@@ -69,23 +69,35 @@ public static class UpdateService
     /// <summary>依次向各源要 version.json，第一个成功的即采用。全失败则返回上次缓存（首次为 null）。</summary>
     public static async Task<UpdateInfo?> CheckLatestAsync(CancellationToken ct = default)
     {
+        var info = await CheckSourcesAsync(async (url, token) =>
+        {
+            using var c = NewClient(TimeSpan.FromSeconds(10));
+            return await c.GetStringAsync(url, token);
+        }, ct);
+        if (info != null) _cached = info;
+        return _cached;
+    }
+
+    // 注入读取动作便于离线验证坏清单/网络失败的换源；缓存只在公开入口维护。
+    internal static async Task<UpdateInfo?> CheckSourcesAsync(
+        Func<string, CancellationToken, Task<string>> readManifest, CancellationToken ct = default)
+    {
         for (int i = 0; i < Sources.Length; i++)
         {
             try
             {
-                using var c = NewClient(TimeSpan.FromSeconds(10));   // 单源短超时，坏源快速跳过
-                var json = await c.GetStringAsync(Sources[i] + ManifestName, ct);
-                var info = Parse(json, i);
-                if (info != null) { _cached = info; return info; }
+                var json = await readManifest(Sources[i] + ManifestName, ct);
+                var info = ParseManifest(json, i);
+                if (info != null) return info;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch { /* 该源不通 → 试下一个 */ }
         }
-        return _cached;
+        return null;
     }
 
     // 解析清单；bases 以命中的源打头，其余按原顺序跟上（下载时可继续回退）。
-    private static UpdateInfo? Parse(string json, int hitIndex)
+    internal static UpdateInfo? ParseManifest(string json, int hitIndex)
     {
         try
         {
@@ -97,14 +109,18 @@ public static class UpdateService
 
             UpdateAsset? Asset(string key)
             {
-                if (!r.TryGetProperty(key, out var e) || e.ValueKind != JsonValueKind.Object) return null;
+                if (!r.TryGetProperty(key, out var e)) return null;
+                if (e.ValueKind != JsonValueKind.Object) throw new JsonException("更新文件信息格式错误");
                 var n = e.TryGetProperty("name", out var nn) ? nn.GetString() : null;
-                if (string.IsNullOrWhiteSpace(n)) return null;
+                var hash = e.TryGetProperty("sha256", out var h) && h.ValueKind == JsonValueKind.String
+                    ? h.GetString() : null;
+                if (string.IsNullOrWhiteSpace(n) || !HasValidSha256(hash))
+                    throw new JsonException("更新文件缺少名称或有效的 SHA-256");
                 return new UpdateAsset
                 {
                     Name = n!,
                     Size = e.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : 0,
-                    Sha256 = e.TryGetProperty("sha256", out var h) ? h.GetString() : null,
+                    Sha256 = hash,
                 };
             }
 
@@ -142,21 +158,27 @@ public static class UpdateService
     /// 下载更新包（优先本体 zip，无则安装器 exe）到 %TEMP%\MacroPilotUpdate。
     /// 逐源尝试：下完即校验 SHA-256，不匹配/下载失败就删档换下一个源；全失败抛异常。
     /// </summary>
-    public static async Task<string> DownloadAsync(UpdateInfo info, IProgress<double>? progress, CancellationToken ct = default)
+    public static Task<string> DownloadAsync(UpdateInfo info, IProgress<double>? progress, CancellationToken ct = default)
+        => DownloadAsync(info, progress, DownloadOne, Path.Combine(Path.GetTempPath(), "MacroPilotUpdate"), ct);
+
+    internal static async Task<string> DownloadAsync(UpdateInfo info, IProgress<double>? progress,
+        Func<string, string, long, IProgress<double>?, CancellationToken, Task> download,
+        string directory, CancellationToken ct = default)
     {
         bool useZip = info.Zip != null;
-        var asset = useZip ? info.Zip! : info.Exe!;
-        var dir = Path.Combine(Path.GetTempPath(), "MacroPilotUpdate");
-        Directory.CreateDirectory(dir);
-        var file = Path.Combine(dir, $"MacroPilot_{Safe(info.VersionText)}.{(useZip ? "zip" : "exe")}");
+        var asset = useZip ? info.Zip : info.Exe;
+        if (asset == null || !HasValidSha256(asset.Sha256))
+            throw new InvalidOperationException("更新清单缺少有效的 SHA-256，已拒绝下载");
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, $"MacroPilot_{Safe(info.VersionText)}.{(useZip ? "zip" : "exe")}");
 
         Exception? last = null;
         foreach (var b in info.Bases)
         {
             try
             {
-                await DownloadOne(b + asset.Name, file, asset.Size, progress, ct);
-                if (Verify(file, asset.Sha256)) return file;
+                await download(b + asset.Name, file, asset.Size, progress, ct);
+                if (VerifyDownload(file, asset.Sha256)) return file;
                 last = new InvalidOperationException("下载内容校验失败（SHA-256 不匹配），已换源重试");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -183,15 +205,24 @@ public static class UpdateService
         }
     }
 
-    /// <summary>校验 SHA-256；清单没给哈希则跳过（视为通过）。</summary>
-    private static bool Verify(string file, string? expect)
+    private static bool HasValidSha256(string? hash)
     {
-        if (string.IsNullOrWhiteSpace(expect)) return true;
+        if (hash == null || hash.Length != 64) return false;
+        foreach (var c in hash)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                return false;
+        return true;
+    }
+
+    /// <summary>SHA-256 是必填校验项；缺失、格式错误或内容不匹配一律拒绝。</summary>
+    internal static bool VerifyDownload(string file, string? expect)
+    {
+        if (!HasValidSha256(expect)) return false;
         try
         {
             using var fs = File.OpenRead(file);
             var hex = Convert.ToHexString(SHA256.HashData(fs));
-            return string.Equals(hex, expect.Trim(), StringComparison.OrdinalIgnoreCase);
+            return string.Equals(hex, expect, StringComparison.OrdinalIgnoreCase);
         }
         catch { return false; }
     }

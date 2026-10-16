@@ -482,7 +482,7 @@ public sealed class MacroRunner
             else if (_pauseOnFail)
             {
                 Pause();   // 先置暂停再记日志：日志回调里就能看到已暂停的状态
-                Log?.Invoke("Warning", "动作执行失败，已按方案设置自动暂停（F9 继续，F11 停止）。");
+                Log?.Invoke("Warning", "动作执行失败，已按方案设置自动暂停（F10 继续，F11 停止）。");
             }
         }
         if (ok)

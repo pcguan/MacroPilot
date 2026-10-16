@@ -43,12 +43,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private bool _planRightClickOnItem;
     private bool _stepRightClickOnItem;
     private List<Ch9329PortInfo> _ch9329Ports = new();
-    // 撤销快照：方案级（名称 + 动作列表 + 循环次数 + 间隔），所有方案属性修改都可撤销。
+    // 撤销保存整份持久化快照，新增方案字段不再依赖这里维护第二份字段清单。
     // AddedPlan 非空 → 这是一条“新增方案”的结构撤销项（撤销即移除该方案）；否则是当前方案内的动作编辑快照。
-    // Condition 是方案级运行条件的快照（用一个空壳 MacroPlan 承载，仅取其 IRunCondition 部分）。
-    // 方案设置对话框会一次性改动"循环 + 条件"，两者必须一起进撤销栈，否则撤销只回退一半。
-    private sealed record UndoSnap(string Name, List<MacroStep> Steps, int LoopCount, int LoopDelayMs,
-                                   MacroPlan? AddedPlan = null, MacroPlan? Condition = null);
+    private sealed record UndoSnap(string? Content = null, MacroPlan? AddedPlan = null);
     // 定长撤销栈：满了丢最旧一条（O(1)），不再每次超限 Take(50)+清空+逐条回推。
     private sealed class CappedStack<T>
     {
@@ -58,6 +55,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         public int Count => _l.Count;
         public void Clear() => _l.Clear();
         public void Push(T v) { _l.AddLast(v); if (_l.Count > _cap) _l.RemoveFirst(); }
+        public T Peek() => _l.Last!.Value;
         public T Pop() { var v = _l.Last!.Value; _l.RemoveLast(); return v; }
     }
     private readonly CappedStack<UndoSnap> _undo = new(50);
@@ -607,7 +605,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _revertingSelection = false;
             return;
         }
-        _plan = newPlan;
+        // 放弃未保存方案可能移除原选项并选回相邻项；包括原先点击空白清空选择的情况。
+        newPlan = PlansList.SelectedItem as MacroPlan;
+        DisplayPlan(newPlan);
+    }
+
+    private void DisplayPlan(MacroPlan? plan)
+    {
+        _plan = plan;
+        _undo.Clear(); UndoButton.IsEnabled = false;
         if (_plan == null) { ShowNoPlan(); return; }
         StepsPanel.Visibility = Visibility.Visible; NoPlanPanel.Visibility = Visibility.Collapsed;
         ExportCurrentButton.IsEnabled = true;
@@ -617,8 +623,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         RefreshIndices();
         RefreshSaveState();
         RefreshPlanSummary();
-        _undo.Clear(); UndoButton.IsEnabled = false;
         AddLog("Info", "已切换到：" + _plan.Name);
+    }
+
+    // 程序已处理过保存守卫时切换，避免导入/放弃/结构回滚触发嵌套的 SelectionChanged。
+    private void SelectPlanWithoutPrompt(MacroPlan? plan)
+    {
+        _revertingSelection = true;
+        try { PlansList.SelectedItem = plan; }
+        finally { _revertingSelection = false; }
+        DisplayPlan(plan);
     }
 
     private void ShowNoPlan()
@@ -627,6 +641,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         StepsPanel.Visibility = Visibility.Collapsed; NoPlanPanel.Visibility = Visibility.Visible;
         ExportCurrentButton.IsEnabled = false;
         RefreshPlanSummary();
+        RefreshSaveState();
     }
 
     private void NewPlanIcon_Click(object sender, RoutedEventArgs e)
@@ -642,13 +657,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void AddPlanUnsaved(MacroPlan p, int index)
     {
         if (index < 0 || index > _plans.Count) _plans.Add(p); else _plans.Insert(index, p);
-        PlansList.SelectedItem = p;    // 切换会清空 _undo，故结构撤销项要在其后再入栈
+        SelectPlanWithoutPrompt(p);    // 新建入口已处理保存；结构撤销项在切换后入栈
         p.SavedSnapshot = null;
         RecomputeDirty(p);             // → Dirty=true
         PlansList.Items.Refresh();
         SaveButton.IsEnabled = true;
         // 新增/粘贴方案可撤销：入一条结构撤销项，点“撤销”即移除刚加入的方案。
-        _undo.Push(new UndoSnap("", new List<MacroStep>(), 0, 0, p));
+        _undo.Push(new UndoSnap(AddedPlan: p));
         UndoButton.IsEnabled = true;
     }
     // ---- 双击方案 = 就地改名 ----
@@ -709,12 +724,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         var name = (input ?? "").Trim();
         if (name.Length == 0 || name == plan.Name) return;
+        if (!ReferenceEquals(plan, _plan)) return;   // 保存失败阻止切换后，不编辑另一条列表项
         PushUndo();
+        bool scheduled = PlanSnapshot.IsScheduledTarget(_doc, plan, _plans);
         string old = plan.Name;
         plan.Name = name;
         PlansList.Items.Refresh();
         MarkDirty();
-        if (_doc.ScheduledPlan == old && _doc.ScheduleMode != "") { _doc.ScheduledPlan = name; PersistSettings(); }
+        if (scheduled && PlanSnapshot.FollowScheduledRename(_doc, old, name)) PersistSettings();
         RefreshScheduleMark();
     }
 
@@ -742,11 +759,22 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (!EnsureCurrentPlanClean()) return;
         if (_plan == null) return; // 未保存的新方案选择“放弃”后已被移除
         if (ThemedDialog.Show($"确定删除“{_plan.Name}”吗？", "删除方案", MessageBoxButton.OKCancel, MessageBoxImage.Exclamation) != MessageBoxResult.OK) return;
-        var del = _plan; _plan = null; // 先置空，避免切换选择时对已删方案弹"未保存"
-        _plans.Remove(del);
-        ClearScheduleIfPlan(del.Name);
-        if (_plans.Count > 0) PlansList.SelectedIndex = 0; else ShowNoPlan();
-        Save();   // 删除属结构改动，立即提交（此前已确保最多一个未保存方案）
+        var del = _plan;
+        int index = _plans.IndexOf(del);
+        _revertingSelection = true;
+        try { _plans.Remove(del); }
+        finally { _revertingSelection = false; }
+        if (!Save())
+        {
+            _plans.Insert(index, del);   // 结构变更未写入，恢复原列表与当前选择
+            _revertingSelection = true;
+            try { PlansList.SelectedItem = del; }
+            finally { _revertingSelection = false; }
+            RefreshSaveState();
+            return;
+        }
+        if (!_plans.Any(p => p.Name == del.Name)) ClearScheduleIfPlan(del.Name);   // 同名目标仍存在时保留定时
+        SelectPlanWithoutPrompt(_plans.FirstOrDefault());
     }
     // 方案设置：循环次数 / 间隔 / 运行条件三合一（运行条件与动作级共用同一套控件与逻辑）。
     private void PlanSettings_Click(object sender, RoutedEventArgs e)
@@ -795,37 +823,43 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void PushUndo()
     {
         if (_plan == null) return;
-        var cond = new MacroPlan(); RunCondition.Copy(_plan, cond);
-        _undo.Push(new UndoSnap(_plan.Name, _plan.Steps.Select(s => s.Clone()).ToList(), _plan.LoopCount, _plan.LoopDelayMs, null, cond));
+        _undo.Push(new UndoSnap(PlanSnapshot.Capture(_plan)));
         UndoButton.IsEnabled = _undo.Count > 0;
     }
     private void Undo_Click(object sender, RoutedEventArgs e)
     {
         if (_undo.Count == 0) return;
-        var snap = _undo.Pop();
+        var snap = _undo.Peek();
         if (snap.AddedPlan is { } added)
         {
             // 撤销“新增/粘贴方案”：移除该方案并选中相邻方案。置空 _plan 避免切换时对将删方案弹未保存。
             int i = _plans.IndexOf(added);
             if (i >= 0)
             {
-                _plan = null;
-                _plans.Remove(added);
-                if (_plans.Count > 0) PlansList.SelectedIndex = Math.Min(i, _plans.Count - 1); else ShowNoPlan();
+                if (!DiscardPlanChanges(added)) return;
             }
+            else _undo.Pop();
             UndoButton.IsEnabled = _undo.Count > 0;   // 切换已清空 _undo，这里据实回填
+            RefreshSaveState();
             AddLog("Info", "已撤销：新增方案。");
             return;
         }
         if (_plan == null) return;
-        _plan.Name = snap.Name;
-        _plan.Steps.Clear();
-        foreach (var s in snap.Steps) _plan.Steps.Add(s);
-        _plan.LoopCount = snap.LoopCount;
-        _plan.LoopDelayMs = snap.LoopDelayMs;
-        if (snap.Condition != null) RunCondition.Copy(snap.Condition, _plan);
+        try
+        {
+            if (PlanSnapshot.Restore(_plan, snap.Content!, _doc, _plans)) PersistSettings();
+        }
+        catch (Exception ex)
+        {
+            ThemedDialog.Show("撤销失败：" + ex.Message, "撤销失败", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+            return;   // 恢复失败保留原快照，不能把撤销历史弹掉
+        }
+        _undo.Pop();
         RefreshPlanSummary();
-        RefreshIndices();   // 跳转按 Id 绑定，快照克隆保留了原 Id，恢复后自动指回原目标 UndoButton.IsEnabled = _undo.Count > 0; MarkDirty();
+        RefreshIndices();   // 快照保留 Id，恢复后跳转自动指回原目标
+        RefreshScheduleMark();
+        UndoButton.IsEnabled = _undo.Count > 0;
+        MarkDirty();
         AddLog("Info", "已撤销上一步修改。");
     }
 
@@ -1067,17 +1101,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private MacroPlan BuildRunPlan(MacroPlan src)
     {
         _runOrigin.Clear(); _runSourcePlan = src;
-        var steps = new System.Collections.ObjectModel.ObservableCollection<MacroStep>();
-        foreach (var s in src.Steps) { var c = s.Clone(); _runOrigin[c] = s; steps.Add(c); }
-        var run = new MacroPlan
-        {
-            Name = src.Name, LoopCount = src.LoopCount, LoopDelayMs = src.LoopDelayMs,
-            PauseOnFail = src.PauseOnFail,
-            Steps = steps,
-        };
-        // 运行条件整体拷贝：原先手写字段列表，漏了图片条件的图片/屏幕/矩形/阈值（方案级「图片出现」
-        // 因此在运行副本里退化成无条件），也漏了后加的重复检查参数。改走 RunCondition.Copy 统一维护。
-        RunCondition.Copy(src, run);
+        var run = src.Clone();
+        for (int i = 0; i < src.Steps.Count; i++) _runOrigin[run.Steps[i]] = src.Steps[i];
         return run;
     }
 
@@ -1489,7 +1514,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // ================= 保存 / 导入导出 =================
     // MaxDepth 256：嵌套组合 + 递归监听会超过默认 64 层，否则判脏/克隆序列化会抛异常。
     private static readonly JsonSerializerOptions _planJsonOpts = new() { WriteIndented = false, MaxDepth = 256 };
-    private static string SerializePlan(MacroPlan p) => JsonSerializer.Serialize(p, _planJsonOpts);
+    private static string SerializePlan(MacroPlan p) => PlanSnapshot.Capture(p);
     private static string SerializeStep(MacroStep s) => JsonSerializer.Serialize(s, _planJsonOpts);
 
     // 判断两个动作"内容是否相同"，用于"编辑后未改动就不标脏"。
@@ -1537,51 +1562,63 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
 
     // 仅持久化"设置"（主题/串口/桥片/数据目录等），不提交未保存的方案编辑：
-    // 写盘时 Plans 用上次保存的快照，避免设置变更顺带把未保存的方案偷偷存了。
     // 只写 settings.json（不含方案），改一个下拉框/开关不再把含截图的整份方案重写一遍。
     private void PersistSettings() => Storage.SaveSettings(_doc);
 
-    // 确保"当前方案"无未保存修改：有则弹框保存/放弃/取消。返回 false 表示用户取消（调用方应中止操作）。
+    // 返回 false 表示取消或保存/恢复失败，调用方都必须中止原操作。
     // 任何离开当前方案编辑上下文的操作（切页、切方案、运行、关闭、新建/导入/排序/删除等）都应先调用它。
     private bool EnsureCurrentPlanClean()
     {
-        if (_plan == null) return true;
-        RecomputeDirty(_plan);
-        if (!_plan.Dirty) return true;
-        var r = ThemedDialog.Show("当前方案有未保存的修改，是否保存？", "未保存", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-        if (r == MessageBoxResult.Cancel) return false;
-        if (r == MessageBoxResult.Yes) Save();
-        else DiscardPlanChanges(_plan);
+        // 通常只有当前方案脏；批量导入保持原来的未保存语义，剩余项也必须逐一处理，
+        // 不能因为当前项干净/被放弃就绕过其他导入项直接退出或切换数据目录。
+        var candidates = _plans.OrderBy(p => ReferenceEquals(p, _plan) ? 0 : 1).ToArray();
+        foreach (var plan in candidates)
+        {
+            if (!_plans.Contains(plan)) continue;
+            RecomputeDirty(plan);
+            if (!plan.Dirty) continue;
+            var r = ThemedDialog.Show($"方案「{plan.Name}」有未保存的修改，是否保存？", "未保存", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (r == MessageBoxResult.Yes) return Save();
+            if (r != MessageBoxResult.No || !DiscardPlanChanges(plan)) return false;
+        }
         return true;
     }
 
     // 放弃某方案的未保存修改：从快照还原其内容。
-    private void DiscardPlanChanges(MacroPlan plan)
+    private bool DiscardPlanChanges(MacroPlan plan)
     {
         if (plan.SavedSnapshot == null)
         {
-            _plans.Remove(plan); // 从未保存过的新方案，放弃 = 直接移除
-            if (_plan == plan)
-            {
-                _plan = null;
-                _undo.Clear(); UndoButton.IsEnabled = false;
-                if (_plans.Count > 0) PlansList.SelectedIndex = Math.Min(PlansList.SelectedIndex, _plans.Count - 1);
-                else ShowNoPlan();
-            }
+            int index = _plans.IndexOf(plan);
+            var next = PlansList.SelectedItem as MacroPlan;
+            _revertingSelection = true;
+            try { _plans.Remove(plan); }
+            finally { _revertingSelection = false; }
+            if (!_plans.Any(p => p.Name == plan.Name)) ClearScheduleIfPlan(plan.Name);
+            if (next == null || !_plans.Contains(next))
+                next = _plans.Count == 0 ? null : _plans[Math.Clamp(index, 0, _plans.Count - 1)];
+            SelectPlanWithoutPrompt(next);
             RefreshSaveState();
             PlansList.Items.Refresh();
-            return;
+            return true;
         }
-        plan.Dirty = false;
-        var saved = JsonSerializer.Deserialize<MacroPlan>(plan.SavedSnapshot);
-        if (saved == null) return;
-        plan.Name = saved.Name; plan.LoopCount = saved.LoopCount; plan.LoopDelayMs = saved.LoopDelayMs;
-        plan.Steps.Clear();
-        foreach (var s in saved.Steps) plan.Steps.Add(s);
+        try
+        {
+            if (PlanSnapshot.Restore(plan, plan.SavedSnapshot, _doc, _plans)) PersistSettings();
+        }
+        catch (Exception ex)
+        {
+            ThemedDialog.Show("放弃修改失败：" + ex.Message, "恢复失败", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+            return false;   // 无法读取快照时保留脏标记与撤销历史
+        }
+        RecomputeDirty(plan);
         _undo.Clear(); UndoButton.IsEnabled = false;
         RefreshIndices();   // 同 Undo：跳转按 Id 绑定，反序列化保留了 Id，无需特殊处理
+        RefreshPlanSummary();
+        RefreshScheduleMark();
         RefreshSaveState();
         PlansList.Items.Refresh();
+        return true;
     }
 
     private void MarkDirty()
@@ -1593,23 +1630,30 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
     private void Save_Click(object sender, RoutedEventArgs e) => Save();
     // 方案保存：提交内存中的全部方案到磁盘，更新快照、清脏。
-    private void Save()
+    private bool Save()
     {
-        _doc.Plans = _plans.ToList();
-        foreach (var p in _plans) ImageStore.Externalize(p);   // 内联 base64 图片就地外置成 file:hash（含方案级条件），plans.json 只留引用
-        if (!Storage.Save(_doc))
+        var plans = _plans.ToList();
+        bool WritePrepared(IReadOnlyList<MacroPlan> prepared)
         {
-            // 写盘失败不再静默假装"已保存"：保留脏标记、提示用户，避免误以为存上了。
-            AddLog("Error", "保存失败：无法写入数据文件（磁盘只读 / 目录被占用 / 权限不足？）。");
-            ThemedDialog.Show("保存失败：无法写入数据文件。\n请检查数据目录是否可写、磁盘是否已满。", "保存失败",
-                MessageBoxButton.OK, MessageBoxImage.Exclamation);
-            return;
+            var previous = _doc.Plans;
+            try { _doc.Plans = prepared.ToList(); return Storage.Save(_doc); }
+            finally { _doc.Plans = previous; }
         }
-        SnapshotAllPlans(); // 更新全部方案快照并清脏
+        if (!PlanPersistence.TrySave(plans, ImageStore.Externalize, WritePrepared, out var error))
+        {
+            AddLog("Error", "保存失败：" + error);
+            ThemedDialog.Show("保存失败：" + error, "保存失败",
+                MessageBoxButton.OK, MessageBoxImage.Exclamation);
+            return false;
+        }
+        _doc.Plans = plans;
+        _savedPlanIds = plans;
+        PlansList.Items.Refresh();
         SaveButton.IsEnabled = false;
         _undo.Clear(); UndoButton.IsEnabled = false; // 保存后清空撤销历史，回撤按钮置灰
         SweepOrphanImages();   // 清掉不再被任何方案引用的外置截图（孤儿图片）
         ShowToast("已保存");
+        return true;
     }
     // 清理孤儿图片：保存是唯一让"引用集合"落定的时刻，在这里做正合适。
     // 引用集合 = 全部方案（含方案级条件）+ 方案/动作剪贴板；撤销栈刚在保存时清空，无需考虑。
@@ -1731,10 +1775,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void AddPlansUnsaved(List<MacroPlan> list)
     {
         foreach (var p in list) { _plans.Add(p); p.SavedSnapshot = null; RecomputeDirty(p); }
-        PlansList.SelectedItem = list[^1];   // 单次切换（切走前的旧方案在 Import 入口已确保 clean）
+        SelectPlanWithoutPrompt(list[^1]);   // Import 入口已处理旧编辑，新增项保持未保存
         PlansList.Items.Refresh();
         SaveButton.IsEnabled = true;
-        foreach (var p in list) _undo.Push(new UndoSnap("", new List<MacroStep>(), 0, 0, p));   // 每个可撤销（切换会清 _undo，故放选中之后）
+        foreach (var p in list) _undo.Push(new UndoSnap(AddedPlan: p));
         UndoButton.IsEnabled = true;
     }
 
@@ -2119,8 +2163,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
     private static MacroPlan ClonePlan(MacroPlan src, string name)
     {
-        var p = new MacroPlan { Name = name, LoopCount = src.LoopCount, LoopDelayMs = src.LoopDelayMs };
-        foreach (var s in src.Steps) p.Steps.Add(s.Clone());
+        var p = src.Clone();
+        p.Name = name;
         return p;
     }
 
@@ -2443,7 +2487,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var cur = _plan;
         _plans.Move(from, to);
         PlansList.SelectedItem = cur ?? item;
-        Save();   // 排序属结构改动，立即提交，保证排序后无未保存残留
+        if (!Save())
+        {
+            _plans.Move(to, from);   // 写入失败回滚顺序，避免未保存结构改动被守卫漏掉
+            PlansList.SelectedItem = cur ?? item;
+            RefreshSaveState();
+            return;
+        }
         AddLog("Info", "已调整方案顺序。");
     }
 

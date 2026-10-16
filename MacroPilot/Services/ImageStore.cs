@@ -141,6 +141,41 @@ public static class ImageStore
         Externalize(plan.Steps);
     }
 
+    /// <summary>
+    /// 保存副本成功写盘后，只提交它已准备好的图片引用和旧条件迁移。
+    /// 不再读写图片，也不替换动作/条件对象；保留选择、展开、勾选及运行页到编辑对象的映射。
+    /// prepared 必须是 target 的独立克隆，且仅经过 Externalize 处理。
+    /// </summary>
+    public static void ApplyPreparedReferences(MacroPlan target, MacroPlan prepared)
+    {
+        ApplyPreparedConditions(target, prepared);
+        for (int i = 0; i < target.Steps.Count; i++)
+            ApplyPreparedStep(target.Steps[i], prepared.Steps[i]);
+    }
+
+    private static void ApplyPreparedConditions(IRunCondition target, IRunCondition prepared)
+    {
+        RunCondition.Normalize(target);   // 只在写盘成功后迁移；现有列表里的 ConditionItem 保持身份
+        for (int i = 0; i < target.RunConditions.Count; i++)
+            target.RunConditions[i].Image = prepared.RunConditions[i].Image;
+    }
+
+    private static void ApplyPreparedStep(MacroStep target, MacroStep prepared)
+    {
+        ApplyPreparedConditions(target, prepared);
+        target.ClickImage = prepared.ClickImage;
+        for (int i = 0; i < target.UntilConditions.Count; i++)
+            target.UntilConditions[i].Image = prepared.UntilConditions[i].Image;
+        using var readyHooks = prepared.HookList().GetEnumerator();
+        foreach (var (_, hook) in target.HookList())
+        {
+            readyHooks.MoveNext();
+            ApplyPreparedStep(hook, readyHooks.Current.Hook);
+        }
+        for (int i = 0; i < target.Children.Count; i++)
+            ApplyPreparedStep(target.Children[i], prepared.Children[i]);
+    }
+
     /// <summary>整方案内联（导出前对【克隆】调用，保持导出文件自包含）：方案级图片条件 + 全部动作。</summary>
     public static void Inline(MacroPlan plan)
     {

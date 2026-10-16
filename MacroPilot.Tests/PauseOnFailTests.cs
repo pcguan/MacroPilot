@@ -14,7 +14,7 @@ public class PauseOnFailTests
         var p = Plan(s, Key("next"));   // 默认 PauseOnFail = true
         var r = Run(p, failOnKey: "boom", onLog: (runner, _, msg) =>
         {
-            if (msg.Contains("自动暂停")) runner.Resume();   // 模拟用户按 F9 继续
+            if (msg.Contains("自动暂停")) runner.Resume();   // 模拟用户按 F10 继续
         });
         Assert.True(r.LogHas("自动暂停"));
         Assert.Contains("next", r.Calls);   // 恢复后照常走完

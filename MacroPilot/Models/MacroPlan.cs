@@ -57,6 +57,30 @@ public sealed class MacroPlan : INotifyPropertyChanged, IRunCondition
     // 仅 UI：上次保存时该方案的 JSON 快照，用于按内容比较计算"是否有未保存修改"（撤销回到已保存内容即不再标脏）。
     [JsonIgnore] public string? SavedSnapshot { get; set; }
 
+    /// <summary>复制全部持久化内容，供运行、剪贴板、撤销与放弃修改共用。UI 状态不随副本传播。</summary>
+    public MacroPlan Clone()
+    {
+        var copy = new MacroPlan();
+        copy.CopyFrom(this);
+        return copy;
+    }
+
+    /// <summary>保留方案与 Steps 集合身份，完整恢复内容；子动作和条件均为独立副本。</summary>
+    public void CopyFrom(MacroPlan source)
+    {
+        // 先备好子树，避免 source == this 时清空了待复制的内容。
+        var steps = new System.Collections.Generic.List<MacroStep>();
+        foreach (var step in source.Steps) steps.Add(step.Clone());
+        Name = source.Name;
+        LoopCount = source.LoopCount;
+        LoopDelayMs = source.LoopDelayMs;
+        LoopDelayUnit = source.LoopDelayUnit;
+        PauseOnFail = source.PauseOnFail;
+        if (!ReferenceEquals(source, this)) RunCondition.Copy(source, this);
+        Steps.Clear();
+        foreach (var step in steps) Steps.Add(step);
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Raise(string n) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
 }

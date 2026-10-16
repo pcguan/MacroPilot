@@ -13,12 +13,12 @@
 
 | 目录 / 文件 | 内容 |
 | --- | --- |
-| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/移动图片/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；界面上「点击」「移动」各自合成一项，靠面板里的「目标位置」分流到这几个存储类型（类型行最多三级，别再往上加）；带稳定 `Id` 供跳转绑定）、`MacroPlan`、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或，三级共用的公共契约）、`LogEntry` |
+| `Models/` | `MacroStep`（动作，含子动作与 **7 个监听挂点**，递归；点击/点击坐标/点击图片/移动/移动图片/拖动/滚轮/按键/文本/等待/激活窗口/跳转/组合；界面上「点击」「移动」各自合成一项，靠面板里的「目标位置」分流到这几个存储类型（类型行最多三级，别再往上加）；跳转按别名绑定，稳定 `Id` 用于旧格式兼容）、`MacroPlan`（含失败暂停设置）、`MacroDocument`、`IRunCondition` + `ConditionItem`（多条件 + 与/或/表达式，运行条件与停止条件共用）、`LogEntry` |
 | `Input/` | `IInputBackend` 抽象（含 `MouseDown/MouseUp` 供拖动）；`Ch9329Device`（串口硬件）、`NativeInputDevice`（SendInput）、`Ch9329Scanner`（按 USB VID:PID 过滤后探测串口）、`KeyMap`、`ScreenInfo`（多屏拓扑） |
-| `Services/` | `Storage` 持久化、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片搜索匹配、`ScreenCapture`（DXGI 桌面复制 + GDI 回退双路抓屏）、`ImageStore` 图片外置+孤儿清理、`InputRecorder` + `RecordingCompiler`（宏录制：钩子采集 + 纯函数归纳）、`HitGeometry`（覆盖层命中几何，纯函数）、`RandomText`（逆向正则：按模式生成随机串）、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
+| `Services/` | `Storage` 持久化、`PlanSnapshot` 完整方案快照、`PlanPersistence` 保存成功后提交基线、`MacroRunner` 执行引擎、`UpdateService` 在线更新、`Changelog`（内置更新日志）、`ScreenMatch` 图片搜索匹配、`ScreenCapture`（DXGI 桌面复制 + GDI 回退双路抓屏）、`ImageStore` 图片外置+孤儿清理、`InputRecorder` + `RecordingCompiler`（宏录制：钩子采集 + 纯函数归纳）、`HitGeometry`（覆盖层命中几何，纯函数）、`RandomText`（逆向正则：按模式生成随机串）、`WindowMemory`（窗口几何记忆）、`WindowActivator`、`MouseTraceRecorder` 轨迹录制、`ThemeManager`、`PreciseTimer` |
 | `App.xaml(.cs)` | 单实例（唤起已有窗口后静默退出，**不弹模态**）+ 按需提权 + 显式建窗口 + 全局统一 ToolTip 延迟 |
 | `MainWindow.xaml(.cs)` | 主界面；partial 拆分：`.Dialogs`（编辑对话框，内含 `CoordBlock`/`RepeatBlock`/`TimeInputRow`/`EdgeCell`/`ClickImagePanel`/`RectPicker` 可复用块）、`.RunCondition`（运行条件编辑器 + 方案设置对话框）、`.Snip`（截图覆盖层：自动框窗 + 标注工具条）、`.Record`（宏录制入口与悬浮条）、`.Hud`（运行悬浮窗）、`.Tray`（系统托盘）、`.Schedule`（定时启动）、`.Update`（更新进度窗） |
-| `../MacroPilot.Tests/` | xUnit 单元测试。`FakeBackend` 顶掉真实键鼠输出、只记录调用序列，于是「方案跑出来的动作序列」可直接断言；业务逻辑（条件 / 挂点 / 循环 / 跳转 / 停止暂停）全覆盖，实际注入层不测。**改模型字段必跑**——`ModelIntegrityTests` 用反射查 `Clone`/`RunCondition.Copy` 有没有漏拷 |
+| `../MacroPilot.Tests/` | xUnit 单元测试。`FakeBackend` 记录调用序列，覆盖条件/表达式、监听、循环跳转、停止暂停、失败暂停及 Until；另有合成位图搜图、录制编译、标注几何、模型、方案保存/恢复和更新哈希/换源测试。**改模型字段必跑**——`ModelIntegrityTests` 用反射查 `Clone`/`RunCondition.Copy` 漏拷。实际注入、桌面抓屏、UI 与更新安装不在这些单测的验证范围内 |
 
 ## 几个容易踩的设计点
 
@@ -29,13 +29,15 @@
 - 监听有 **7 个挂点**，统一经 `MacroStep.HookList()` 枚举——图片收集、运行页映射、脏对比等所有「遍历监听」的地方都走它，别再手写多连 if（漏一处就孤儿图误删 / 映射缺失）。
 - 条件判定（含重复检查的整个等待）跑在动作高亮**之前**，故 `RunTop` 取到 step 后要先发一次 `StepStateChanged(step,true)`，否则等待期间界面上看不出卡在哪一步。
 - 运行页高亮取「本轮最后一个开始执行的动作」并**保持到下一个动作开始**：瞬时动作的 开始→结束 会落在同一个刷新周期里互相抵消，逐条 `IsExecuting = on` 会导致根本看不到高亮。
+- 方案保存先在副本上外置图片，写盘成功后才更新当前图片引用、保存基线与脏标记；失败会阻止切换/运行/退出，且不替换当前动作与条件对象。撤销和放弃共用完整的 `PlanSnapshot`（`MaxDepth=256`）。
 - 运行的是当前方案的**克隆快照**，避免运行中编辑与引擎争同一个集合。`MacroStep.Clone()` 会带上 `DisplayIndex`，否则运行页序号全是 0。
 - 运行页是**扁平列表**（只有顶层行）：自动滚动时要把当前步映射到它的**顶层祖先行**，否则执行组合内部时列表不滚。
+- `MacroPlan.PauseOnFail` 默认开启：动作失败且没有 `FailAction` 时暂停，**F10 继续**；设置了失败监听则交给监听处理。条件不满足导致的跳过不算动作执行失败。
 
-**运行条件（`ShouldRun`）**
-- 条件是**一组** `ConditionItem` + `And`/`Or`，取反是**每条独立**的（`Invert ? !found : found`）。求值短路：And 遇假、Or 遇真即停——图片条件要抓屏搜索，能省一次是一次。
+**运行条件（`Evaluate` / `GateHooks`）**
+- 条件是**一组** `ConditionItem` + `And`/`Or`/`Expr:...`，取反是**每条独立**的（`Invert ? !found : found`）。表达式由 `CondExpr` 解析，支持 `@1` 条件引用、`&&` / `||` / `!` 和括号；删除条件时重写引用。与/或及表达式都短路求值，避免多余抓屏搜索；历史无效表达式运行时按与逻辑回退。
 - 历史存档的单条 `RunConditionXxx` 字段由 `RunCondition.Normalize` 并入列表后清空。**幂等**，且判定 / 图片收集 / 编辑器三个入口都会先调一次，任一路径漏调也不会丢条件。
-- `conditionText` **只在跳过时打日志**，因此必须报**实际观测状态**（如「目标图片未出现（区域内最高相似度 0.62 / 阈值 0.90）」），不能报「条件目标标签」，否则日志读起来正好相反。
+- `conditionText` 在方案/动作**条件通过、跳过及重复检查**日志里展示，必须报**实际观测状态**（如「目标图片未出现（区域内最高相似度 0.62 / 阈值 0.90）」），不能只报条件目标标签；图片判定另带搜索耗时。
 - **重复检查**：不满足时按间隔轮询重判（走 `Wait`，暂停/停止照常响应），每次判定都记一条带相似度的日志。方案级历来就是「空转等到满足」，故忽略该勾选始终等待，但间隔与两个上限对它生效。
   - **0 是合法值，别再兜成默认**：间隔 0 = 判完立刻再判（此时仍要 `Gate` + 查取消，否则暂停/停止按不动）；次数上限与时长上限**同时生效、先到者结束**，各自 0 表示不限。
 
@@ -67,12 +69,13 @@
 - 相对增量下限是 **-127**（`-128` 是死值，该轴不动）；移动期须强制系统指针 1:1（关加速 + 速度滑块置 10），否则闭环发散。
 
 **在线更新（`UpdateService`）**
+- `AutoUpdate` 只控制启动时自动检查并下载安装；关闭时跳过启动检查。两种模式均保留每 30 秒的后台检查与状态栏提醒，后续轮询不自动安装。
 - 有序多源回退（自建源 → GitHub），读各源同格式 `version.json`，下载后校验 SHA-256，失败换源。
-- zip 就地更新由一段隐藏 PowerShell 助手完成（备份 → 覆盖 → 保留 `unins\` → 失败回滚 → 重启）。
+- 下载/校验阶段显示 `UpdateProgressUi`；本体退出后，PowerShell 助手显示可见进度小窗（备份 → 覆盖 → 保留 `unins\` → 失败回滚 → 重启），隐藏的只有控制台。开始更新前须处理正在运行的方案与未保存修改。
   **启动该助手必须指定 `WorkingDirectory` 为临时目录**——否则 PowerShell 继承本体的当前目录（= 安装目录），自己占住该目录导致改名失败，更新失败且进程消失。
 
 **热键**
-- F9 / F10 / F11 **仅方案执行期间**注册（`RegisterHotKey` + 低级键盘钩子兜底全屏游戏），结束即注销，平时把按键还给系统。
+- F9 暂停 / F10 继续 / F11 停止，**仅方案执行期间**注册（`RegisterHotKey` + 低级键盘钩子兜底全屏游戏），结束即注销，平时把按键还给系统。
 
 **暂停 / 等待（`MacroRunner.Wait`）**
 - 暂停期间必须 `sw.Stop()`、恢复时 `sw.Start()`——否则秒表照走，恢复后剩余时间算成负、等待被"跳过"。
@@ -81,6 +84,7 @@
 - **执行次数** `LoopCount`/`LoopDelayMs`：只重复**动作本体**（`RunOne`），条件判一次、监听走一遍。界面上按动作类型叫点击/滚动/按键/输入次数。
 - **重复次数** `RepeatCount`/`RepeatDelayMs`：重复**整趟**（判条件 → 监听 → 本体），每趟都重新判条件、重新触发监听。引擎里由 `RepeatCycle` 包住叶子与组合两条路径；**中途产生跳转必须停止重复**，否则跳转被困在原地。
 - 同一个 `RepeatBlock` 用 `forRepeat` 切换写哪一组字段，UI 完全一致。
+- `UntilBlock` 可把整趟重复切为**直到条件满足**：`RepeatUntil` 开启后，每趟结束判定 `UntilConditions` / `UntilLogic`，满足就结束；`UntilMaxCount` 与 `UntilTimeoutMs` 同时限额，0 表示不限。至少跑一趟，跳转会中断重复；无有效停止条件的旧存档回退固定趟数。`CompleteAction` 在全部趟数结束后触发一次，生效的跳转不触发它。
 
 **限制区域编辑（`ClickImagePanel` / `EdgeCell`）**
 - 四边输入格的标签（左/右/上/下）是 Material 描边式的：有值时缩小浮到上边框、在边框上开个缺口（靠负 margin 顶出格子）。**它画在自己控件范围之外，所以上方必须有净空**——显示器行留了 22px 下边距，且对话框 `MinWidth` 必须保证这一行四个格子完整排得下，否则挤压变形时标签会和上一行糊在一起（表现成"调宽度却出现上下遮挡"）。改这块务必同时校对这两个前提。
@@ -101,7 +105,7 @@
 - 显示器 + 屏内百分比（`MoveMonitor`/`MoveNormX/Y`，换分辨率仍可用）+ 点选/预览。点击/移动一个，拖动两个（起点复用 Move* 字段，终点用 `DragEnd*`）。默认选主屏；单屏时不自动弹屏幕编号。
 
 **运行悬浮窗（`RunHud`）**
-- **不设 `Window.Owner`**（否则主窗口最小化会连带隐藏 HUD），只存引用取主题画刷；`WS_EX_NOACTIVATE|TOOLWINDOW` 不抢焦点；700ms 定时重申 `HWND_TOPMOST` 防被压下。开启 HUD 时运行会把本体最小化。
+- **不设 `Window.Owner`**（否则主窗口最小化会连带隐藏 HUD），只存引用取主题画刷；`WS_EX_NOACTIVATE|TOOLWINDOW` 不抢焦点；700ms 定时重申 `HWND_TOPMOST` 防被压下。本体是否最小化由独立的 `MinimizeOnRun` 设置控制。
 
 **系统托盘（`.Tray`）** — `Shell_NotifyIcon` P/Invoke + 常驻 HwndSource 钩子；菜单用 WPF `ContextMenu`（弹前 `SetForegroundWindow` 才能正常关闭）。
 
@@ -152,7 +156,7 @@
 
 ## 构建
 
-> 同步到构建机一律用 `tools/sync_corpwin.sh`（全绝对路径 + 传完自检）。**别在命令行里临时 `cd .. && tar ...`**——
+> 同步到构建机一律从仓库根目录运行 `bash tools/sync_corpwin.sh`（在本目录中则运行 `bash ../tools/sync_corpwin.sh`）。脚本按自身位置定位源码，先本地暂存并检查，再触碰远端，且排除 `.codex-memory` / `.claude` / `.codex` / `AGENTS.md` 等本地资料。**别在命令行里临时 `cd .. && tar ...`**——
 > cwd 差一级就会把树传错位置，而 `dotnet build` 照样报"成功"（编的是上次的旧代码），于是"构建通过"验证的根本不是本次改动。这个坑踩过两次。
 
 
@@ -160,4 +164,4 @@
 build.bat        :: 自包含（零依赖，双击即用）
 build.bat fd     :: 框架依赖（体积小，需 .NET 8 桌面运行时）
 ```
-输出到 `%USERPROFILE%\MacroPilot_review`（不动桌面）。正式分发走安装器，见根 README 的「发布流程」。
+输出到 `%USERPROFILE%\MacroPilot_review`（不动桌面）。正式分发走安装器，见 [RELEASE.md](../RELEASE.md)：在当前版本基础上递增，两处版本号与 changelog 同步；测试和构建通过后按文件选择提交，并使用实际协作者署名。

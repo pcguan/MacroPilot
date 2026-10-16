@@ -24,3 +24,13 @@ MacroPilotInstaller_Flutter_WPF/sfx/7zSD_icon.sfx
 *.log
 .DS_Store
 Thumbs.db
+
+# ---- local agent instructions, memory and session data ----
+.codex-memory/
+.claude/
+.codex/
+AGENTS.md
+AGENTS.local.md
+CLAUDE.md
+CLAUDE.local.md
+MEMORY.md
