@@ -5,6 +5,7 @@ namespace MacroPilot.Models;
 /// <summary>运行日志一行。Level 决定正文颜色，StatusKind 决定状态文字颜色。</summary>
 public sealed class LogEntry : INotifyPropertyChanged
 {
+    public long Id { get; init; }
     public string Time { get; init; } = "";
     public string Body { get; init; } = "";
     public bool IsAction { get; init; }

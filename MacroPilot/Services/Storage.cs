@@ -298,15 +298,4 @@ public static class Storage
         catch (Exception ex) { error = ex.Message; return false; }
     }
 
-    // 写入一行原始日志（调用方已含时间戳与状态，磁盘格式与界面一致）。
-    public static void AppendRunLog(string line)
-    {
-        try
-        {
-            Directory.CreateDirectory(LogDir);
-            var f = Path.Combine(LogDir, $"run-{DateTime.Now:yyyyMMdd}.log");
-            File.AppendAllText(f, line + Environment.NewLine);
-        }
-        catch { }
-    }
 }

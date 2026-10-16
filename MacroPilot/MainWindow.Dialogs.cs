@@ -1047,7 +1047,7 @@ public partial class MainWindow
             if (_clip.IsGroup) { ThemedDialog.Show("组合动作不能作为监听动作粘贴。", "无法粘贴", MessageBoxButton.OK, MessageBoxImage.Information); return; }
             var copy = _clip.Clone();
             copy.RenewId();                                                   // 新身份，避免与原件抢同一个跳转目标
-            copy.JumpTargetAlias = ""; copy.JumpTargetId = ""; copy.JumpTarget = 0; copy.JumpTimes = 0;   // 跳转对监听是 no-op，贴过来更没意义
+            // 监听里的跳转同样生效；保留目标与次数上限，只更新副本身份及自身别名。
             copy.ClearAliases();   // 别名标签同样清空，避免与列表里的原件重名
             set(copy); Refresh();
         };

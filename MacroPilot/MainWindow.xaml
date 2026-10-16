@@ -680,7 +680,8 @@
               <Border DockPanel.Dock="Top" Height="1" Background="{DynamicResource Line}" Margin="0,0,0,8" />
               <TextBlock DockPanel.Dock="Bottom" Text="已停止时双击动作可跳回方案页编辑" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,8,0,0" />
               <ListBox Name="RunStepsList" FontSize="14" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                       VirtualizingPanel.IsVirtualizing="False"
+                       ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
+                       VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel"
                        MouseDoubleClick="RunStepsList_MouseDoubleClick">
                 <ListBox.ItemContainerStyle>
                   <Style BasedOn="{StaticResource {x:Type ListBoxItem}}" TargetType="{x:Type ListBoxItem}"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /></Style>
@@ -712,9 +713,10 @@
             <DockPanel>
               <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10" LastChildFill="False">
                 <TextBlock DockPanel.Dock="Left" Text="运行日志" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
-                <Button DockPanel.Dock="Right" Width="34" Height="34" Style="{StaticResource IconButton}" Content="&#xE894;" ToolTip="清空日志（清屏并释放内存；磁盘日志文件保留完整记录）" Click="LogClear_Click" />
+                <Button DockPanel.Dock="Right" Width="34" Height="34" Style="{StaticResource IconButton}" Content="&#xE894;" ToolTip="清空界面日志（磁盘独立保存；高速过载时会汇总省略记录）" Click="LogClear_Click" />
               </DockPanel>
-              <ListBox Name="LogList" FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="13" Background="#00FFFFFF" BorderThickness="0" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" KeyDown="LogList_KeyDown">
+              <ListBox Name="LogList" FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="13" Background="#00FFFFFF" BorderThickness="0" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True"
+                       VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel" KeyDown="LogList_KeyDown">
                 <ListBox.ContextMenu>
                   <ContextMenu>
                     <MenuItem Header="复制  (Ctrl+C)" Click="LogCopy_Click" />

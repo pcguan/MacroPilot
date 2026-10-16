@@ -29,6 +29,7 @@ public sealed class MacroRunner
     }
 
     public bool IsRunning => _running;
+    public Task Completion => _task ?? Task.CompletedTask;
     public bool IsPaused { get; private set; }
     private bool _pauseOnFail = true;   // 方案配置：动作失败立即暂停（有「运行失败后」监听的动作除外）
 
@@ -62,43 +63,45 @@ public sealed class MacroRunner
             PreciseTimer.BeginHighResolution();  // 执行期把系统定时器分辨率提到 1ms，配合亚毫秒自旋
             try
             {
+                PrepareJumpTargets(plan.Steps);
                 _backend.SetExecutionContext(new InputExecutionContext(Gate, (ms, token) => Wait(ms, token), () => IsPaused,
                     () => (long)_clock.ElapsedMilliseconds));
                 if (execDelayMs > 0) Wait(execDelayMs, ct);
-                int laps = 0;
+                long laps = 0;
                 bool waitingWindow = false;
                 // 方案级条件的等待参数：历来是硬编码"每秒复检、无限等"，现改由配置驱动（默认值与旧行为一致）。
                 // 间隔 0 = 判定失败立刻重判（不等待）；次数上限与时长上限同时生效，先到者结束。
                 int planWaitMs = Math.Max(0, plan.RunConditionRetryIntervalMs);
                 int planWaitMax = Math.Max(0, plan.RunConditionRetryMax);
                 int planWaitTimeout = Math.Max(0, plan.RunConditionRetryTimeoutMs);
-                int planWaited = 0;
+                long planWaited = 0;
                 double planWaitStarted = 0;
                 while (!ct.IsCancellationRequested)
                 {
                     Gate(ct);
-                    // 方案级运行条件：不满足时整方案空转等待时间窗开启（每秒复检、可即时停止），不消耗循环次数。
+                    // 初次判断不消耗重复检查额度；其后的等待与重判受同一有效时间预算约束。
+                    if (waitingWindow)
+                    {
+                        if (planWaitMax > 0 && planWaited >= planWaitMax)
+                        {
+                            Log?.Invoke("Warning", $"方案运行条件重复检查 {planWaited} 次仍未满足，结束运行。");
+                            break;
+                        }
+                        if (!WaitWithinBudget(planWaitMs, planWaitTimeout, planWaitStarted, ct))
+                        {
+                            Log?.Invoke("Warning", $"方案运行条件重复检查已超过 {planWaitTimeout} 毫秒仍未满足，结束运行。");
+                            break;
+                        }
+                        planWaited++;
+                    }
                     if (!Evaluate(plan, out var planCond, ct))
                     {
-                        // 条件类型现已不止时间段（还有图片出现），日志报【实际观测状态】而不是写死"不在时间段内"。
                         if (!waitingWindow)
                         {
                             waitingWindow = true; planWaitStarted = _clock.ElapsedMilliseconds;
                             Log?.Invoke("Warning", $"⏸ 方案运行条件未满足（{planCond}），{RetryDesc(planWaitMs, planWaitMax, planWaitTimeout)}…");
                             Progress?.Invoke(0, "等待运行条件…");
                         }
-                        if (planWaitMax > 0 && planWaited >= planWaitMax)
-                        {
-                            Log?.Invoke("Warning", $"方案运行条件重复检查 {planWaited} 次仍未满足，结束运行。");
-                            break;
-                        }
-                        if (planWaitTimeout > 0 && _clock.ElapsedMilliseconds - planWaitStarted >= planWaitTimeout)
-                        {
-                            Log?.Invoke("Warning", $"方案运行条件重复检查已超过 {planWaitTimeout} 毫秒仍未满足，结束运行。");
-                            break;
-                        }
-                        planWaited++;
-                        if (planWaitMs > 0) Wait(planWaitMs, ct);
                         continue;
                     }
                     if (waitingWindow) { waitingWindow = false; planWaited = 0; Log?.Invoke("Info", $"▶ 运行条件已满足（{planCond}），开始执行。"); }
@@ -121,6 +124,9 @@ public sealed class MacroRunner
             {
                 PreciseTimer.EndHighResolution();
                 DisposeTemplateCache();
+                _expressionCache.Clear();
+                _jumpAliasIndices.Clear();
+                _jumpIdIndices.Clear();
                 try { _backend.ReleaseAll(); } catch { }
                 try { _backend.SetExecutionContext(null); } catch { }
                 _clock.Pause();
@@ -157,10 +163,13 @@ public sealed class MacroRunner
     }
 
     // 状态上下文：当前轮 _lap、顶层 _si/_total、组合子项 _ci/_cn。进度条表示"当前动作"的完成度（等待=倒计时，瞬时动作=100%）。
-    private int _lap, _total, _si, _ci, _cn;
+    private long _lap;
+    private int _total, _si, _ci, _cn;
     private int _planLoops;                 // 方案循环总数：0=无限，1=单次，N=N 次
-    private int _grpLoop, _grpLoopTotal;    // 当前组合自身循环：当前次 / 总次（0=无限，1=不循环）
-    private int _stepLoop, _stepLoopTotal;  // 当前动作自身循环：当前次 / 总次（0=无限，1=不循环）
+    private long _grpLoop;
+    private int _grpLoopTotal;    // 当前组合自身循环：当前次 / 总次（0=无限，1=不循环）
+    private long _stepLoop;
+    private int _stepLoopTotal;  // 当前动作自身循环：当前次 / 总次（0=无限，1=不循环）
 
     // 动作级状态文本：动作 i/总 (· 子 k/n) (· 组循环 i/n) (· 循环 i/n) (· 等待 Xs / Ys)。
     // 方案级"第 N/总 轮"不在这里——它经 PlanLoopChanged 事件显示在方案名后面（层次分开）。
@@ -222,16 +231,36 @@ public sealed class MacroRunner
         }
     }
 
+    // 间隔必须被剩余有效时间截断；暂停期间 _clock 停表，拟人化抖动也不能突破预算。
+    // false 表示已经到时，调用方不能再启动一次判断或动作。
+    private bool WaitWithinBudget(double intervalMs, int timeoutMs, double started, CancellationToken ct)
+    {
+        Gate(ct);
+        if (timeoutMs <= 0) { if (intervalMs > 0) Wait(intervalMs, ct); return true; }
+        double remaining = timeoutMs - (_clock.ElapsedMilliseconds - started);
+        if (remaining <= 0) return false;
+        if (intervalMs > 0) Wait(Math.Min(intervalMs, remaining), ct);
+        return _clock.ElapsedMilliseconds - started < timeoutMs;
+    }
+
+    private readonly record struct ProgressContext(int Child, int ChildCount, long GroupLoop,
+        int GroupTotal, long StepLoop, int StepTotal);
+    private ProgressContext CaptureProgressContext() => new(_ci, _cn, _grpLoop, _grpLoopTotal, _stepLoop, _stepLoopTotal);
+    private void RestoreProgressContext(ProgressContext context)
+    {
+        (_ci, _cn, _grpLoop, _grpLoopTotal, _stepLoop, _stepLoopTotal) =
+            (context.Child, context.ChildCount, context.GroupLoop, context.GroupTotal, context.StepLoop, context.StepTotal);
+    }
+
     // Jump 动作执行时上报到这里（无论它在顶层、组合内还是监听里），由 RunTop 在当前顶层步骤结束后统一消费。
     // 生效与否在【执行点】就裁决完毕（见 RunOne 的 Jump 分支）：_pendingJump 非空 ⇔ 必然跳出。
     private MacroStep? _pendingJump;
     private System.Collections.Generic.IList<MacroStep> _topSteps = System.Array.Empty<MacroStep>();
-    private readonly System.Collections.Generic.Dictionary<MacroStep, int> _jumpUsed = new();   // 已跳次数按 Jump 实例计（本轮内）
+    private readonly System.Collections.Generic.Dictionary<MacroStep, long> _jumpUsed = new();   // 已跳次数按 Jump 实例计（本轮内）
 
     // 顶层动作序列
     private void RunTop(System.Collections.Generic.IList<MacroStep> steps, CancellationToken ct)
     {
-        _topSteps = steps;      // 跳转执行点解析目标/上限要用
         _jumpUsed.Clear();      // 上限按【轮】计（与历史一致：每轮重新给额度）
         _pendingJump = null;
         int i = 0;
@@ -257,6 +286,7 @@ public sealed class MacroRunner
                     if (!GateHooks(step, out var conditionText, ct))
                     {
                         Log?.Invoke("Info", prefix + $"{step.Display}，条件不满足，已跳过（{conditionText}）");
+                        StepStateChanged?.Invoke(step, false);
                         CompleteHook(step, ct);   // 条件跳过也算一次"结束"
                     }
                     else
@@ -279,40 +309,51 @@ public sealed class MacroRunner
             if (jumpSrc != null)
             {
                 // 生效性（目标存在/未达上限）已在执行点裁决并记过日志，这里只负责真正跳
-                int ti = JumpIndex(jumpSrc, steps);
+                int ti = JumpIndex(jumpSrc);
                 if (ti >= 0) { i = ti; continue; }
             }
             i++;
         }
     }
 
-    // 跳转目标定位：JumpTargetId（绑定动作本身，增删排序都不会指错）优先；
-    // 只有序号的旧存档回退用 JumpTarget。目标不在顶层（被删/移入组合）返回 -1，即不跳。
-    // 解析跳转目标在顶层的下标：新格式按【别名】（首个同名者）；旧存档回退身份 Id、再回退序号。
-    private static int JumpIndex(MacroStep jump, System.Collections.Generic.IList<MacroStep> steps)
+    // 运行的是冻结副本；每次 Start 建一次索引，重复跳转不再扫描整份顶层列表。
+    // TryAdd 保持旧语义：重名别名或重复 Id 均以首个目标为准。
+    private readonly System.Collections.Generic.Dictionary<string, int> _jumpAliasIndices = new(StringComparer.Ordinal);
+    private readonly System.Collections.Generic.Dictionary<string, int> _jumpIdIndices = new(StringComparer.Ordinal);
+    private void PrepareJumpTargets(System.Collections.Generic.IList<MacroStep> steps)
+    {
+        _topSteps = steps;
+        _jumpAliasIndices.Clear(); _jumpIdIndices.Clear();
+        for (int i = 0; i < steps.Count; i++)
+        {
+            if (steps[i].Alias.Length > 0) _jumpAliasIndices.TryAdd(steps[i].Alias, i);
+            if (steps[i].Id.Length > 0) _jumpIdIndices.TryAdd(steps[i].Id, i);
+        }
+    }
+
+    private int JumpIndex(MacroStep jump)
     {
         if (jump.JumpTargetAlias.Length > 0)
-        {
-            for (int k = 0; k < steps.Count; k++)
-                if (steps[k].Alias == jump.JumpTargetAlias) return k;
-            return -1;   // 目标别名不存在（被改名/删除）→ 跳转不生效
-        }
+            return _jumpAliasIndices.TryGetValue(jump.JumpTargetAlias, out var aliasIndex) ? aliasIndex : -1;
         if (jump.JumpTargetId.Length > 0)
-        {
-            for (int k = 0; k < steps.Count; k++)
-                if (steps[k].Id == jump.JumpTargetId) return k;
-            return -1;
-        }
+            return _jumpIdIndices.TryGetValue(jump.JumpTargetId, out var idIndex) ? idIndex : -1;
         int ti = jump.JumpTarget - 1;
-        return ti >= 0 && ti < steps.Count ? ti : -1;
+        return ti >= 0 && ti < _topSteps.Count ? ti : -1;
     }
 
     // 组合：高亮整组，逐个子动作记日志(执行中→成功/失败)，支持组合自身循环。
     private void RunGroup(MacroStep group, CancellationToken ct, int depth = 0)
     {
+        var context = CaptureProgressContext();
+        try { RunGroupCore(group, ct, depth); }
+        finally { RestoreProgressContext(context); }
+    }
+
+    private void RunGroupCore(MacroStep group, CancellationToken ct, int depth)
+    {
         string indent = new string(' ', 4 * (depth + 1));   // 逐层缩进：嵌套子组合的子动作日志层级正确，不再只有一层
         RunHook(group.PreRunAction, "运行前", ct);          // 组合整体开跑前（不随组合自身循环重复）
-        int loops = 0;
+        long loops = 0;
         while (!ct.IsCancellationRequested)
         {
             Gate(ct);
@@ -346,7 +387,7 @@ public sealed class MacroRunner
             }
             finally { StepStateChanged?.Invoke(group, false); _ci = 0; _cn = 0; }
             loops++;
-            // 有限组合保留“本轮子项完成再跳”的语义；无限本体循环必须给已生效跳转留出口。
+            // 有限组合保留“完成配置轮数后再跳”的语义；无限本体循环必须给已生效跳转留出口。
             if (group.LoopCount == 0 && _pendingJump != null) break;
             if (group.LoopCount == 1) break;
             if (group.LoopCount != 0 && loops >= group.LoopCount) break;
@@ -390,7 +431,7 @@ public sealed class MacroRunner
             else
             {
                 int reps = Math.Max(0, step.RepeatCount);
-                int done = 0;
+                long done = 0;
                 while (!ct.IsCancellationRequested)
                 {
                     Gate(ct);
@@ -423,10 +464,15 @@ public sealed class MacroRunner
         // 日志节流与重复检查同款：间隔很小（尤其 0）时每趟都记会灌满 UI 线程。
         bool verboseLog = interval >= 200;
         var logClock = System.Diagnostics.Stopwatch.StartNew();
-        int done = 0;
+        long done = 0;
         while (!ct.IsCancellationRequested)
         {
             Gate(ct);
+            if (done > 0 && timeout > 0 && _clock.ElapsedMilliseconds - started >= timeout)
+            {
+                Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {timeout} 毫秒时限），结束重复。");
+                return;
+            }
             once();
             done++;
             if (_pendingJump != null) return;
@@ -439,7 +485,11 @@ public sealed class MacroRunner
             if (ok) { Log?.Invoke("Info", $"停止条件已满足，结束重复（共执行 {done} 趟）。"); return; }
             if (max > 0 && done >= max) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {max} 趟上限），结束重复。"); return; }
             if (timeout > 0 && _clock.ElapsedMilliseconds - started >= timeout) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {timeout} 毫秒时限），结束重复。"); return; }
-            if (interval > 0) Wait(Jitter(interval), ct);
+            if (!WaitWithinBudget(Jitter(interval), timeout, started, ct))
+            {
+                Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {timeout} 毫秒时限），结束重复。");
+                return;
+            }
         }
     }
 
@@ -458,6 +508,7 @@ public sealed class MacroRunner
         {
             ActBegin?.Invoke(body);
             ActEnd?.Invoke("已跳过", "Warning");
+            StepStateChanged?.Invoke(step, false);
             Log?.Invoke("Info", $"条件不满足，跳过动作：{conditionText}");
             CompleteHook(step, ct);   // 条件跳过也算一次"结束"（语义已定：正常/失败/跳过都进结束监听）
             return false;
@@ -471,7 +522,7 @@ public sealed class MacroRunner
         bool ok = true;
         try
         {
-            int loops = 0;
+            long loops = 0;
             while (!ct.IsCancellationRequested)
             {
                 Gate(ct);
@@ -479,6 +530,8 @@ public sealed class MacroRunner
                 if (loops > 0) Progress?.Invoke(0, StatusLine());   // 后续每圈刷新"循环 i/n"（首圈上面已刷）
                 RunOne(step, ct);
                 loops++;
+                // 无限叶子循环与无限组合一样：收完本次本体后让已生效的跳转离开。
+                if (step.LoopCount == 0 && _pendingJump != null) break;
                 if (step.LoopCount == 1) break;
                 if (step.LoopCount != 0 && loops >= step.LoopCount) break;
                 if (step.LoopDelayMs > 0) Wait(Jitter(step.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
@@ -520,6 +573,7 @@ public sealed class MacroRunner
     {
         if (hook is null || hook.Disabled) return;
         Gate(ct);
+        var context = CaptureProgressContext();
         try
         {
             if (hook.IsGroup)
@@ -540,6 +594,7 @@ public sealed class MacroRunner
         catch (InputSafetyException) { throw; }
         catch (ConditionObservationException) { throw; }
         catch { }
+        finally { RestoreProgressContext(context); }
     }
 
     // 图片模板缓存：键=图片引用字符串（file:hash / 旧内联 base64）——内容寻址，引用变了键就变，天然无失效问题。
@@ -598,7 +653,7 @@ public sealed class MacroRunner
             int max = Math.Max(0, step.RunConditionRetryMax);
             int timeout = Math.Max(0, step.RunConditionRetryTimeoutMs);
             Log?.Invoke("Info", $"条件未满足（{conditionText}），{RetryDesc(interval, max, timeout)}…");
-            int tries = 0;
+            long tries = 0;
             double started = _clock.ElapsedMilliseconds;
             // 日志节流：间隔很小（尤其 0=连着判）时每次都记会把 UI 线程灌满——日志刷不过来，
             // 连 F9/F11 这些要在 UI 线程上派发的热键都会被拖慢。慢速重试仍然每次都记（要看每次的相似度）。
@@ -607,10 +662,11 @@ public sealed class MacroRunner
             string stopReason = "";
             while (!ok)
             {
+                if (_pendingJump != null && max == 0 && timeout == 0)
+                { stopReason = "已触发跳转，结束无限重复检查"; break; }
                 if (max > 0 && tries >= max) { stopReason = $"已达 {max} 次上限"; break; }
-                if (timeout > 0 && _clock.ElapsedMilliseconds - started >= timeout) { stopReason = $"已达 {timeout} 毫秒时限"; break; }
-                if (interval > 0) Wait(interval, ct);
-                else { Gate(ct); ct.ThrowIfCancellationRequested(); }   // 0 间隔也必须给暂停/停止留出响应点
+                if (!WaitWithinBudget(interval, timeout, started, ct))
+                { stopReason = $"已达 {timeout} 毫秒时限"; break; }
                 tries++;
                 ok = Evaluate(step, out conditionText, ct);
                 // 每次判定都留痕：图片类条件会带上本次的实际相似度，
@@ -642,14 +698,29 @@ public sealed class MacroRunner
         return EvaluateItems(step.RunConditions, step.RunConditionLogic, out conditionText, ct);
     }
 
+    private const int MaxCachedExpressions = 128;
+    private readonly System.Collections.Generic.Dictionary<(string Logic, int Count), CondExpr.Compiled?> _expressionCache = new();
+
+    private CondExpr.Compiled? CompiledExpression(string logic, int itemCount)
+    {
+        var key = (logic, itemCount);
+        if (_expressionCache.TryGetValue(key, out var cached)) return cached;
+        CondExpr.Compiled? compiled;
+        try { compiled = CondExpr.Compile(CondExpr.Get(logic), itemCount); }
+        catch (FormatException) { compiled = null; } // 与旧档约定一致：无效表达式回退 And。
+        // 满后只是不再记住新表达式，不能整批清空让 129 个表达式的方案每轮全部重编。
+        if (_expressionCache.Count < MaxCachedExpressions) _expressionCache[key] = compiled;
+        return compiled;
+    }
+
     // 判定一组条件：运行条件与「直到条件满足」的停止条件共用（同一套与/或/表达式、短路与轮内共享抓屏）。
     private bool EvaluateItems(System.Collections.Generic.List<ConditionItem> items, string logic,
                                out string conditionText, CancellationToken ct)
     {
         // 自定义表达式（"Expr:(@1 && @2) || @3"）：编辑器保存前已校验；这里再兜一次底——
         // 表达式失效（如旧档手改）就退回"全部满足"，别让方案卡死在一条判不动的条件上。
-        if (CondExpr.IsExpr(logic) && CondExpr.Validate(CondExpr.Get(logic), items.Count) == null)
-            return EvaluateExpr(items, CondExpr.Get(logic), out conditionText, ct);
+        if (CondExpr.IsExpr(logic) && CompiledExpression(logic, items.Count) is { } expression)
+            return EvaluateExpr(items, expression, out conditionText, ct);
 
         bool or = string.Equals(logic, "Or", StringComparison.OrdinalIgnoreCase);
         bool acc = !or;                          // And 从 true 起累积；Or 从 false 起累积
@@ -678,7 +749,7 @@ public sealed class MacroRunner
 
     // 按自定义表达式判定：@N 引用第 N 条（1 起）。逐条记忆化——同一条件被引用多次只判一次；
     // && / || 由表达式树正常短路，被跳过的条件完全不抓屏不搜索。
-    private bool EvaluateExpr(System.Collections.Generic.List<ConditionItem> items, string expr,
+    private bool EvaluateExpr(System.Collections.Generic.List<ConditionItem> items, CondExpr.Compiled expression,
                               out string conditionText, CancellationToken ct)
     {
         var parts = new System.Collections.Generic.List<string>();
@@ -697,14 +768,14 @@ public sealed class MacroRunner
                 memo[i] = v;
                 return v;
             }
-            result = CondExpr.Eval(expr, items.Count, ItemVal);
+            result = expression.Evaluate(ItemVal);
         }
         finally
         {
             foreach (var kv in _roundShots) kv.Value?.Dispose();
             _roundShots = null;
         }
-        conditionText = string.Join("；", parts) + $"　⇒ {expr} {(result ? "成立" : "不成立")}";
+        conditionText = string.Join("；", parts) + $"　⇒ {expression.Text} {(result ? "成立" : "不成立")}";
         return result;
     }
 
@@ -724,7 +795,8 @@ public sealed class MacroRunner
         }
         if (c.Type != "TimeRange") { text = ""; return true; }
 
-        int now = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        var currentTime = DateTime.Now;
+        int now = currentTime.Hour * 60 + currentTime.Minute;
         bool match = IsInTimeRange(now, c.StartMinute, c.EndMinute);
         text = FormatCondition(c, match);
         return c.Invert ? !match : match;
@@ -817,7 +889,7 @@ public sealed class MacroRunner
                 // 不记日志用户无法察觉上限有没有起作用（corp-win 实排查过一次）。
                 // 也因此 _pendingJump 非空 ⇔ 必然跳出，「运行结束后」的"跳出不触发"才能精确成立。
                 string jname = step.JumpTargetAlias.Length > 0 ? $"跳转到「{step.JumpTargetAlias}」" : "跳转";
-                if (JumpIndex(step, _topSteps) < 0)
+                if (JumpIndex(step) < 0)
                 {
                     Log?.Invoke("Warning", $"{jname}的目标不存在（可能已被删除或改名），跳转不生效，按顺序继续。");
                     break;

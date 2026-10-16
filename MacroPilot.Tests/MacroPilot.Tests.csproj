@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <!-- 与被测项目同框架：MacroPilot 是 net8.0-windows + WPF，引用它必须对齐 TFM。
-         测试本身不碰 WPF 对象（MacroRunner 与模型层都不依赖 UI），因此无需 STA。 -->
+         引擎测试不需要 STA；布局探针自行创建并收尾独立 STA 线程。 -->
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
@@ -19,6 +19,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MacroPilot\MacroPilot.csproj" />
+    <!-- 仅供测试读取生产资源/模板；不会成为本体的发布内容。 -->
+    <Content Include="..\MacroPilot\App.xaml" Link="LayoutFixtures\App.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\MacroPilot\MainWindow.xaml" Link="LayoutFixtures\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

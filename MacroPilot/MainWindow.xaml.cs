@@ -29,6 +29,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private readonly MacroDocument _doc;
     private readonly ObservableCollection<MacroPlan> _plans;
     private readonly ObservableCollection<LogEntry> _logs = new();
+    private readonly Dictionary<long, LogEntry> _logRows = new();
+    private readonly HashSet<LogEntry> _runningLogRows = new();
+    private readonly BackgroundRunLogWriter _runLogWriter = new();
+    private string? _shownLogError;
+    private const int MaxVisibleLogs = 2000;
+    private const int MaxLogBodyLength = 4096;
     private MacroPlan? _plan;
     private MacroStep? _step;
     private MacroStep? _clip;
@@ -134,6 +140,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // 运行结束/停止即注销（OnRunFinished）。平时把这三个键还给系统，也不让低级键盘钩子常挂输入链。
         InitTray();              // 托盘图标常驻（右键可直接选方案跑）
         StartScheduleTimer();    // 定时启动轮询
+        if (_scheduleTimer != null) _scheduleTimer.Tick += (_, _) => ShowLogWriteError(); // 复用500ms心跳，空闲时也报告日志故障。
     }
 
     // 最小化到托盘：隐藏窗口与任务栏项，图标留托盘。
@@ -1171,27 +1178,31 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         _backend = backend; openingBackend = null;
 
+        FinishPreviousRunUi();
         RunStepsList.ItemsSource = plan.Steps;
         _runTopAncestor.Clear();
         foreach (var top in plan.Steps) MapRunTree(top, top);   // 建"任意运行克隆→顶层行"映射，供自动滚动
         RunPlanNameText.Text = displayName;
-        _planLoopText = ""; RunPlanLoopText.Text = "";   // 清上一轮的方案循环显示
+        RunPlanLoopText.Text = "";   // 清上一轮的方案循环显示
         SetNav(NavRun, PageRun);
         string loopLabel = plan.LoopCount == 0 ? "无限循环" : (plan.LoopCount == 1 ? "执行 1 次" : $"循环 {plan.LoopCount} 次");
         AddLog("Info", $"▶ 开始运行：{displayName}（{_backend.Describe} · {loopLabel} · 抓屏 {Services.ScreenCapture.ModeDesc}）");
 
         _runDisplayName = displayName;
-        // 运行器线程只"入队/置标志"（线程安全、不阻塞），UI 由定时器批量刷新——避免日志多时阻塞执行、影响计时精度。
+        // 每次运行独立保存最新状态与有界历史；事件处理不触碰 Dispatcher、控件或磁盘。
+        // 捕获本次 telemetry，上一轮的迟到事件不能覆盖新运行；落盘独立于 UI 消费。
+        var telemetry = _runTelemetry = new RunTelemetry(_runLogWriter, Storage.LogDir);
+        _runUiRevision = -1;
+        _runUiFinished = false;
         _runner = new MacroRunner(_backend);
-        _runner.Log += (lvl, msg) => _logQueue.Enqueue(new LogMsg(LogOp.Row, LogTime(), lvl, msg, ""));
-        _runner.ActBegin += body => _logQueue.Enqueue(new LogMsg(LogOp.Begin, LogTime(), "", body, ""));
-        _runner.ActEnd += (status, kind) => _logQueue.Enqueue(new LogMsg(LogOp.End, "", status, kind, ""));
-        _runner.StepStateChanged += (st, on) => _stepQueue.Enqueue((st, on));
-        // volatile 不支持 double，存"千分之几"的 int（0.1% 分辨率对进度条足够平滑）。
-        _runner.Progress += (pct, txt) => { _progTenths = (int)(pct * 10); _progText = txt; _progActive = true; };
-        _runner.PlanLoopChanged += s => _planLoopText = s;
-        _runner.PausedChanged += paused => _pausedSignal = paused ? 1 : 2;
-        _runner.Finished += reason => _finishSignal = reason;
+        _runner.Log += telemetry.Log;
+        _runner.ActBegin += telemetry.BeginAction;
+        _runner.ActEnd += telemetry.EndAction;
+        _runner.StepStateChanged += telemetry.StepChanged;
+        _runner.Progress += telemetry.Progress;
+        _runner.PlanLoopChanged += telemetry.LoopChanged;
+        _runner.PausedChanged += telemetry.PausedChanged;
+        _runner.Finished += telemetry.Finish;
 
         PauseButton.IsEnabled = true; ResumeButton.IsEnabled = false; StopButton.IsEnabled = true;
         SetRunStatus("Running", $"运行中 · {displayName}");
@@ -1243,11 +1254,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
 
-    // ---- 运行期 UI 解耦：队列 + 定时刷新 ----
-    private enum LogOp { Row, Begin, End }
-    private readonly record struct LogMsg(LogOp Op, string Time, string A, string B, string C); // Row:A=level,B=msg；Begin:B=body；End:A=status,B=kind
-    private readonly System.Collections.Concurrent.ConcurrentQueue<LogMsg> _logQueue = new();
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(MacroStep step, bool on)> _stepQueue = new();
+    // ---- 运行期 UI 解耦：最新状态优先，历史每帧限量 ----
+    private RunTelemetry? _runTelemetry;
+    private long _runUiRevision = -1;
+    private bool _runUiFinished;
+    // 已从 telemetry 取出、但本帧时间预算内尚未呈现的记录；上限严格为一个批次。
+    private readonly Queue<RunLogRecord> _pendingUiLogs = new();
+    private const int RunUiBatchSize = 64;
+    private static readonly TimeSpan MaximumPendingUiAge = TimeSpan.FromMilliseconds(500);
     private MacroStep? _highlighted;   // 运行页当前高亮的顶层动作（保持到下一个动作开始，运行结束时清）
     // 运行页扁平列表只有顶层行；把每个运行克隆（含嵌套子动作、监听动作）映射到它的【顶层祖先行】，供自动滚动定位。
     // （组合子动作不在列表里、且 DisplayIndex=0 → 执行子动作时滚到所属组合行，否则整段组合期间列表不滚、当前行漂出视口。）
@@ -1258,16 +1272,19 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         foreach (var ch in node.Children) MapRunTree(ch, top);
         foreach (var (_, hook) in node.HookList()) MapRunTree(hook, top);   // 全部七个挂点
     }
-    private volatile bool _progActive;
-    private volatile int _progTenths;   // 进度 ×10（0~1000）：volatile 不支持 double，用 int 存 0.1% 分辨率
-    private volatile string _progText = "";
-    private volatile string _planLoopText = "";   // 方案级"第 N/总 轮"（PlanLoopChanged 置，FlushRunUi 显示在方案名后）
-    private volatile int _pausedSignal;     // 0 无, 1 暂停, 2 运行
-    private volatile string? _finishSignal; // Done/Stopped/Error
     private string _runDisplayName = "";
     private System.Windows.Threading.DispatcherTimer? _uiFlush;
-    private System.Threading.Tasks.Task _logWriteChain = System.Threading.Tasks.Task.CompletedTask;   // 日志落盘串行链（保序、不占 UI 线程）
-    private static string LogTime() => DateTime.Now.ToString("HH:mm:ss.fff");
+
+    private void FinishPreviousRunUi()
+    {
+        int skipped = _pendingUiLogs.Count + (_runTelemetry?.PendingLogCount ?? 0);
+        _pendingUiLogs.Clear();
+        _runTelemetry?.ClearUi();
+        _runTelemetry = null;
+        SummarizeRunningLogRows();
+        if (skipped > 0)
+            AddLog("Warning", $"已开始新的运行，上一轮尚未显示的 {skipped} 条历史已从界面省略；磁盘日志独立保存。");
+    }
 
     /// <summary>
     /// 进度条平滑推进：前进时用 ~160ms 线性动画滑到目标（两个刷新周期，8ms 帧率渲染补出中间帧——
@@ -1291,8 +1308,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_uiFlush == null)
         {
-            // Render 优先级：默认 Background 会被同队列的布局/滚动工作顶延，tick 间距忽长忽短——进度条肉眼可见地发涩。
-            _uiFlush = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(80) };
+            // 历史刷新让位于键盘/鼠标；单帧有严格预算，进度动画补足采样间的视觉连续性。
+            _uiFlush = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(80) };
             _uiFlush.Tick += (_, _) => FlushRunUi();
         }
         _uiFlush.Start();
@@ -1320,112 +1337,100 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void FlushRunUi()
     {
-        // 先快照结束信号再排空队列：runner 是"先入队结束日志、后置 finish"，观察到 fin 就保证结束日志已在队列里，
-        // 随后的排空一定能捞到（否则可能排空后 runner 才入队，OnRunFinished 停表→末尾几行丢失）。
-        var fin = _finishSignal;
-        // 日志：入列表 + 攒一批一次落盘（不再每行 open/close 文件），滚动只做一次且用户上翻时暂停
-        bool added = false;
-        List<string>? pending = null;
-        while (_logQueue.TryDequeue(out var m))
+        var telemetry = _runTelemetry;
+        if (telemetry == null) { _uiFlush?.Stop(); return; }
+
+        // 状态不排在历史日志后面；结束、暂停与当前动作最多等待下一次 UI 调度。
+        var state = telemetry.ReadState();
+        if (!_runUiFinished && state.Revision != _runUiRevision)
         {
-            switch (m.Op)
+            _runUiRevision = state.Revision;
+            if (state.FinishReason != null)
             {
-                case LogOp.Row:
-                    _logs.Add(new LogEntry { Time = m.Time, Body = m.B, Level = m.A });
-                    (pending ??= new()).Add($"{m.Time}  {m.B}");
-                    added = true;
-                    break;
-                case LogOp.Begin:
-                    _liveLog = new LogEntry { Time = m.Time, Body = m.B, Level = "Info", Status = "执行中", StatusKind = "Running" };
-                    _logs.Add(_liveLog);
-                    added = true;
-                    break;
-                case LogOp.End:
-                    if (_liveLog != null)
-                    {
-                        _liveLog.Status = m.A; _liveLog.StatusKind = m.B;
-                        (pending ??= new()).Add($"{_liveLog.Time}  {_liveLog.Body}  [{m.A}]");
-                        _liveLog = null;
-                    }
-                    break;
+                _runUiFinished = true;
+                OnRunFinished(state.FinishReason);
+            }
+            else
+            {
+                ApplyRunState(state);
             }
         }
-        // 落盘挪出 UI 线程（串行链保序）：File.AppendAllText 在 UI 线程上偶发几 ms 的抖动，正好卡在进度条刷新之间。
-        if (pending != null)
+
+        bool atBottom = LogAtBottom();
+        bool changed = false;
+        if (_pendingUiLogs.TryPeek(out var oldest) && telemetry.PendingLogCount > 0 &&
+            System.Diagnostics.Stopwatch.GetElapsedTime(oldest.QueuedAt) > MaximumPendingUiAge)
         {
-            var batch = string.Join(Environment.NewLine, pending);
-            _logWriteChain = _logWriteChain.ContinueWith(_ => Storage.AppendRunLog(batch),
-                System.Threading.Tasks.TaskScheduler.Default);
+            // 只在确有更新记录时放弃陈旧残余；闲置/已结束方案的最后错误仍保留。
+            int skipped = _pendingUiLogs.Count;
+            int errors = _pendingUiLogs.Count(record => record.IsError);
+            _pendingUiLogs.Clear();
+            _pendingUiLogs.Enqueue(RunLogRecord.Omitted("界面日志", skipped, errors));
+            foreach (var record in telemetry.DrainLogs(RunUiBatchSize - 1)) _pendingUiLogs.Enqueue(record);
         }
-        if (added)
+        else if (_pendingUiLogs.Count == 0)
+            foreach (var record in telemetry.DrainLogs(RunUiBatchSize)) _pendingUiLogs.Enqueue(record);
+        var frame = System.Diagnostics.Stopwatch.StartNew();
+        int count = 0;
+        while (_pendingUiLogs.Count > 0 && count < RunUiBatchSize && frame.ElapsedMilliseconds < 4)
         {
-            bool atBottom = LogAtBottom();
-            // 滞回裁剪：超 2200 才一次裁回 2000，别每 tick 都做 RemoveAt(0)（每次都触发 CollectionChanged→列表重排）。
-            if (_logs.Count > 2200) while (_logs.Count > 2000) _logs.RemoveAt(0);
-            if (atBottom && LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
+            UpsertLog(_pendingUiLogs.Dequeue());
+            changed = true;
+            count++;
         }
-        // 当前动作高亮 + 自动滚动：滚动目标映射到顶层祖先行（组合子动作/监听动作不在扁平列表里），
-        // 这样执行组合内部时也会滚到并保持该组合行可见（诊断日志证实：不映射时子动作 inList=False → 整段不滚）。
-        // 高亮取本轮最后一个"开始执行"的动作，并【保持】到下一个动作开始——
-        // 否则点击/按键这类瞬时动作的 开始→结束 会落在同一个刷新周期里互相抵消，界面上根本看不到高亮。
-        MacroStep? latestOn = null;
-        while (_stepQueue.TryDequeue(out var s)) if (s.on) latestOn = s.step;
-        if (latestOn != null)
+        SummarizeInactiveLogRows(telemetry);
+        changed |= ReportLogWriteError();
+        if (changed && atBottom && _logs.Count > 0) LogList.ScrollIntoView(_logs[^1]);
+        if (_runUiFinished && _pendingUiLogs.Count == 0 && telemetry.PendingLogCount == 0) _uiFlush?.Stop();
+    }
+
+    private void ApplyRunState(RunUiState state)
+    {
+        if (state.Step is { } step)
         {
-            // 映射到顶层祖先：组合子动作/监听动作不在扁平列表里，高亮与滚动都应落在其所属的顶层行上。
-            var top = _runTopAncestor.TryGetValue(latestOn, out var t) ? t : latestOn;
+            var top = _runTopAncestor.TryGetValue(step, out var ancestor) ? ancestor : step;
             if (!ReferenceEquals(top, _highlighted))
             {
                 if (_highlighted != null) _highlighted.IsExecuting = false;
                 top.IsExecuting = true;
                 _highlighted = top;
-                if (RunStepsList.Items.Contains(top))
-                {
-                    RunStepsList.ScrollIntoView(top);
-                    (RunStepsList.ItemContainerGenerator.ContainerFromItem(top) as FrameworkElement)?.BringIntoView();
-                }
+                RunStepsList.ScrollIntoView(top);
             }
         }
-        // 进度 / 状态栏
-        if (RunPlanLoopText.Text != _planLoopText) RunPlanLoopText.Text = _planLoopText;   // 方案级循环（方案名后，与动作级进度分开）
-        _hud?.SetLoop(_planLoopText);
-        if (_progActive)
+        if (RunPlanLoopText.Text != state.LoopText) RunPlanLoopText.Text = state.LoopText;
+        _hud?.SetLoop(state.LoopText);
+        if (state.ProgressPercent is { } pct)
         {
-            double pct = _progTenths / 10.0;
             ProgressStrip.Visibility = Visibility.Visible;
             GlideTo(ProgressBar, pct);
-            int shown = (int)Math.Round(pct);
-            string pctText = shown + "%";
-            if (ProgressPercentText.Text != pctText) ProgressPercentText.Text = pctText;
-            ProgressActionText.Text = _progText;
-            _hud?.SetAction(pct, _progText);
+            string text = (int)Math.Round(pct) + "%";
+            if (ProgressPercentText.Text != text) ProgressPercentText.Text = text;
+            if (ProgressActionText.Text != state.ProgressText) ProgressActionText.Text = state.ProgressText;
+            _hud?.SetAction(pct, state.ProgressText);
         }
-        // 暂停/继续
-        int p = _pausedSignal;
-        if (p != 0)
+        // 同一不可变快照包含暂停状态，不会在“读出信号/清零”之间丢掉继续事件。
+        if (PauseButton.IsEnabled == state.IsPaused)
         {
-            _pausedSignal = 0;
-            bool paused = p == 1;
-            SetRunStatus(paused ? "Paused" : "Running", paused ? "已暂停" : $"运行中 · {_runDisplayName}");
-            PauseButton.IsEnabled = !paused; ResumeButton.IsEnabled = paused;
+            SetRunStatus(state.IsPaused ? "Paused" : "Running", state.IsPaused ? "已暂停" : $"运行中 · {_runDisplayName}");
+            PauseButton.IsEnabled = !state.IsPaused;
+            ResumeButton.IsEnabled = state.IsPaused;
         }
-        // 结束（用本 tick 开头的快照；此时结束日志已随上面的排空落到界面/磁盘）
-        if (fin != null) { _finishSignal = null; OnRunFinished(fin); }
     }
 
     // 上一次运行对输出设备的后台释放任务；串口 Close 偶发阻塞，异步释放避免卡住 UI 线程。
     private System.Threading.Tasks.Task? _backendClosing;
     private void OnRunFinished(string reason)
     {
+        _runUiFinished = true; // 启动校验失败也走此处，不能让尚无 Finish 信号的初始快照重置成运行中。
         _activity.Finish(ActivityKind.Running);
+        SummarizeRunningLogRows();
         if (_closing) return;
         HideHud();              // 收起运行悬浮窗
         DisableHotkeys();       // 运行结束（完成/停止/出错）即释放 F9/F10/F11 与键盘钩子
-        _uiFlush?.Stop();
+        // 最新状态已结束；历史仍由限量 tick 收尾，不拖延按钮、HUD、热键及设备释放。
         if (_highlighted != null) { _highlighted.IsExecuting = false; _highlighted = null; }   // 收掉最后停留的高亮
         PauseButton.IsEnabled = ResumeButton.IsEnabled = StopButton.IsEnabled = false;
-        _progActive = false;
-        _planLoopText = ""; RunPlanLoopText.Text = "";
+        RunPlanLoopText.Text = "";
         ProgressStrip.Visibility = Visibility.Collapsed;
         SetRunStatus(reason == "Done" ? "Success" : reason, reason switch { "Done" => "运行完成", "Stopped" => "已停止", _ => "运行出错" });
         // 运行结束即释放输出设备：把 COM 口让给其它软件（如标准版）。
@@ -1517,23 +1522,93 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         RunStatusDot.Opacity = 1.0;
     }
 
-    // 普通日志行（无状态）。磁盘格式与界面一致：时间  正文。
+    // 普通日志与运行日志共用一个后台写入器，避免同步 IO、并发写文件与完成日志乱序。
     private void AddLog(string level, string msg)
     {
-        var time = DateTime.Now.ToString("HH:mm:ss.fff");
-        _logs.Add(new LogEntry { Time = time, Body = msg, Level = level });
-        TrimAndScrollLog();
-        Storage.AppendRunLog($"{time}  {msg}");
+        var record = RunLogRecord.Row(level, msg);
+        _runLogWriter.Enqueue(Storage.LogDir, record);
+        bool atBottom = LogAtBottom();
+        UpsertLog(record);
+        if (atBottom && _logs.Count > 0) LogList.ScrollIntoView(_logs[^1]);
     }
 
-    // 运行期动作日志的"执行中→成功/失败"实时行（由 FlushRunUi 在 UI 线程批量写入/更新）。
-    private LogEntry? _liveLog;
-    private void TrimAndScrollLog()
+    // 写入器故障直接提示一次，不能再送回故障 writer。运行时与500ms空闲心跳共用。
+    private bool ReportLogWriteError()
     {
-        if (_logs.Count > 2000) _logs.RemoveAt(0);
-        if (LogList.Items.Count > 0) LogList.ScrollIntoView(LogList.Items[^1]);
+        if (_closing || _runLogWriter.LastError is not { } error || error == _shownLogError) return false;
+        _shownLogError = error;
+        UpsertLog(RunLogRecord.Row("Error", error));
+        return true;
     }
-    private void LogClear_Click(object sender, RoutedEventArgs e) { _logs.Clear(); _liveLog = null; }
+
+    private void ShowLogWriteError()
+    {
+        bool atBottom = LogAtBottom();
+        if (ReportLogWriteError() && atBottom && _logs.Count > 0) LogList.ScrollIntoView(_logs[^1]);
+    }
+
+    private void UpsertLog(RunLogRecord record)
+    {
+        // 完成事件可能被洪峰汇总；不可把已展示的旧 Begin 永久留成“执行中”。
+        // 若稍后仍收到同 Id 的完成记录，会再更新为真实结果。
+        bool running = record.StatusKind == "Running" && !_runUiFinished;
+        string status = record.StatusKind == "Running" && !running ? "已结束（状态已汇总）" : record.Status;
+        string kind = record.StatusKind == "Running" && !running ? "Summary" : record.StatusKind;
+        if (_logRows.TryGetValue(record.Id, out var existing))
+        {
+            existing.Status = status;
+            existing.StatusKind = kind;
+            if (running) _runningLogRows.Add(existing); else _runningLogRows.Remove(existing);
+            return;
+        }
+        // 先裁后加，集合与索引在任何时刻都不超过上限。
+        while (_logs.Count >= MaxVisibleLogs)
+        {
+            _logRows.Remove(_logs[0].Id);
+            _runningLogRows.Remove(_logs[0]);
+            _logs.RemoveAt(0);
+        }
+        var entry = new LogEntry
+        {
+            Id = record.Id, Time = record.Time, Level = record.Level,
+            Body = record.Body.Length <= MaxLogBodyLength ? record.Body : record.Body[..MaxLogBodyLength] + "…（显示已截断）",
+            Status = status, StatusKind = kind,
+        };
+        _logRows[record.Id] = entry;
+        if (running) _runningLogRows.Add(entry);
+        _logs.Add(entry);
+    }
+
+    private void SummarizeInactiveLogRows(RunTelemetry telemetry)
+    {
+        if (_runningLogRows.Count == 0) return;
+        foreach (var row in _runningLogRows.ToArray())
+        {
+            if (telemetry.IsActionActive(row.Id)) continue;
+            row.Status = "状态已汇总";
+            row.StatusKind = "Summary";
+            _runningLogRows.Remove(row);
+        }
+    }
+
+    private void SummarizeRunningLogRows()
+    {
+        foreach (var row in _runningLogRows)
+        {
+            row.Status = "状态已汇总";
+            row.StatusKind = "Summary";
+        }
+        _runningLogRows.Clear();
+    }
+
+    private void LogClear_Click(object sender, RoutedEventArgs e)
+    {
+        _logs.Clear();
+        _logRows.Clear();
+        _runningLogRows.Clear();
+        _pendingUiLogs.Clear();
+        _runTelemetry?.ClearUi(); // 不改变动作配对或独立磁盘写入。
+    }
 
     // 底部居中 Toast：承载"已保存 / 已复制"等瞬时反馈，1.9s 后自动淡出（不写进运行日志）。
     private System.Windows.Threading.DispatcherTimer? _toastTimer;
@@ -2165,25 +2240,65 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         e.Handled = true;
     }
 
-    // 退出前：若有未保存的方案修改（增删改/排序/循环间隔等），弹框确认保存/放弃/取消。
+    private bool _closeReady, _windowClosed;
+    private System.Threading.Tasks.Task? _logShutdownTask;
+
+    // 退出前：先确认编辑，再异步停止执行/收尾日志，最多等待一秒。
+    // ClipboardLease 的收尾会调用 Dispatcher，不能在 UI 线程同步等待 runner。
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        // 更新流程已在 DownloadAndRun 里问过未保存方案，这里必须无条件放行：
-        // 任何模态询问都会挂住 Shutdown，导致进程不退、安装目录被占、更新失败。
+        if (_closeReady) { base.OnClosing(e); return; }
+        if (_closing) { e.Cancel = true; return; }
+        // 更新流程已经检查过未保存方案，不再重复弹窗阻塞更新助手。
         if (!_updatingNow && !EnsureCurrentPlanClean()) { e.Cancel = true; return; }
+        // Shutdown 会忽略 Cancel，必须在首次关闭就派发 Closing，让窗口几何有机会保存。
+        // 用户取消保存检查时不会走到这里；正常二次 Close 的保存是幂等的。
+        base.OnClosing(e);
+        if (e.Cancel) return;
         _closing = true;
         _activity.Close();
         _updateCancellation?.Cancel();
         _updateProgress?.Close();
         StopRecording();
-        base.OnClosing(e);   // 窗口几何由 WindowMemory 在 Closing 时统一保存
+        _runner?.Stop();
+        _uiFlush?.Stop();
+        _scheduleTimer?.Stop();
+        IsEnabled = false; // 收尾期间不再接受新的编辑，避免保存检查后又产生未保存修改。
+        e.Cancel = true;
+        _logShutdownTask = FinishClosingAsync();
+    }
+
+    private async System.Threading.Tasks.Task FinishClosingAsync()
+    {
+        var budget = System.Diagnostics.Stopwatch.StartNew();
+        // 即使 runner/writer 都已完成，也必须等本次 Closing 返回，避免同步重入 Close。
+        await System.Threading.Tasks.Task.Yield();
+        try
+        {
+            var completion = _runner?.Completion ?? System.Threading.Tasks.Task.CompletedTask;
+            // 为独立日志写入器保留少量收尾时间；不让阻塞的驱动使退出无限等待。
+            int waitMs = (int)Math.Max(0, 750 - budget.ElapsedMilliseconds);
+            if (await System.Threading.Tasks.Task.WhenAny(completion, System.Threading.Tasks.Task.Delay(waitMs)) == completion)
+                try { await completion; } catch { }
+            await System.Threading.Tasks.Task.Run(() => _runLogWriter.Complete(
+                TimeSpan.FromMilliseconds(Math.Max(0, 1000 - budget.ElapsedMilliseconds))));
+        }
+        catch { }
+        finally
+        {
+            _closeReady = true;
+            if (!_windowClosed) Close();
+        }
     }
 
     protected override void OnClosed(EventArgs e)
     {
+        _windowClosed = true;
         try
         {
             _runner?.Stop();
+            // Application.Shutdown 不接受 Closing 取消；只等待独立 writer，绝不在此等依赖 UI 的 runner。
+            if (!_closeReady && _logShutdownTask is not { IsCompleted: true }) _runLogWriter.Complete(TimeSpan.FromSeconds(1));
             _uiFlush?.Stop();
             _updateTimer?.Stop();   // 停掉 30s 更新轮询
             StopRecording();
