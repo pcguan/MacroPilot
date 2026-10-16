@@ -25,9 +25,13 @@ public partial class MainWindow
         private static readonly string[] StepNames = { "下载更新包", "校验完整性", "退出并覆盖安装", "重启新版本" };
 
         public bool Canceled { get; private set; }
+        public Window Window => _win;
 
-        public UpdateProgressUi(Window owner, string versionText)
+        private readonly Action _cancelDownload;
+
+        public UpdateProgressUi(Window owner, string versionText, Action cancelDownload)
         {
+            _cancelDownload = cancelDownload;
             _title = new TextBlock { FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
             _detail = new TextBlock { FontSize = 12, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap };
             _detail.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
@@ -45,7 +49,7 @@ public partial class MainWindow
 
             _cancel = new Button { Content = "取消", Width = 84, Height = 32, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
             _cancel.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
-            _cancel.Click += (_, _) => { Canceled = true; _cancel.IsEnabled = false; _detail.Text = "正在取消…"; };
+            _cancel.Click += (_, _) => Cancel();
 
             var sp = new StackPanel { Margin = new Thickness(22) };
             sp.Children.Add(_title);
@@ -66,12 +70,18 @@ public partial class MainWindow
             _win.SetResourceReference(Control.ForegroundProperty, "Ink");
             _win.SourceInitialized += (_, _) => ThemeManager.ApplyWindowTitleBar(_win, ThemeManager.EffectiveDark);
             // 更新过程中不许直接关掉本窗（要么走取消，要么等它自己关）
-            _win.Closing += (_, e) => { if (!_closable) { e.Cancel = true; Canceled = true; } };
+            _win.Closing += (_, e) => { if (!_closable) { e.Cancel = true; Cancel(); } };
             SetStep(0, "准备下载…");
             _win.Show();
         }
 
         private bool _closable;
+        private void Cancel()
+        {
+            if (Canceled) return;
+            Canceled = true; _cancel.IsEnabled = false; _detail.Text = "正在取消…";
+            _cancelDownload();
+        }
 
         /// <summary>切到第 index 步（0 起），前面的步骤标记为已完成。</summary>
         public void SetStep(int index, string title, string detail = "")
@@ -85,7 +95,7 @@ public partial class MainWindow
                 _stepTexts[i].SetResourceReference(TextBlock.ForegroundProperty, i <= index ? "Ink" : "Muted");
                 _stepTexts[i].FontWeight = i == index ? FontWeights.SemiBold : FontWeights.Normal;
             }
-            _cancel.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
+            _cancel.Visibility = index <= 1 ? Visibility.Visible : Visibility.Collapsed;
         }
 
         /// <summary>下载百分比；传负数表示总长未知（保持不确定态）。</summary>
@@ -119,6 +129,6 @@ public partial class MainWindow
         var msg = UpdateService.LastUpdateFailure();
         if (string.IsNullOrEmpty(msg)) return;
         UpdateStatusText.Text = "上次更新未成功：" + msg;
-        AddLog("Warning", "上次在线更新未成功（已回滚）：" + msg);
+        AddLog("Warning", "上次在线更新未成功：" + msg);
     }
 }

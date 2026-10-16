@@ -21,16 +21,19 @@ cd /d "%HERE%"
 
 echo == [1/6] publish WPF (framework-dependent) ==
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
+if exist "%STAGE%" ( echo [FAILED] cannot clear old payload stage & exit /b 1 )
 dotnet publish "%APP%" -c Release -p:DebugType=none -p:DebugSymbols=false -o "%STAGE%"
 if errorlevel 1 ( echo [FAILED] publish & exit /b 1 )
 
 echo == [2/6] zip payload to assets\payload\app.zip ==
 if not exist "%HERE%assets\payload" mkdir "%HERE%assets\payload"
 del /q "%HERE%assets\payload\app.zip" 2>nul
+if exist "%HERE%assets\payload\app.zip" ( echo [FAILED] cannot replace old payload archive & exit /b 1 )
 pushd "%STAGE%"
 "%SEVENZIP%" a -tzip -mx=5 "%HERE%assets\payload\app.zip" * >nul
+set "ZIP_RESULT=%ERRORLEVEL%"
 popd
-if errorlevel 1 ( echo [FAILED] zip payload & exit /b 1 )
+if not "%ZIP_RESULT%"=="0" ( echo [FAILED] zip payload & exit /b 1 )
 
 echo == [3/6] flutter build windows --release ==
 REM Regenerate the windows runner if missing (repo keeps only authored sources).

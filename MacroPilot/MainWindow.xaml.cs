@@ -119,6 +119,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             AddLog("Info", App.IsRunningAsAdmin() ? "当前以管理员权限运行。" : "当前为普通权限。");
             OvVersionText.Text = "版本 " + Services.UpdateService.CurrentVersionText;
             ShowCurrentChangelog();
+            UpdateService.ConfirmSuccessfulStartup();
+            ReportStorageLoad();
             ReportLastUpdateFailure();  // 上次就地更新若失败过，把原因摆出来
             RefreshScheduleMark();      // 标出定时目标方案
             _ = StartupUpdateCheck();   // 自动更新开→启动即查并直接更新；关→仅起 30s 轮询
@@ -228,7 +230,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         ActivateOnFinishCheck.IsChecked = _doc.ActivateOnFinish;
         ShowHudCheck.IsChecked = _doc.ShowRunHud;
         MinimizeOnRunCheck.IsChecked = _doc.MinimizeOnRun;
-        HudOpacitySlider.Value = Math.Clamp((int)Math.Round(_doc.HudOpacity * 100), 10, 100);
+        _doc.HudOpacity = Math.Clamp(_doc.HudOpacity, 0.3, 1.0);
+        HudOpacitySlider.Value = (int)Math.Round(_doc.HudOpacity * 100);
         HudOpacityValue.Text = $"{(int)Math.Round(_doc.HudOpacity * 100)}%";
         TrayCheck.IsChecked = _doc.MinimizeToTray;
         ThemeCombo.SelectedIndex = _doc.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
@@ -250,8 +253,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private async void RescanDevices(bool promptUnknown, bool alertIfNone)
     {
         // 运行期间 COM 被自己占着，Probe 必然打不开 → CH9329 会"消失"→ 自动切成 Native 并写进 _doc，
-        // 下次就悄悄变软件模拟了。运行中直接不扫。
-        if (_runner is { IsRunning: true }) { ShowToast("运行中，暂不重新检测设备"); return; }
+        // 下次就悄悄变软件模拟了。启动、录制与更新期间同样保留当前设备选择。
+        if (!_activity.IsIdle) { ShowToast("当前任务未结束，暂不重新检测设备"); return; }
         if (_scanning) return;   // 扫描进行中，忽略重复触发
         _scanning = true;
         try
@@ -261,7 +264,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var known = new Dictionary<string, string>(_doc.KnownBridges);   // 快照给后台线程，别在别的线程碰 UI 状态
         if (BridgeLabel != null) BridgeLabel.Text = "正在检测…";
         // 扫描（每口 open+60ms 探测）放后台线程，先把窗口显示出来，扫完再刷新下拉。
-        _ch9329Ports = await System.Threading.Tasks.Task.Run(() => Ch9329Scanner.Scan(bauds, known));
+        var detected = await System.Threading.Tasks.Task.Run(() => Ch9329Scanner.Scan(bauds, known));
+        if (_closing || !_activity.IsIdle) return;
+        _ch9329Ports = detected;
 
         _loading = true;
         PortCombo.Items.Clear();
@@ -497,6 +502,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             else if (ThemedDialog.Show("已启用管理员模式。需要重启程序才能生效。\n是否立即以管理员身份重启？",
                          "管理员模式", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
+                if (!RequireIdle("重启") || !EnsureCurrentPlanClean()) return;
                 if (App.RelaunchAsAdmin()) { Application.Current.Shutdown(); }
                 else ThemedDialog.Show("提权被取消或失败，将在下次启动时再次尝试。", "管理员模式", MessageBoxButton.OK, MessageBoxImage.Exclamation);
             }
@@ -529,17 +535,20 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
     private void ChangeDataDir_Click(object sender, RoutedEventArgs e)
     {
+        if (!RequireIdle("更改数据目录")) return;
         if (!EnsureCurrentPlanClean()) return;   // 先把当前未保存方案存到旧位置，避免切换时丢失
         var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "选择数据保存文件夹" };
         try { if (Directory.Exists(Storage.DataDir)) dlg.InitialDirectory = Storage.DataDir; } catch { }
         if (dlg.ShowDialog(this) != true) return;
         var newDir = dlg.FolderName;
         if (string.IsNullOrWhiteSpace(newDir)) return;
+        if (!Storage.ValidateDataDirectory(newDir, out var directoryError))
+        { ThemedDialog.Show(directoryError, "数据目录不可用"); return; }
         if (string.Equals(Path.GetFullPath(newDir), Path.GetFullPath(Storage.DataDir), StringComparison.OrdinalIgnoreCase))
         { ThemedDialog.Show("所选目录就是当前数据目录。", "提示"); return; }
 
         var r = ThemedDialog.Show($"将数据保存位置更改为：\n{newDir}\n\n是否把当前方案与日志一并迁移过去？\n（选“否”则不动该目录已有数据，直接加载它）", "更改数据位置", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-        if (r == MessageBoxResult.Cancel) return;
+        if (r == MessageBoxResult.Cancel || !RequireIdle("更改数据目录")) return;
         if (r == MessageBoxResult.Yes && !Storage.MigrateTo(newDir, out var mErr))
         { ThemedDialog.Show("迁移失败：" + mErr, "提示", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
         if (!Storage.SetDataDir(newDir, out var sErr))
@@ -551,13 +560,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
     private void ResetDataDir_Click(object sender, RoutedEventArgs e)
     {
+        if (!RequireIdle("更改数据目录")) return;
         if (!Storage.IsCustomDir) return;
         if (!EnsureCurrentPlanClean()) return;
         var r = ThemedDialog.Show($"恢复默认数据位置：\n{Storage.DefaultDir}\n\n是否把当前方案与日志一并迁移回默认位置？\n（选“否”则不动默认目录已有数据，直接加载它）", "恢复默认", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-        if (r == MessageBoxResult.Cancel) return;
+        if (r == MessageBoxResult.Cancel || !RequireIdle("更改数据目录")) return;
         if (r == MessageBoxResult.Yes && !Storage.MigrateTo(Storage.DefaultDir, out var mErr))
         { ThemedDialog.Show("迁移失败：" + mErr, "提示", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
-        Storage.SetDataDir(null, out _);
+        if (!Storage.SetDataDir(null, out var resetError))
+        { ThemedDialog.Show("设置失败：" + resetError, "提示"); return; }
         ReloadPlansFromDataDir();
         UpdateDataDirText();
         ThemedDialog.Show("已更新数据路径并重新加载数据。", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -568,12 +579,20 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         var loaded = Storage.LoadDirect();   // 只读新位置 plans.json，不做参考版导入
         _plan = null;
+        SetClip(null); _clipPlan = null; SetFocusedStep(null);
         _undo.Clear(); UndoButton.IsEnabled = false;
         _plans.Clear();
         foreach (var p in loaded.Plans) _plans.Add(p);
         SnapshotAllPlans();                  // 以加载内容为已保存基准
         if (_plans.Count > 0) PlansList.SelectedIndex = 0; else ShowNoPlan();
         RefreshSaveState();
+        ReportStorageLoad();
+    }
+
+    private void ReportStorageLoad()
+    {
+        if (!string.IsNullOrEmpty(Storage.LastLoadWarning))
+        { AddLog("Warning", Storage.LastLoadWarning); ThemedDialog.Show(Storage.LastLoadWarning, "数据恢复"); }
     }
 
     // 设备状态高亮：可用 → 实心圆点 + Success（绿）；不可用 → 空心圆点 + Muted。用 SetResourceReference 以随主题切换。
@@ -919,31 +938,33 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 复制目标以“聚焦节点”为准：选中组合子节点时复制该子动作本身，选中父节点时复制整个组合。
     private void StepCopy_Click(object sender, RoutedEventArgs e)
     {
-        var target = _focusedStep ?? _step;
+        var target = _plan == null ? null : PlanEditing.ResolveTarget(_plan.Steps, _focusedStep, _step);
         if (target != null) { SetClip(target.Clone()); ShowToast("已复制动作"); }
     }
     private void StepPaste_Click(object sender, RoutedEventArgs e)
     {
-        if (_plan == null || _clip == null) return;
-        var target = _focusedStep ?? _step;
+        var plan = _plan;
+        if (plan == null || _clip == null) return;
+        var target = PlanEditing.ResolveTarget(plan.Steps, _focusedStep, _step);
+        if (_focusedStep != null && target == null) return;
         var parentGroup = target != null ? FindParentGroup(target) : null;
         PushUndo();
         var pasted = _clip.Clone();
         pasted.RenewId();          // 副本必须是新身份（旧格式跳转按 Id 解析，不能与原件撞）
         pasted.ClearAliases();     // 别名是跳转标签：方案里出现两个同名标签会让跳转指错，副本一律清空
         // 注意 JumpTargetAlias【保留】：粘贴一个"跳转到「战斗」"的动作，指向的还是那个标签，语义自然成立
-        if (parentGroup != null && !_clip.IsGroup)
+        if (parentGroup != null)
         {
-            // 聚焦在组合内部的子动作：作为兄弟子动作粘到该子动作之后（组合不嵌套组合）。
+            // 聚焦在组合内部：在同级插入，组合也允许嵌套。
             int at = parentGroup.Children.IndexOf(target!) + 1;
             parentGroup.Children.Insert(Math.Min(Math.Max(at, 0), parentGroup.Children.Count), pasted);
         }
         else
         {
-            // 顶层粘贴：若聚焦点在组合内且剪贴板是组合，则贴到该组合之后（避免嵌套）。
+            // 未聚焦子项时，在顶层所选项后插入。
             var anchor = parentGroup ?? target;
-            int at = anchor != null ? _plan.Steps.IndexOf(anchor) + 1 : _plan.Steps.Count;
-            _plan.Steps.Insert(Math.Min(Math.Max(at, 0), _plan.Steps.Count), pasted);
+            int at = anchor != null ? plan.Steps.IndexOf(anchor) + 1 : plan.Steps.Count;
+            plan.Steps.Insert(Math.Min(Math.Max(at, 0), plan.Steps.Count), pasted);
         }
         RefreshIndices(); MarkDirty();
     }
@@ -959,10 +980,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void StepDelete_Click(object sender, RoutedEventArgs e)
     {
         if (_plan == null) return;
-        // 焦点在组合子动作上：只删该子动作，不解散组合。
-        if (_focusedStep != null && FindParentGroup(_focusedStep) != null) { DeleteChild(_focusedStep); return; }
-        if (_step == null) return;
-        PushUndo(); _plan.Steps.Remove(_step); RefreshIndices(); MarkDirty();
+        var target = PlanEditing.ResolveTarget(_plan.Steps, _focusedStep, _step);
+        if (target == null) return;
+        PushUndo();
+        PlanEditing.Remove(_plan.Steps, target);
+        SetFocusedStep(null);
+        RefreshIndices(); MarkDirty();
     }
     private void ClearSteps_Click(object sender, RoutedEventArgs e)
     {
@@ -1086,9 +1109,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             else SetNav(NavRun, PageRun);   // 正在运行：切到运行页给出反馈，而非无响应
             return;
         }
+        if (!RequireIdle("启动方案")) return;
         if (_plan == null || _plan.Steps.Count == 0) { ThemedDialog.Show("请先选择一个有动作的方案。", "提示"); return; }
+        var requested = _plan;
         if (!EnsureCurrentPlanClean()) return;
-        if (_plan == null || _plan.Steps.Count == 0) return;
+        if (_plan != requested || _plan == null || _plan.Steps.Count == 0) return;
         RunPlan(BuildRunPlan(_plan), _plan.Name);
     }
 
@@ -1107,18 +1132,28 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
 
     // 运行指定方案（快照副本；"从此动作开始/单次"另构临时方案）。
+    private readonly ActivityState _activity = new();
+    private bool _closing;
     private bool _startingRun;
+    private bool RequireIdle(string operation)
+    {
+        if (_activity.IsIdle && !_closing) return true;
+        ShowToast($"当前正在运行、录制或更新，暂不能{operation}");
+        return false;
+    }
     private bool _minimizedForRun;   // 本次运行是否为悬浮窗把本体最小化了（结束时据此恢复）
     private async void RunPlan(MacroPlan plan, string displayName)
     {
-        if (_runner is { IsRunning: true } || _startingRun) return;
+        if (_closing || !_activity.TryBegin(ActivityKind.StartingRun)) return;
         _startingRun = true;
+        IInputBackend? openingBackend = null;
         try
         {
         var prev = _backend; _backend = null;
         var closing = _backendClosing;
         var backend = string.Equals(_doc.Backend, "Native", StringComparison.OrdinalIgnoreCase)
             ? (IInputBackend)new NativeInputDevice(_doc.NativeKeyMode) : new Ch9329Device(_doc.Port, _doc.BaudRate);
+        openingBackend = backend;
         // 释放上一后端、等上次串口释放完（偶发阻塞 2s）、开口/重试，全放后台线程，别卡 UI。
         bool ok = await System.Threading.Tasks.Task.Run(() =>
         {
@@ -1128,14 +1163,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             System.Threading.Thread.Sleep(300);   // 端口可能还没让干净，稍等重试一次
             return backend.Open();
         });
-        if (_runner is { IsRunning: true }) { backend.Dispose(); return; }   // 等待期间已另起一次
+        if (_closing || _runner is { IsRunning: true }) { return; }   // 等待期间已另起一次
         if (!ok)
         {
-            backend.Dispose();
             AddLog("Error", $"输出设备打开失败：{backend.Describe}");
             SetNav(NavRun, PageRun); SetRunStatus("Error", "设备打开失败"); return;
         }
-        _backend = backend;
+        _backend = backend; openingBackend = null;
 
         RunStepsList.ItemsSource = plan.Steps;
         _runTopAncestor.Clear();
@@ -1167,9 +1201,20 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         else SendWindowToBottom();   // 无悬浮窗：下沉到最底层、不抢焦点，方便切到目标程序窗口
         StartRunUiTimer();
         EnableHotkeys();        // 仅在方案执行期间独占 F9/F10/F11 + 挂低级键盘钩子；OnRunFinished 里注销
+        _activity.RunStarted();
         _runner.Start(plan, _doc.ExecutionDelayMs, _doc.TimingJitterEnabled ? _doc.TimingJitterMs : 0);
         }
-        finally { _startingRun = false; }
+        catch (Exception ex)
+        {
+            AddLog("Error", "启动运行失败：" + ex.Message);
+            OnRunFinished("Error");
+        }
+        finally
+        {
+            try { openingBackend?.Dispose(); } catch { }
+            _startingRun = false;
+            _activity.Finish(ActivityKind.StartingRun);
+        }
     }
 
     // 运行时把本窗口压到 Z 序最底（不改大小/位置、不激活），让目标程序窗口浮到前面。
@@ -1372,6 +1417,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private System.Threading.Tasks.Task? _backendClosing;
     private void OnRunFinished(string reason)
     {
+        _activity.Finish(ActivityKind.Running);
+        if (_closing) return;
         HideHud();              // 收起运行悬浮窗
         DisableHotkeys();       // 运行结束（完成/停止/出错）即释放 F9/F10/F11 与键盘钩子
         _uiFlush?.Stop();
@@ -1563,7 +1610,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     // 仅持久化"设置"（主题/串口/桥片/数据目录等），不提交未保存的方案编辑：
     // 只写 settings.json（不含方案），改一个下拉框/开关不再把含截图的整份方案重写一遍。
-    private void PersistSettings() => Storage.SaveSettings(_doc);
+    private void PersistSettings()
+    {
+        if (!Storage.SaveSettings(_doc)) AddLog("Warning", Storage.LastLoadWarning ?? "配置保存失败，原文件已保留。");
+    }
 
     // 返回 false 表示取消或保存/恢复失败，调用方都必须中止原操作。
     // 任何离开当前方案编辑上下文的操作（切页、切方案、运行、关闭、新建/导入/排序/删除等）都应先调用它。
@@ -1632,6 +1682,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 方案保存：提交内存中的全部方案到磁盘，更新快照、清脏。
     private bool Save()
     {
+        if (!Storage.CanSavePlans) { ThemedDialog.Show(Storage.LastLoadWarning ?? "存档无法读取，已阻止覆盖。请恢复数据或更换数据目录。", "无法保存"); return false; }
         var plans = _plans.ToList();
         bool WritePrepared(IReadOnlyList<MacroPlan> prepared)
         {
@@ -1660,7 +1711,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 方案运行期间跳过——运行的是旧快照，其中的图片可能已不在当前方案里，删了会让运行中的条件失效。
     private void SweepOrphanImages()
     {
-        if (_runner is { IsRunning: true }) return;
+        if (_runner is { IsRunning: true } || _startingRun) return;
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in _plans) ImageStore.CollectHashes(p, used);
         if (_clipPlan != null) ImageStore.CollectHashes(_clipPlan, used);
@@ -2011,48 +2062,87 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // 本体不退出 → 助手等不到解锁 → "backup rename failed: dir still in use"。
     private bool _updatingNow;
 
+    private System.Threading.CancellationTokenSource? _updateCancellation;
+    private UpdateProgressUi? _updateProgress;
+
     private async System.Threading.Tasks.Task DownloadAndRun(Services.UpdateInfo info)
     {
-        // 更新会重启本体，必须先把"未保存的方案"和"正在运行的方案"处理干净，
-        // 否则退出流程会被拦下（这正是 v0.1.3 之前点更新后进程不退、更新失败的原因）。
+        if (_updateBusy || _closing) return;
+        if (_activity.Kind is ActivityKind.Recording or ActivityKind.StartingRun)
+        { ShowToast("请先结束录制或等待设备启动完成，再更新"); return; }
         if (_runner is { IsRunning: true })
         {
             if (ThemedDialog.Show("方案正在运行，更新需要重启程序。是否停止运行并继续更新？", "更新",
                     MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
-            _runner?.Stop();
+            _runner.Stop();
+            while (_runner.IsRunning && !_closing) await System.Threading.Tasks.Task.Delay(30);
+            if (_closing) return;
+            FlushRunUi();
         }
-        if (!EnsureCurrentPlanClean()) return;   // 用户选"取消"→ 放弃本次更新
+        if (!EnsureCurrentPlanClean() || !_activity.TryBegin(ActivityKind.Updating)) return;
 
         _updateBusy = true;
         CheckUpdateButton.IsEnabled = false;
-        var ui = new UpdateProgressUi(this, info.VersionText);
+        using var cancellation = new System.Threading.CancellationTokenSource();
+        _updateCancellation = cancellation;
+        UpdateProgressUi? ui = null;
+        string? file = null;
+        bool handedOff = false;
         try
         {
+            ui = _updateProgress = new UpdateProgressUi(this, info.VersionText, cancellation.Cancel);
             ui.SetStep(0, "正在下载更新包…", "");
             var prog = new Progress<double>(p =>
             {
+                if (cancellation.IsCancellationRequested || _closing) return;
                 ui.SetProgress(p);
                 UpdateStatusText.Text = p < 0 ? "正在下载更新…" : $"正在下载更新… {p * 100:0}%";
             });
-            var file = await Services.UpdateService.DownloadAsync(info, prog);
-            if (ui.Canceled) { ui.Close(); UpdateStatusText.Text = "已取消更新"; return; }
-
-            ui.SetStep(1, "正在校验完整性…", "核对 SHA-256");
-            ui.Indeterminate();
-            await System.Threading.Tasks.Task.Delay(150);   // 让这一步在界面上可见（校验在下载时已完成）
-
-            ui.SetStep(2, "正在退出并覆盖安装…", "程序即将关闭，安装完成后会自动重启");
-            UpdateStatusText.Text = "下载完成，正在静默更新并自动重启…";
-            await System.Threading.Tasks.Task.Delay(400);   // 给用户看清这句话的时间
-            _updatingNow = true;   // 让 OnClosing 直接放行，别再弹任何模态框
-            Services.UpdateService.ApplyAndExit(file);   // zip→就地解压覆盖(备份/回滚/保留unins)；exe→静默安装器兜底
+            handedOff = await UpdatePreparation.ApplyWhenReadyAsync(async () =>
+            {
+                file = await Services.UpdateService.DownloadAsync(info, prog, cancellation.Token);
+                cancellation.Token.ThrowIfCancellationRequested();
+                ui.SetStep(1, "正在校验完整性…", "核对 SHA-256");
+                ui.Indeterminate();
+                await System.Threading.Tasks.Task.Delay(150, cancellation.Token);
+                ui.SetStep(2, "准备退出并覆盖安装…", "应用更新前将再次检查未保存的方案");
+                await System.Threading.Tasks.Task.Delay(400, cancellation.Token);
+                // 模态编辑窗口的草稿还没写回方案；等它关闭后才能检查真正的脏状态。
+                while (!_closing && OwnedWindows.Cast<Window>().Any(w => w != ui.Window && w.IsVisible))
+                {
+                    ui.SetStep(1, "等待编辑窗口关闭…", "请先完成或取消当前编辑；也可以取消更新");
+                    await System.Threading.Tasks.Task.Delay(100, cancellation.Token);
+                }
+            }, () => !_closing && EnsureCurrentPlanClean() && !_closing, () =>
+            {
+                _updatingNow = true;
+                Services.UpdateService.ApplyAndExit(file!);
+            }, cancellation.Token);
+            if (!handedOff && !_closing) UpdateStatusText.Text = "已取消更新";
+        }
+        catch (OperationCanceledException)
+        {
+            if (!_closing) UpdateStatusText.Text = "已取消更新";
         }
         catch (Exception ex)
         {
+            _updatingNow = false; // 启动助手失败后，错误对话框期间也必须恢复正常的关窗保存检查。
+            if (!_closing)
+            {
+                UpdateStatusText.Text = "更新失败：" + ex.Message;
+                ThemedDialog.Show(ex.Message + "\n\n可前往发布页手动下载安装。", "更新失败");
+            }
+        }
+        finally
+        {
+            if (!handedOff) _updatingNow = false;
             _updateBusy = false;
-            CheckUpdateButton.IsEnabled = true;
-            UpdateStatusText.Text = "更新失败：" + ex.Message;
-            ui.Fail(ex.Message + "\n\n可前往发布页手动下载安装。");
+            _updateCancellation = null;
+            _updateProgress = null;
+            ui?.Close();
+            _activity.Finish(ActivityKind.Updating);
+            if (!_closing) CheckUpdateButton.IsEnabled = true;
+            if (!handedOff && file != null) { try { File.Delete(file); } catch { } }
         }
     }
 
@@ -2081,6 +2171,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         // 更新流程已在 DownloadAndRun 里问过未保存方案，这里必须无条件放行：
         // 任何模态询问都会挂住 Shutdown，导致进程不退、安装目录被占、更新失败。
         if (!_updatingNow && !EnsureCurrentPlanClean()) { e.Cancel = true; return; }
+        _closing = true;
+        _activity.Close();
+        _updateCancellation?.Cancel();
+        _updateProgress?.Close();
+        StopRecording();
         base.OnClosing(e);   // 窗口几何由 WindowMemory 在 Closing 时统一保存
     }
 
@@ -2091,6 +2186,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _runner?.Stop();
             _uiFlush?.Stop();
             _updateTimer?.Stop();   // 停掉 30s 更新轮询
+            StopRecording();
             _traceRec.Stop();   // 兜底：录制中直接关窗也卸鼠标钩子、把剩余样本落盘
             DisableHotkeys();   // 兜底：运行中直接关窗也不泄漏热键/键盘钩子
             // 串口 Close() 偶发阻塞，放后台线程释放（后台线程不会阻止进程退出），
@@ -2220,36 +2316,29 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void RunFromHere_Click(object sender, RoutedEventArgs e)
     {
+        if (!RequireIdle("启动方案")) return;
         if (_plan == null) return;
         int i = StepsList.SelectedIndex;
-        if (!EnsureCurrentPlanClean()) return;
+        var requested = _plan;
+        if (!EnsureCurrentPlanClean() || _plan != requested) return;
         if (_plan == null) return;
         if (i < 0 || i >= _plan.Steps.Count) return;
-        var sub = new MacroPlan { Name = $"{_plan.Name}（从第 {i + 1} 步）", LoopCount = 1 };
+        var sub = PlanEditing.BuildTestPlan(_plan, i, single: false);
         _runOrigin.Clear(); _runSourcePlan = _plan;
-        // 克隆（不动原方案对象）并重映射跳转：原 1 起序号 T 落到子列表 = T-i；指向起点之前的步（T≤i）无处可跳，清 0。
-        foreach (var st in _plan.Steps.Skip(i))
-        {
-            var c = st.Clone();
-            if (c.JumpTarget > i) c.JumpTarget -= i;
-            else { c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0; }
-            _runOrigin[c] = st;
-            sub.Steps.Add(c);
-        }
+        for (int k = 0; k < sub.Steps.Count; k++) _runOrigin[sub.Steps[k]] = _plan.Steps[i + k];
         RunPlan(sub, sub.Name);
     }
     private void RunSingleStep_Click(object sender, RoutedEventArgs e)
     {
+        if (!RequireIdle("启动方案")) return;
         if (_plan == null || _step == null) return;
         int i = StepsList.SelectedIndex;
-        if (!EnsureCurrentPlanClean()) return;
+        var requested = _plan;
+        if (!EnsureCurrentPlanClean() || _plan != requested) return;
         if (_plan == null || i < 0 || i >= _plan.Steps.Count) return;
-        var sub = new MacroPlan { Name = $"单次测试：第 {i + 1} 步", LoopCount = 1 };
+        var sub = PlanEditing.BuildTestPlan(_plan, i, single: true);
         _runOrigin.Clear(); _runSourcePlan = _plan;
-        var c = _plan.Steps[i].Clone();
-        c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0;   // 单步测试无处可跳（也别动原对象）
-        _runOrigin[c] = _plan.Steps[i];
-        sub.Steps.Add(c);
+        _runOrigin[sub.Steps[0]] = _plan.Steps[i];
         RunPlan(sub, sub.Name);
     }
 
@@ -2292,7 +2381,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _plan.Steps.RemoveAt(i);
         var kids = g.Children.ToList();
         // 子动作提升回顶层：其原 JumpTarget 是"在组合内/入组前"的旧序号，对当前顶层无意义，清掉。
-        foreach (var c in kids) { c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0; }
+        // 别名仍是有效目标，必须保留其原次数上限，不能把有限跳转变成无限。
+        foreach (var c in kids) { c.JumpTargetId = ""; c.JumpTarget = 0; }
         for (int k = 0; k < kids.Count; k++) _plan.Steps.Insert(i + k, kids[k]);
         RefreshIndices();
         if (i < _plan.Steps.Count) StepsList.SelectedIndex = i;
@@ -2316,8 +2406,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (_plan == null) return;
         var g = FindParentGroup(child); if (g == null) return;
         PushUndo();
-        g.Children.Remove(child);
-        if (g.Children.Count == 0) _plan.Steps.Remove(g);
+        PlanEditing.Remove(_plan.Steps, child);
         SetFocusedStep(null);
         RefreshIndices(); MarkDirty();
     }
@@ -2334,7 +2423,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (edited != null)
         {
             if (SameStepContent(edited, child)) return;
-            PushUndo(); g.Children[idx] = edited; MarkDirty();
+            PushUndo(); g.Children[idx] = edited; SetFocusedStep(edited); MarkDirty();
         }
     }
     // 顶层动作：在选中步骤之前(offset=0)/之后(offset=1)插入一个新动作。
@@ -2357,15 +2446,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (_plan == null) return;
         var g = FindParentGroup(child); if (g == null) return;
         PushUndo();
-        int gi = _plan.Steps.IndexOf(g);
-        g.Children.Remove(child);
-        child.JumpTargetId = ""; child.JumpTarget = 0; child.JumpTimes = 0;   // 移出到顶层：旧跳转目标无意义，清掉
-        _plan.Steps.RemoveAt(gi);
-        int at = gi;
-        if (g.Children.Count >= 2) _plan.Steps.Insert(at++, g);
-        else { foreach (var c in g.Children.ToList()) { c.JumpTargetId = ""; c.JumpTarget = 0; c.JumpTimes = 0; _plan.Steps.Insert(at++, c); } g.Children.Clear(); }
-        _plan.Steps.Insert(at, child);
-        RefreshIndices(); StepsList.SelectedIndex = at; MarkDirty();
+        if (!PlanEditing.Promote(_plan.Steps, child)) { _undo.Pop(); UndoButton.IsEnabled = _undo.Count > 0; return; }
+        RefreshIndices(); SetFocusedStep(child); MarkDirty();
     }
     private MacroStep? FindParentGroup(MacroStep child)
     {

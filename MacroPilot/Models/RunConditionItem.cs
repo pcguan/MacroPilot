@@ -38,7 +38,11 @@ public sealed class ConditionItem : IConditionData
     [JsonIgnore]
     public bool IsValid =>
         (Type == "TimeRange" && (StartMinute.HasValue || EndMinute.HasValue))
-        || (Type == "ImageMatch" && !string.IsNullOrEmpty(Image) && RectW > 0 && RectH > 0);
+        || (Type == "ImageMatch" && !string.IsNullOrEmpty(Image) && IsImageRegionValid(RectW, RectH));
+
+    // 两边为 0 表示整屏；单边缺失、负数都不是完整的区域配置。
+    internal static bool IsImageRegionValid(int width, int height)
+        => (width == 0 && height == 0) || (width > 0 && height > 0);
 
     public ConditionItem Clone() => new()
     {

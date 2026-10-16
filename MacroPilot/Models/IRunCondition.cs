@@ -89,7 +89,7 @@ public static class RunCondition
         // 尚未 Normalize 的历史数据也要认（保险：任何入口漏调 Normalize 都不至于把条件当成没有）
         return (c.RunConditionType == "TimeRange" && (c.RunConditionStartMinute.HasValue || c.RunConditionEndMinute.HasValue))
             || (c.RunConditionType == "ImageMatch" && !string.IsNullOrEmpty(c.RunConditionImage)
-                && c.RunConditionRectW > 0 && c.RunConditionRectH > 0);
+                && ConditionItem.IsImageRegionValid(c.RunConditionRectW, c.RunConditionRectH));
     }
 
     /// <summary>把 src 的运行条件整体拷到 dst（跨级别通用）。</summary>
@@ -125,22 +125,8 @@ public static class RunCondition
     public static string Snapshot(IRunCondition c)
     {
         Normalize(c);
-        var sb = new System.Text.StringBuilder();
-        sb.Append(c.RunConditionLogic).Append('|')
-          .Append(c.RunConditionRetry).Append('|')
-          .Append(c.RunConditionRetryIntervalMs).Append('|')
-          .Append(c.RunConditionRetryMax).Append('|')
-          .Append(c.RunConditionRetryTimeoutMs).Append('|');
-        foreach (var it in c.RunConditions)
-            sb.Append(it.Type).Append(',').Append(it.Invert).Append(',')
-              .Append(it.StartMinute).Append(',').Append(it.EndMinute).Append(',')
-              .Append(it.Image).Append(',').Append(it.Monitor).Append(',')
-              .Append(it.RectX).Append(',').Append(it.RectY).Append(',')
-              .Append(it.RectW).Append(',').Append(it.RectH).Append(',')
-              .Append(it.Threshold.ToString("0.####")).Append(',')
-              .Append(it.OrigMonitor).Append(',').Append(it.OrigRectX).Append(',').Append(it.OrigRectY).Append(',')
-              .Append(it.OrigRectW).Append(',').Append(it.OrigRectH).Append(';');
-        return sb.ToString();
+        // 按接口序列化：覆盖显示单位及今后新增条件字段，避免分隔符碰撞和小数截断。
+        return System.Text.Json.JsonSerializer.Serialize<IRunCondition>(c);
     }
 
     /// <summary>清空运行条件。</summary>

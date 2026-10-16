@@ -18,12 +18,14 @@ public static class WindowActivator
     /// <summary>聚焦 shell 桌面（所有应用窗口失活）；monitorDevice 非空时把光标停到该屏中心。</summary>
     public static void FocusDesktop(string monitorDevice)
     {
+        var monitor = string.IsNullOrEmpty(monitorDevice) ? null
+            : MacroPilot.Input.ScreenInfo.ByDevice(monitorDevice, requirePresent: true);
         var shell = GetShellWindow();
         if (shell != IntPtr.Zero) ForceForeground(shell);
-        if (!string.IsNullOrEmpty(monitorDevice))
+        if (monitor != null)
         {
-            var m = MacroPilot.Input.ScreenInfo.ByDevice(monitorDevice);
-            SetCursorPos(m.Left + m.Width / 2, m.Top + m.Height / 2);
+            if (!SetCursorPos(monitor.Left + monitor.Width / 2, monitor.Top + monitor.Height / 2))
+                throw new MacroPilot.Input.InputSafetyException("无法把光标定位到目标桌面，已停止方案。");
         }
     }
 

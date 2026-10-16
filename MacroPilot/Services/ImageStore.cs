@@ -26,6 +26,7 @@ public static class ImageStore
         {
             if (IsRef(img))
             {
+                if (!IsHash(img[Prefix.Length..])) return null;
                 var f = Path.Combine(ImagesDir, img[Prefix.Length..] + ".png");
                 return File.Exists(f) ? File.ReadAllBytes(f) : null;
             }
@@ -37,15 +38,34 @@ public static class ImageStore
     /// <summary>存字节 → "file:&lt;hash&gt;"（内容寻址，同内容不重复写、天然去重）。写失败则退回内联 base64，保证不丢图。</summary>
     public static string Ref(byte[] png)
     {
+        string? temp = null;
         try
         {
             var hash = Convert.ToHexString(SHA256.HashData(png)).ToLowerInvariant();
             Directory.CreateDirectory(ImagesDir);
             var f = Path.Combine(ImagesDir, hash + ".png");
-            if (!File.Exists(f)) File.WriteAllBytes(f, png);
+            // 上次磁盘满/进程中断可能留下同名半文件，存在并不代表内容正确。
+            if (!File.Exists(f) || !CryptographicOperations.FixedTimeEquals(SHA256.HashData(File.ReadAllBytes(f)), SHA256.HashData(png)))
+            {
+                temp = f + ".tmp_" + Guid.NewGuid().ToString("N");
+                using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    stream.Write(png);
+                    stream.Flush(flushToDisk: true);
+                }
+                File.Move(temp, f, overwrite: true);
+            }
             return Prefix + hash;
         }
         catch { return Convert.ToBase64String(png); }
+        finally { if (temp != null) try { File.Delete(temp); } catch { } }
+    }
+
+    private static bool IsHash(string value)
+    {
+        if (value.Length != 64) return false;
+        foreach (char c in value) if (!Uri.IsHexDigit(c)) return false;
+        return true;
     }
 
     /// <summary>解析成 base64（导出自包含用）：引用→读文件→base64；已是 base64 原样返回。</summary>
@@ -205,10 +225,12 @@ public static class ImageStore
         int removed = 0;
         try
         {
+            var retained = new HashSet<string>(referenced, StringComparer.OrdinalIgnoreCase);
+            if (!Storage.CollectPersistedImageHashes(retained)) return 0;
             if (!Directory.Exists(ImagesDir)) return 0;
             foreach (var f in Directory.GetFiles(ImagesDir, "*.png"))
             {
-                if (referenced.Contains(Path.GetFileNameWithoutExtension(f))) continue;
+                if (retained.Contains(Path.GetFileNameWithoutExtension(f))) continue;
                 try { File.Delete(f); removed++; } catch { }
             }
         }

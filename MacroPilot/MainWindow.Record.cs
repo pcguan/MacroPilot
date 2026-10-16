@@ -26,10 +26,12 @@ public partial class MainWindow
 
     private void RecordPlan_Click(object sender, RoutedEventArgs e)
     {
-        if (_inputRec.IsRecording) return;
-        if (_runner is { IsRunning: true }) { ShowToast("方案运行中，请先停止再录制"); return; }
+        if (!RequireIdle("录制")) return;
         if (!EnsureCurrentPlanClean()) return;   // 录完要生成"未保存"的新方案，先保证当前最多一个未保存
 
+        if (!_activity.TryBegin(ActivityKind.Recording)) return;
+        try
+        {
         // 悬浮条：固定在主屏顶部居中，不可拖动（采集层按它的矩形排除自身，位置必须整场稳定）
         var count = new TextBlock { Foreground = Brushes.White, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 14, 0), Text = "已录 0 个动作" };
         var dot = new System.Windows.Shapes.Ellipse { Width = 10, Height = 10, Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0x3B, 0x30)), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
@@ -65,13 +67,14 @@ public partial class MainWindow
             bar.Top = wa.Top + 10;
             bar.Dispatcher.BeginInvoke(new Action(() =>
             {
+                if (_closing || _recBar != bar || !bar.IsVisible) return;
                 var dpi = VisualTreeHelper.GetDpi(bar);
                 int l = (int)Math.Floor(bar.Left * dpi.DpiScaleX) - 4, t = (int)Math.Floor(bar.Top * dpi.DpiScaleY) - 4;
                 int r = (int)Math.Ceiling((bar.Left + bar.ActualWidth) * dpi.DpiScaleX) + 4;
                 int b = (int)Math.Ceiling((bar.Top + bar.ActualHeight) * dpi.DpiScaleY) + 4;
                 if (!_inputRec.Start(new[] { (l, t, r, b) }, out var err))
                 {
-                    bar.Close(); _recBar = null;
+                    StopRecording();
                     RestoreAfterRecording();
                     ThemedDialog.Show(err, "无法开始录制", MessageBoxButton.OK, MessageBoxImage.Exclamation);
                 }
@@ -80,6 +83,12 @@ public partial class MainWindow
         okBtn.Click += (_, _) => FinishRecording(commit: true);
         cancelBtn.Click += (_, _) => FinishRecording(commit: false);
 
+        bar.Closed += (_, _) =>
+        {
+            if (_recBar != bar) return;
+            StopRecording();
+            RestoreAfterRecording();
+        };
         _recBar = bar;
         _restoreAfterRec = IsVisible;
         bar.Show();
@@ -88,14 +97,18 @@ public partial class MainWindow
         _recBarTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
         _recBarTimer.Tick += (_, _) => count.Text = $"已录 {_inputRec.ActionCount} 个动作";
         _recBarTimer.Start();
+        }
+        catch
+        {
+            StopRecording(); RestoreAfterRecording();
+            throw;
+        }
     }
 
     private void FinishRecording(bool commit)
     {
-        _recBarTimer?.Stop(); _recBarTimer = null;
-        var events = _inputRec.Stop();
-        try { _recBar?.Close(); } catch { }
-        _recBar = null;
+        var events = StopRecording();
+        if (_closing) return;
         RestoreAfterRecording();
         if (!commit) { ShowToast("已取消录制"); return; }
 
@@ -111,9 +124,21 @@ public partial class MainWindow
         ShowToast($"录制完成：生成 {steps.Count} 个动作");
     }
 
+    private System.Collections.Generic.List<RecEvent> StopRecording()
+    {
+        _recBarTimer?.Stop(); _recBarTimer = null;
+        var events = _inputRec.Stop();
+        var bar = _recBar; _recBar = null;
+        try { bar?.Close(); } catch { }
+        _activity.Finish(ActivityKind.Recording);
+        return events;
+    }
+
     private void RestoreAfterRecording()
     {
-        if (!_restoreAfterRec) return;
+        if (_closing || !_restoreAfterRec) return;
+        _restoreAfterRec = false;
+        ShowInTaskbar = true;
         Show();
         WindowState = WindowState.Normal;
         Services.WindowActivator.ActivateHwnd(new WindowInteropHelper(this).Handle);

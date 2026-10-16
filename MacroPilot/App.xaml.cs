@@ -93,18 +93,6 @@ public partial class App : Application
 
     private void StartupCore()
     {
-        // 上次运行若异常退出、没来得及还原被临时改成 1:1 的系统鼠标设置（关加速/速度=10），这里据备份还原。
-        Input.Ch9329Device.RecoverMouseSettingsOnStartup();
-
-        // 抓屏能力探测：进程启动时做一次（不是每次方案运行时）——老驱动/虚拟机/远程会话建不出
-        // DXGI 桌面复制就整场回退 GDI CopyFromScreen。结果记在 ScreenCapture.ModeDesc，运行日志会带上。
-        try { ScreenCapture.Probe(); } catch { }
-
-        var doc = Storage.Load();
-
-        // 按需提权：配置了 RunAsAdmin 且当前非管理员则 runas 重启
-        if (TryElevate(doc)) { Shutdown(); return; }
-
         // 单实例：用独立锁名（避免和参考版 MacroPilot_dist 抢锁，两者可并存对比）。
         // 不抢初始所有权，改用 WaitOne 带超时——上一个实例正在退出时短暂还持锁，这里最多等 3 秒，
         // 等它释放后即可继续，从而消除“关闭后立刻重开提示已运行”的释放竞态。
@@ -122,6 +110,13 @@ public partial class App : Application
             return;
         }
 
+        // 只有获得单实例运行权后，才可加载/恢复资料及修改全局鼠标参数。
+        var doc = Storage.Load();
+        // 子进程等待此锁；Process.Start 成功后本进程立即退出并释放锁，UAC取消则继续持有。
+        if (TryElevate(doc)) { Shutdown(); return; }
+        Input.Ch9329Device.RecoverMouseSettingsOnStartup();
+        try { ScreenCapture.Probe(); } catch { }
+
         ThemeManager.Apply(doc.Theme);
 
         // 显式创建并显示主窗口（不依赖 StartupUri）
@@ -136,7 +131,17 @@ public partial class App : Application
         {
             var path = Environment.ProcessPath;
             if (string.IsNullOrEmpty(path)) return false;
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas" });
+            var start = new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas" };
+            // ShellExecute 提权不保证继承更新环境；显式传递事务上下文并登记受信任的子 PID。
+            UpdateService.ConfigureStartupHandoff(start);
+            using var child = Process.Start(start);
+            if (child == null) return false;
+            try
+            {
+                if (!UpdateService.RecordStartupHandoff(child.Id))
+                    LogCrash(new InvalidOperationException("更新提权交接记录未写入；父进程将退出释放单实例锁，原版本备份由更新助手保留。"));
+            }
+            catch (Exception ex) { LogCrash(ex); } // 子进程已启动，父必须让出锁，不能再打开第二个主窗口。
             return true;
         }
         catch { return false; } // 用户取消 UAC 等 → 继续非提权运行

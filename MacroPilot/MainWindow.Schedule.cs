@@ -88,7 +88,11 @@ public partial class MainWindow
         var plan = _plans.FirstOrDefault(p => p.Name == _doc.ScheduledPlan);
         if (plan == null) { AddLog("Warning", $"⏰ 定时方案「{_doc.ScheduledPlan}」不存在，已跳过。"); return; }
         if (plan.Steps.Count == 0) { AddLog("Warning", $"⏰ 定时方案「{plan.Name}」没有动作，已跳过。"); return; }
-        if (_runner is { IsRunning: true } || _startingRun)
+        if (_activity.Kind is Services.ActivityKind.Recording or Services.ActivityKind.Updating or Services.ActivityKind.Closing)
+        { AddLog("Warning", $"⏰ 定时「{plan.Name}」到点，但正在录制、更新或退出，已跳过。"); return; }
+        if (_startingRun)
+        { AddLog("Warning", $"⏰ 定时「{plan.Name}」到点，但设备仍在启动，已跳过。"); return; }
+        if (_runner is { IsRunning: true })
         {
             if (_doc.ScheduleConflict == "Interrupt")
             {

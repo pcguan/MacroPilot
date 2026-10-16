@@ -92,9 +92,11 @@ git push origin HEAD
 python3 tools/make_release_meta.py ../release
 ```
 
+**升级安装器/卸载器的版本（包括 0.6.23）必须加 `--installer-only`。** ZIP 更新会保留旧卸载器，因此本次清单只声明 EXE，让旧客户端也能升级到按文件归属清单卸载的新安装器。三个资产仍全部发布，ZIP 可供手动下载。后续纯本体版本可恢复普通清单。
+
 `release/` 目录里应有**三个文件**：`version.json`、`MacroPilot-app.zip`、`MacroPilotInstaller_Flutter.exe`。
 
-**GitHub 源**——建 release 再传资产，**三个都要传**（少了 `version.json` 回退源就拿不到清单）：
+**GitHub 源**——先建 draft release，上传并确认三个资产完整，再将 draft 发布为正式 release；不要先公开空 release。**三个都要传**（少了 `version.json` 回退源就拿不到清单）：
 
 ```bash
 TK=$(cat /root/workspace/codex/.claude/macropilot_gh_token)
@@ -104,13 +106,20 @@ TK=$(cat /root/workspace/codex/.claude/macropilot_gh_token)
 
 访问 GitHub **必须显式走代理** `-x http://192.168.33.9:7890`（环境里只有大写 `HTTP_PROXY`，而 curl 故意忽略它，不加 `-x` 就是裸连，大文件必超时）。
 
-**自建源（NAS）**——同样三个文件同步到 nginx 静态目录，**必须 chmod 644**，否则 nginx 用户读不到会 403：
+**自建源（NAS）**——先上传到本次独立暂存目录，核对远端大小与本地 SHA-256，再切换。程序文件先就位，`version.json` 最后原子替换；禁止直接上传覆盖线上文件，禁止先放新清单。**必须 chmod 644**，否则 nginx 用户读不到会 403。以下以 0.6.23 为例，实际发布必须使用本次版本的新暂存目录：
 
 ```bash
+ssh nas 'mkdir /vol3/1000/HDD2/tool/docker/nginx/html/macropilot/.stage-0.6.23'
 scp version.json MacroPilot-app.zip MacroPilotInstaller_Flutter.exe \
-    nas:/vol3/1000/HDD2/tool/docker/nginx/html/macropilot/
-ssh nas 'chmod 644 /vol3/1000/HDD2/tool/docker/nginx/html/macropilot/*'
+    nas:/vol3/1000/HDD2/tool/docker/nginx/html/macropilot/.stage-0.6.23/
+# 核对暂存三文件大小/SHA 后，在同一文件系统逐项 rename：
+# 1. chmod 644 暂存的三个文件。
+# 2. 将 ZIP 和 EXE 从暂存目录移到线上同名路径。
+# 3. 最后将 version.json 移到线上同名路径。
+# 4. 删除空暂存目录。若上传或核对失败，不切换线上清单。
 ```
+
+同名资产切换期间，持有旧清单的客户端仍可能遇到一次哈希不符并重试；不可变版本目录可进一步消除此窗口。上述顺序保证客户端下载不到半上传文件，也不会提前看到尚未就位的新清单。
 
 > nginx 是 NAS 上的 docker 容器，配置在 `/vol3/1000/HDD2/tool/docker/nginx/cfg/nginx.conf`，`nas.pcguan.cn` 块里的 `location /macropilot/` 已配好。改配置要先备份 + `nginx -t` 再 `-s reload`，**别重建容器**（会中断面板 / frps / mihomo / sub2api）。
 
@@ -149,6 +158,6 @@ curl -s -x http://192.168.33.9:7890 -H "Authorization: token $TK" \
 1. `https://nas.pcguan.cn/macropilot/` —— 自建源，国内直连快，主力
 2. `https://github.com/pcguan/MacroPilot/releases/latest/download/` —— 源头 / 海外回退
 
-按上述顺序逐源尝试，单源超时 10 秒，采用第一个有效清单；全失败沿用上次缓存。清单中每个已声明资产必须提供 64 位十六进制 SHA-256，缺失或格式错误会拒绝该清单并尝试下一源。版本只比 `Major.Minor.Build` 且**严格大于**才算新版。更新优先用本体 zip：下载 → 校验 SHA-256（不匹配就换源重下）→ 改名备份旧目录 → 解压覆盖 → 从备份拷回 `unins\` → 失败回滚 → 重启本体。
+按上述顺序逐源尝试，单源超时 10 秒，采用第一个有效清单；全失败沿用上次缓存。清单中每个已声明资产必须提供 64 位十六进制 SHA-256，缺失或格式错误会拒绝该清单并尝试下一源。版本只比 `Major.Minor.Build` 且**严格大于**才算新版。清单声明 ZIP 时优先用本体包：下载并校验 SHA-256（不匹配就换源重下），在同卷暂存目录保留用户文件并应用程序文件清单，改名备份旧目录，再切换新版。新版完成启动确认后才清理备份；启动失败尝试回滚，回滚失败明确报告备份位置。只声明 EXE 时通过安装器完成更新。
 
 下载与校验由本体进度窗显示；本体退出后，PowerShell 助手通过可见进度小窗显示覆盖、回滚和重启过程（隐藏的是控制台）。运行中的方案或未保存修改会先走处理流程，不应把更新描述为始终无交互。

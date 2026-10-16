@@ -227,7 +227,12 @@ public class ModelIntegrityTests
         Assert.True(it.IsValid);                                            // 单侧即有效
 
         it = new ConditionItem { Type = "ImageMatch", Image = "file:abc" };
-        Assert.False(it.IsValid);                                           // 有图无区域
+        Assert.True(it.IsValid);                                            // 有图且两边均 0 = 整屏
+
+        it.RectW = 10;
+        Assert.False(it.IsValid);                                           // 仅一边有尺寸不是完整区域
+        it.RectW = -1; it.RectH = 10;
+        Assert.False(it.IsValid);
 
         it.RectW = 10; it.RectH = 10;
         Assert.True(it.IsValid);

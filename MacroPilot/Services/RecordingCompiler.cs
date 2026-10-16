@@ -167,7 +167,7 @@ public static class RecordingCompiler
                     {
                         StartT = ev.T, EndT = ev.T,
                         MergeKey = "wheel", Px = ev.Data,       // Px 借放 delta
-                        Step = new MacroStep { Type = "MouseWheel", Wheel = ev.Data / 120 },
+                        Step = new MacroStep { Type = "MouseWheel" },
                     });
                     break;
                 }
@@ -223,9 +223,19 @@ public static class RecordingCompiler
     {
         var steps = new List<MacroStep>();
         Prim? last = null;
+        long wheelRemainder = 0;
 
         foreach (var p in prims)
         {
+            if (p.MergeKey == "wheel")
+            {
+                // 高精度滚轮可一次只报告半格/四分之一格；先累计原始 delta，
+                // 再取整，余数跨相邻事件保留（反向事件也按有符号增量抵消）。
+                long delta = wheelRemainder + p.Px;
+                p.Step.Wheel = (int)(delta / 120);
+                wheelRemainder = delta % 120;
+                if (p.Step.Wheel == 0) continue;
+            }
             // 连击合并：同键同位置、与上一条点击间隔够近 → 变成"点击次数 N"
             if (last != null && p.MergeKey.StartsWith("click:") && p.MergeKey == last.MergeKey
                 && Math.Abs(p.Px - last.Px) < ClickSlopPx && Math.Abs(p.Py - last.Py) < ClickSlopPx

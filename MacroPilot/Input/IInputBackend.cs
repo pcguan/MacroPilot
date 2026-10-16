@@ -16,6 +16,8 @@ public interface IInputBackend : IDisposable
     bool Open();
     void Close();
 
+    void SetExecutionContext(InputExecutionContext? context) { }
+
     /// <summary>按下并保持 holdMs（可含小数）后松开一个键（含修饰键）。ct 取消时提前结束按住并立即抬键。</summary>
     void KeyTap(string key, byte modifier, double holdMs, System.Threading.CancellationToken ct = default);
 
@@ -35,7 +37,7 @@ public interface IInputBackend : IDisposable
     void MouseClick(string button, double holdMs, System.Threading.CancellationToken ct = default);
 
     /// <summary>移动鼠标到屏幕绝对坐标。</summary>
-    void MouseMove(int x, int y);
+    void MouseMove(int x, int y, System.Threading.CancellationToken ct = default);
 
     /// <summary>按下鼠标键并保持（拖动用）：期间的 MouseMove 均处于按住状态，直到 MouseUp。</summary>
     void MouseDown(string button);

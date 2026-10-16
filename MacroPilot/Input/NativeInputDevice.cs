@@ -9,6 +9,10 @@ namespace MacroPilot.Input;
 public sealed class NativeInputDevice : IInputBackend
 {
     private readonly bool _scanCode;
+    private InputExecutionContext? _execution;
+    public void SetExecutionContext(InputExecutionContext? context) => _execution = context;
+    private void Checkpoint(CancellationToken ct) { ct.ThrowIfCancellationRequested(); _execution?.Checkpoint(ct); }
+
     public NativeInputDevice(string keyMode) { _scanCode = !string.Equals(keyMode, "VirtualKey", StringComparison.OrdinalIgnoreCase); }
 
     // 记录"我们当前真按着"的键/按钮，ReleaseAll 只抬这些——绝不能无条件发按钮抬起：
@@ -18,6 +22,7 @@ public sealed class NativeInputDevice : IInputBackend
     private uint _btnDown;
     private byte _modDown;
     private ushort _keyDown;
+    private char? _unicodeDown;
 
     public bool IsOpen => true;
     public string Describe => $"软件模拟（{(_scanCode ? "ScanCode" : "VirtualKey")}）";
@@ -30,14 +35,20 @@ public sealed class NativeInputDevice : IInputBackend
     public void KeyTap(string key, byte modifier, double holdMs, CancellationToken ct = default)
     {
         var mods = ModifierVks(modifier);
-        foreach (var vk in mods) KeyEvent(vk, true);
-        _modDown |= modifier;
         bool hasKey = KeyMap.TryVk(key, out var k);
-        if (hasKey) { KeyEvent(k, true); _keyDown = k; }
-        Sleep(holdMs, ct);   // 急停会在此抛出 → 下面的抬起被跳过，_modDown/_keyDown 仍置位，交给 ReleaseAll 收尾
-        if (hasKey) { KeyEvent(k, false); _keyDown = 0; }
-        for (int i = mods.Count - 1; i >= 0; i--) KeyEvent(mods[i], false);
-        _modDown &= (byte)~modifier;
+        void Press()
+        {
+            foreach (var (bit, vk) in KeyMap.ModifierVk)
+                if ((modifier & bit) != 0) { KeyEvent(vk, true); _modDown |= bit; }
+            if (hasKey) { KeyEvent(k, true); _keyDown = k; }
+        }
+        void Release()
+        {
+            if (hasKey && _keyDown == k) { KeyEvent(k, false); _keyDown = 0; }
+            for (int i = mods.Count - 1; i >= 0; i--) KeyEvent(mods[i], false);
+            _modDown &= (byte)~modifier;
+        }
+        InputExecutionContext.Hold(holdMs, Press, Release, _execution, ct);
     }
 
     private static (uint Down, uint Up, uint Bit) ButtonFlags(string button) => button switch
@@ -50,9 +61,9 @@ public sealed class NativeInputDevice : IInputBackend
     public void MouseClick(string button, double holdMs, CancellationToken ct = default)
     {
         var (down, up, bit) = ButtonFlags(button);
-        MouseEvent(down, 0, 0, 0); _btnDown |= bit;
-        Sleep(holdMs, ct);
-        MouseEvent(up, 0, 0, 0); _btnDown &= ~bit;
+        InputExecutionContext.Hold(holdMs,
+            () => { MouseEvent(down, 0, 0, 0); _btnDown |= bit; },
+            () => { MouseEvent(up, 0, 0, 0); _btnDown &= ~bit; }, _execution, ct);
     }
 
     public void MouseDown(string button)
@@ -68,7 +79,7 @@ public sealed class NativeInputDevice : IInputBackend
     }
 
     // 参数为"虚拟桌面像素"(可跨屏、可负)。
-    public void MouseMove(int vx, int vy) => MoveVirtual(vx, vy);
+    public void MouseMove(int vx, int vy, CancellationToken ct = default) { Checkpoint(ct); MoveVirtual(vx, vy); }
 
     /// <summary>把光标移到虚拟桌面绝对像素 (vx,vy)——覆盖全部显示器。CH9329 副屏降级也复用它。</summary>
     public static void MoveVirtual(int vx, int vy)
@@ -87,14 +98,16 @@ public sealed class NativeInputDevice : IInputBackend
 
     public void ReleaseAll()
     {
-        // 只抬"确实还按着"的键/按钮。无条件发 RIGHTUP/MIDDLEUP 会被前台应用当成一次右键/中键点击。
-        if (_keyDown != 0) { KeyEvent(_keyDown, false); _keyDown = 0; }
-        foreach (var (bit, vk) in KeyMap.ModifierVk) if ((_modDown & bit) != 0) KeyEvent(vk, false);
-        _modDown = 0;
-        if ((_btnDown & BtnL) != 0) MouseEvent(MOUSEEVENTF_LEFTUP, 0, 0, 0);
-        if ((_btnDown & BtnR) != 0) MouseEvent(MOUSEEVENTF_RIGHTUP, 0, 0, 0);
-        if ((_btnDown & BtnM) != 0) MouseEvent(MOUSEEVENTF_MIDDLEUP, 0, 0, 0);
-        _btnDown = 0;
+        // 单次抬起失败也继续尝试其他按键；不发送本任务从未按下的按钮。
+        Exception? failure = null;
+        void Attempt(Action release) { try { release(); } catch (Exception ex) { failure ??= ex; } }
+        if (_unicodeDown is char unit) Attempt(() => { UnicodeEvent(unit, false); _unicodeDown = null; });
+        if (_keyDown != 0) Attempt(() => { KeyEvent(_keyDown, false); _keyDown = 0; });
+        foreach (var (bit, vk) in KeyMap.ModifierVk)
+            if ((_modDown & bit) != 0) Attempt(() => { KeyEvent(vk, false); _modDown &= (byte)~bit; });
+        foreach (var (bit, flag) in new[] { (BtnL, MOUSEEVENTF_LEFTUP), (BtnR, MOUSEEVENTF_RIGHTUP), (BtnM, MOUSEEVENTF_MIDDLEUP) })
+            if ((_btnDown & bit) != 0) Attempt(() => { MouseEvent(flag, 0, 0, 0); _btnDown &= ~bit; });
+        if (failure != null) throw failure;
     }
 
     private static List<ushort> ModifierVks(byte modifier)
@@ -115,22 +128,30 @@ public sealed class NativeInputDevice : IInputBackend
         if (string.IsNullOrEmpty(text)) return;
         for (int i = 0; i < text.Length; i++)
         {
-            if (ct.IsCancellationRequested) return;
+            Checkpoint(ct);
             char c = text[i];
             // 换行/制表用【真实键】：不少程序不响应 WM_CHAR 的 \n（换行要的是 Enter 这个键事件）。
-            if (c == '\n') { KeyEvent(0x0D, true); KeyEvent(0x0D, false); }
-            else if (c == '\t') { KeyEvent(0x09, true); KeyEvent(0x09, false); }
+            if (c == '\n') KeyTap("ENTER", 0, 0, ct);
+            else if (c == '\t') KeyTap("TAB", 0, 0, ct);
             else if (c == '\r') continue;                      // CRLF 的 \r 跳过，由上面的 \n 出 Enter
             else if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
             {
                 // BMP 外字符（emoji）是代理对：两个码元连发，系统自行合成一个字符。
-                UnicodeEvent(c, true); UnicodeEvent(c, false);
+                UnicodeTap(c);
                 i++;
-                UnicodeEvent(text[i], true); UnicodeEvent(text[i], false);
+                UnicodeTap(text[i]);
             }
-            else { UnicodeEvent(c, true); UnicodeEvent(c, false); }
+            else UnicodeTap(c);
             if (charDelayMs > 0) Sleep(charDelayMs, ct);
         }
+    }
+
+    private void UnicodeTap(char unit)
+    {
+        UnicodeEvent(unit, true);
+        _unicodeDown = unit;
+        UnicodeEvent(unit, false);
+        _unicodeDown = null; // 抬起失败时保留码元，交由运行器 finally 的 ReleaseAll 重试。
     }
 
     private static void UnicodeEvent(char unit, bool down)
@@ -139,7 +160,7 @@ public sealed class NativeInputDevice : IInputBackend
         inp.U.ki.wVk = 0;                       // 必须为 0，否则系统按虚拟键解释
         inp.U.ki.wScan = unit;
         inp.U.ki.dwFlags = KEYEVENTF_UNICODE | (down ? 0u : KEYEVENTF_KEYUP);
-        SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>());
+        ValidateSent(SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>()), 1);
     }
 
     // 扩展键：其扫描码与小键盘键重叠，必须置 KEYEVENTF_EXTENDEDKEY 区分。
@@ -164,7 +185,7 @@ public sealed class NativeInputDevice : IInputBackend
         inp.U.ki.dwFlags = (down ? 0u : KEYEVENTF_KEYUP)
                          | (_scanCode ? KEYEVENTF_SCANCODE : 0u)
                          | (IsExtendedKey(vk) ? KEYEVENTF_EXTENDEDKEY : 0u);
-        SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>());
+        ValidateSent(SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>()), 1);
     }
 
     private void MouseEvent(uint flags, int dx, int dy, int data) => MouseEventStatic(flags, dx, dy, data);
@@ -173,10 +194,20 @@ public sealed class NativeInputDevice : IInputBackend
     {
         var inp = new INPUT { type = INPUT_MOUSE };
         inp.U.mi.dx = dx; inp.U.mi.dy = dy; inp.U.mi.mouseData = (uint)data; inp.U.mi.dwFlags = flags;
-        SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>());
+        ValidateSent(SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>()), 1);
     }
 
-    private static void Sleep(double ms, CancellationToken ct) => Services.PreciseTimer.Sleep(ms, ct);
+    internal static void ValidateSent(uint actual, uint expected)
+    {
+        if (actual != expected)
+            throw new InputSafetyException($"软件输入未成功发送（{actual}/{expected}）。请检查目标窗口权限和桌面状态，方案已安全停止。");
+    }
+
+    private void Sleep(double ms, CancellationToken ct)
+    {
+        if (_execution != null) _execution.Delay(ms, ct);
+        else Services.PreciseTimer.Sleep(ms, ct);
+    }
 
     // ---- P/Invoke ----
     private const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;

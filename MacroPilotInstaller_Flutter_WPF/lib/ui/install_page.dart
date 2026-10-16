@@ -5,6 +5,7 @@ import '../app_meta.dart';
 import '../services/dotnet.dart';
 import '../services/install_log.dart';
 import '../services/installer.dart';
+import '../services/installation_files.dart';
 import '../services/registry.dart';
 import 'title_bar.dart';
 
@@ -68,7 +69,7 @@ class _InstallPageState extends State<InstallPage> {
     return r ?? 'exit';
   }
 
-  /// 目标目录已存在安装时，询问处理方式。返回 'replace' / 'update' / 'cancel'。
+  /// 更新已存在安装；程序清单之外的文件始终保留。
   Future<String> _askExisting(String dir) async {
     final t = FluentTheme.of(context);
     final r = await showDialog<String>(
@@ -84,10 +85,7 @@ class _InstallPageState extends State<InstallPage> {
             const SizedBox(height: 4),
             Text(dir, style: t.typography.caption),
             const SizedBox(height: 14),
-            Text('· 全量替换：先清空该目录再全新安装，移除旧版残留文件',
-                style: t.typography.body),
-            const SizedBox(height: 6),
-            Text('· 增量更新：用新版本覆盖现有文件，保留目录中的其他文件',
+            Text('将更新程序文件并清理已登记的旧文件，保留方案数据及您自行放入的其它文件。',
                 style: t.typography.body),
           ],
         ),
@@ -95,12 +93,9 @@ class _InstallPageState extends State<InstallPage> {
           Button(
               onPressed: () => Navigator.pop(ctx, 'cancel'),
               child: const Text('取消')),
-          Button(
-              onPressed: () => Navigator.pop(ctx, 'update'),
-              child: const Text('增量更新')),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, 'replace'),
-              child: const Text('全量替换')),
+              onPressed: () => Navigator.pop(ctx, 'update'),
+              child: const Text('更新安装')),
         ],
       ),
     );
@@ -132,7 +127,7 @@ class _InstallPageState extends State<InstallPage> {
     if (!mounted) return false;
     if (!await _askForceKill()) return false;
 
-    await InstallerService.killAppProcessesElevated();
+    for (final dir in dirs) { if (await InstallerService.isAppRunning(dir)) await InstallerService.killAppProcessesElevated(dir); }
     for (int i = 0; i < 12; i++) {
       if (!await anyRunning()) return true;
       await Future.delayed(const Duration(milliseconds: 300));
@@ -223,6 +218,8 @@ class _InstallPageState extends State<InstallPage> {
 
   Future<void> _startInstall() async {
     final dir = _dirCtrl.text.trim();
+    try { InstallationFiles.validateTarget(dir); }
+    catch (e) { await _showInfo('安装位置无效', e.toString()); return; }
     InstallLog.write('_startInstall: dir=$dir');
 
     final oldDir = await RegistryService.readInstallLocation();
@@ -237,11 +234,9 @@ class _InstallPageState extends State<InstallPage> {
     }
 
     // 目录已存在安装：先问全量替换 / 增量更新 / 取消。
-    bool fullReplace = false;
     if (InstallerService.isInstalled(dir)) {
       final choice = await _askExisting(dir);
       if (choice == 'cancel') return; // 留在配置页
-      fullReplace = choice == 'replace';
     }
 
     // 确保旧本体已退出（否则文件被占用无法覆盖/清理）。管理员权限的本体会弹 UAC 强杀确认。
@@ -293,24 +288,16 @@ class _InstallPageState extends State<InstallPage> {
     }
 
     try {
-      if (oldDirToClean != null) {
-        setState(() => _progressMsg = '正在清理旧安装目录…');
-        await InstallerService.killAppProcesses(oldDirToClean);
-        final leftovers = InstallerService.cleanInstallDir(oldDirToClean);
-        if (leftovers.isNotEmpty) {
-          setState(() => _progressMsg = '旧目录部分文件被占用，继续安装新版本…');
-          await Future.delayed(const Duration(milliseconds: 600));
-        }
-      }
       await InstallerService().install(
         installDir: dir,
         desktopShortcut: _desktopShortcut,
-        fullReplace: fullReplace,
         onProgress: (frac, msg) => setState(() {
           _progress = frac;
           _progressMsg = msg;
         }),
       );
+      // 迁移清理推迟到新版实际启动确认之后；取消启动时完整保留旧安装。
+      _oldDirToClean = oldDirToClean;
       setState(() => _step = _Step.done);
     } catch (e) {
       _fail('安装失败：$e');
@@ -329,11 +316,19 @@ class _InstallPageState extends State<InstallPage> {
   }
 
   Future<void> _finish() async {
-    if (_launchAfter) {
-      await InstallerService.launchApp(_dirCtrl.text.trim());
+    try {
+      if (_launchAfter) {
+        setState(() { _step = _Step.progress; _progressMsg = '正在确认新版启动…'; });
+        await InstallerService.launchApp(_dirCtrl.text.trim());
+        if (_oldDirToClean != null) await InstallerService.cleanInstallDir(_oldDirToClean!);
+      }
+      exit(0);
+    } catch (e) {
+      _fail('新版启动失败：$e');
     }
-    exit(0);
   }
+
+  String? _oldDirToClean;
 
   @override
   Widget build(BuildContext context) {
@@ -341,7 +336,7 @@ class _InstallPageState extends State<InstallPage> {
       color: Colors.transparent,
       child: Column(
         children: [
-          const InstallerTitleBar(title: '键鼠宏助手 安装程序'),
+          InstallerTitleBar(title: '键鼠宏助手 安装程序', canClose: _step != _Step.progress),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(32, 8, 32, 0),

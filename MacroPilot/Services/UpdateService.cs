@@ -181,7 +181,11 @@ public static class UpdateService
                 if (VerifyDownload(file, asset.Sha256)) return file;
                 last = new InvalidOperationException("下载内容校验失败（SHA-256 不匹配），已换源重试");
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                try { File.Delete(file); } catch { }
+                throw;
+            }
             catch (Exception ex) { last = ex; }
             try { File.Delete(file); } catch { }
         }
@@ -240,24 +244,119 @@ public static class UpdateService
     /// </summary>
     public static void ApplyZipUpdateAndExit(string zipPath)
     {
-        var installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
-        var dir = Path.Combine(Path.GetTempPath(), "MacroPilotUpdate");
-        Directory.CreateDirectory(dir);
-        var ps1 = Path.Combine(dir, "apply_update.ps1");
-        File.WriteAllText(ps1, ZipUpdateScript, new UTF8Encoding(true));   // 必须带 BOM：否则 Windows PowerShell 按 ANSI 读，中文全乱
-        int pid = Environment.ProcessId;
-        var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        var installDir = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
+        var transaction = Guid.NewGuid().ToString("N");
+        var stage = installDir + ".stage_" + transaction;
+        // 任何解压/校验/复制错误都发生在退出前，原安装始终完整。
+        InstallationFiles.Prepare(zipPath, installDir, stage);
+        try
         {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-            // 关键：别让 PowerShell 继承本体的当前目录(=安装目录)，否则 PS 自己占着该目录 → 改名时"目录正在使用中"。
-            WorkingDirectory = dir,
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{ps1}\" " +
-                        $"-Zip \"{zipPath}\" -Dir \"{installDir}\" -AppPid {pid}",
-        };
-        System.Diagnostics.Process.Start(psi);
-        System.Windows.Application.Current?.Shutdown();
+            var dir = Path.Combine(Path.GetTempPath(), "MacroPilotUpdate");
+            Directory.CreateDirectory(dir);
+            var ps1 = Path.Combine(dir, "apply_" + transaction + ".ps1");
+            var ready = Path.Combine(dir, transaction + ".ready");
+            File.WriteAllText(ps1, UpdateTransactionScript.Text, new UTF8Encoding(true));
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                WorkingDirectory = dir,
+            };
+            foreach (var argument in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1,
+                         "-Stage", stage, "-Dir", installDir, "-AppPid", Environment.ProcessId.ToString(),
+                         "-Ready", ready, "-Token", transaction }) psi.ArgumentList.Add(argument);
+            _ = System.Diagnostics.Process.Start(psi) ?? throw new IOException("无法启动更新助手。");
+            System.Windows.Application.Current?.Shutdown();
+        }
+        catch { try { Directory.Delete(stage, recursive: true); } catch { } throw; }
+    }
+
+    /// <summary>主窗口初始化成功后确认启动；更新助手收到 PID 与随机令牌才删除旧版备份。</summary>
+    public static void ConfirmSuccessfulStartup()
+    {
+        bool requested = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACROPILOT_UPDATE_READY")) ||
+            Array.Exists(Environment.GetCommandLineArgs(), value => value == "--update-ready" || value == "--update-token");
+        var context = StartupContext();
+        Environment.SetEnvironmentVariable("MACROPILOT_UPDATE_READY", null);
+        Environment.SetEnvironmentVariable("MACROPILOT_UPDATE_TOKEN", null);
+        if (context == null)
+        {
+            if (requested) return; // 握手参数无效必须失败保留备份，不能误当普通首次启动完成安装。
+            _ = Task.Run(() => { try { InstallationFiles.FinalizePendingBackup(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)); } catch { } });
+            return;
+        }
+        try { WriteStartupSignal(context.Value.Path, context.Value.Token + ":" + Environment.ProcessId); }
+        catch { /* 助手无法收到确认时保留旧版并回滚；不能令已初始化的窗口崩溃。 */ }
+    }
+
+    private static (string Path, string Token)? StartupContext()
+    {
+        var ready = Environment.GetEnvironmentVariable("MACROPILOT_UPDATE_READY");
+        var token = Environment.GetEnvironmentVariable("MACROPILOT_UPDATE_TOKEN");
+        var args = Environment.GetCommandLineArgs();
+        int parentPid = 0;
+        for (var i = 1; i + 1 < args.Length; i++)
+        {
+            if (args[i] == "--update-ready") ready = args[++i];
+            else if (args[i] == "--update-token") token = args[++i];
+            else if (args[i] == "--update-parent") int.TryParse(args[++i], out parentPid);
+        }
+        try
+        {
+            var expected = Path.Combine(Path.GetTempPath(), "MacroPilotUpdate", token + ".ready");
+            if (!Guid.TryParseExact(token, "N", out _) || string.IsNullOrEmpty(ready) || !Path.IsPathFullyQualified(ready)) return null;
+            if (Path.GetFullPath(ready).Equals(Path.GetFullPath(expected), StringComparison.OrdinalIgnoreCase)) return (ready, token!);
+            // UAC 可使用另一管理员账户，TEMP 因而变化；只接受父进程明确签出的交接路径。
+            if (parentPid > 0 && Path.GetFileName(ready) == token + ".ready" &&
+                Path.GetFileName(Path.GetDirectoryName(ready)) == "MacroPilotUpdate")
+            {
+                var proof = ParseStartupSignal(File.ReadAllText(ready + ".handoff"), token!, parentPid);
+                if (proof.HasValue && proof.Value.Handoff && proof.Value.Pid == Environment.ProcessId) return (ready, token!);
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    public static void ConfigureStartupHandoff(System.Diagnostics.ProcessStartInfo start)
+    {
+        var context = StartupContext();
+        if (context == null) return;
+        start.ArgumentList.Add("--update-ready"); start.ArgumentList.Add(context.Value.Path);
+        start.ArgumentList.Add("--update-token"); start.ArgumentList.Add(context.Value.Token);
+        start.ArgumentList.Add("--update-parent"); start.ArgumentList.Add(Environment.ProcessId.ToString());
+    }
+
+    public static bool RecordStartupHandoff(int childPid)
+    {
+        var context = StartupContext();
+        if (context == null) return true;
+        if (childPid <= 0 || childPid == Environment.ProcessId) return false;
+        try
+        {
+            WriteStartupSignal(context.Value.Path + ".handoff", $"{context.Value.Token}:handoff:{Environment.ProcessId}:{childPid}");
+            return true;
+        }
+        catch { return false; } // 子进程已创建，父必须继续退出释放 mutex。
+    }
+
+    private static void WriteStartupSignal(string path, string value)
+    {
+        var temp = path + "." + Guid.NewGuid().ToString("N");
+        try { File.WriteAllText(temp, value, new UTF8Encoding(false)); File.Move(temp, path, overwrite: true); }
+        finally { try { File.Delete(temp); } catch { } }
+    }
+
+    internal static (bool Handoff, int Pid)? ParseStartupSignal(string text, string token, int expectedPid)
+    {
+        var parts = text.Trim().Split(':');
+        if (parts.Length < 2 || parts[0] != token) return null;
+        if (parts.Length == 2 && int.TryParse(parts[1], out int readyPid) && readyPid == expectedPid && readyPid > 0)
+            return (false, readyPid);
+        if (parts.Length == 4 && parts[1] == "handoff" && int.TryParse(parts[2], out int parentPid) &&
+            parentPid == expectedPid && int.TryParse(parts[3], out int childPid) && childPid > 0 && childPid != parentPid)
+            return (true, childPid);
+        return null;
     }
 
     /// <summary>兜底：触发安装器静默就地更新（拿到的是 exe 时用），随即退出本程序。</summary>
@@ -267,7 +366,7 @@ public static class UpdateService
         var psi = new System.Diagnostics.ProcessStartInfo(installerPath) { UseShellExecute = false };
         psi.EnvironmentVariables["MACROPILOT_UPDATE"] = "1";
         psi.EnvironmentVariables["MACROPILOT_UPDATE_TARGET"] = installDir;
-        System.Diagnostics.Process.Start(psi);
+        _ = System.Diagnostics.Process.Start(psi) ?? throw new IOException("无法启动安装器。");
         System.Windows.Application.Current?.Shutdown();
     }
 
@@ -304,102 +403,4 @@ public static class UpdateService
         return s;
     }
 
-    // PowerShell 就地更新助手（脚本以 UTF-8 带 BOM 写出，可含中文）。日志写 %TEMP%\MacroPilotUpdate\update.log。
-    // 自带一个置顶小窗显示进度，避免本体退出后到重启前的这段"什么都看不到"。
-    // 要点：① Set-Location 到临时目录，别占住安装目录（否则改名报"目录正在使用中"）；② 改名带重试等句柄释放；
-    // ③ finally 里【无论成败都把本体拉起来】——绝不让进程凭空消失。
-    private const string ZipUpdateScript = @"
-param([string]$Zip, [string]$Dir, [int]$AppPid)
-$ErrorActionPreference = 'Stop'
-$logDir = Join-Path $env:TEMP 'MacroPilotUpdate'
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-Set-Location -LiteralPath $logDir
-$log = Join-Path $logDir 'update.log'
-function Log($m){ Add-Content -LiteralPath $log -Value ((Get-Date).ToString('HH:mm:ss.fff') + ' ' + $m) }
-$exe = Join-Path $Dir 'MacroPilot.exe'
-$leaf = Split-Path $Dir -Leaf
-
-# ---- 进度小窗：本体已退出，这段时间必须让用户看见在干什么 ----
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$form = New-Object Windows.Forms.Form
-$form.Text = '键鼠宏助手 · 正在更新'
-$form.Size = New-Object Drawing.Size(460, 170)
-$form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
-$form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.TopMost = $true
-$lbl = New-Object Windows.Forms.Label
-$lbl.SetBounds(20, 22, 410, 44); $lbl.Text = '准备中…'
-$bar = New-Object Windows.Forms.ProgressBar
-$bar.SetBounds(20, 74, 410, 18); $bar.Style = 'Marquee'; $bar.MarqueeAnimationSpeed = 30
-$sub = New-Object Windows.Forms.Label
-$sub.SetBounds(20, 100, 410, 30); $sub.ForeColor = [Drawing.Color]::Gray
-$form.Controls.AddRange(@($lbl, $bar, $sub))
-$form.Show(); [Windows.Forms.Application]::DoEvents()
-function Step($t, $d) {
-  $lbl.Text = $t; $sub.Text = $d
-  [Windows.Forms.Application]::DoEvents()
-  Log ""step: $t | $d""
-}
-$backup = ""$Dir.bak_"" + ([DateTimeOffset]::Now.ToUnixTimeSeconds())
-$renamed = $false
-Log ""=== start dir=$Dir pid=$AppPid ===""
-try {
-  Step '正在等待程序退出…' ""进程 $AppPid，最多等 20 秒""
-  if ($AppPid -gt 0) {
-    try { Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue } catch {}
-    # 没退干净就强杀：本体若被模态框(如未保存询问)挂住，等多久都不会退，
-    # 之前的表现就是「进程还在、目录被占、改名失败」。
-    $p = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
-    if ($p) {
-      Step '程序未自行退出，正在强制结束…' ""进程 $AppPid""
-      Log ""app pid=$AppPid still alive after wait -> force kill""
-      try { Stop-Process -Id $AppPid -Force -ErrorAction SilentlyContinue } catch {}
-      try { Wait-Process -Id $AppPid -Timeout 10 -ErrorAction SilentlyContinue } catch {}
-    }
-  }
-  # 同名残留进程（上一次更新失败留下的）也一并清掉，否则照样占住目录
-  foreach ($q in @(Get-Process -Name 'MacroPilot' -ErrorAction SilentlyContinue)) {
-    Log ""stray MacroPilot pid=$($q.Id) -> force kill""
-    try { Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue } catch {}
-  }
-  for ($i=0; $i -lt 60; $i++) {
-    try { $fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break } catch { Start-Sleep -Milliseconds 300 }
-  }
-  for ($i=0; $i -lt 20 -and (-not $renamed); $i++) {
-    try { Rename-Item -LiteralPath $Dir -NewName (Split-Path $backup -Leaf) -Force; $renamed = $true }
-    catch { Start-Sleep -Milliseconds 300 }
-  }
-  if (-not $renamed) {
-    $still = @(Get-Process -Name 'MacroPilot' -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ','
-    throw ""backup rename failed: dir still in use (MacroPilot pids: [$still])""
-  }
-  Log ""backup -> $backup""
-  Step '正在安装新版本…' '已备份旧版本，正在解压覆盖'
-  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-  Expand-Archive -LiteralPath $Zip -DestinationPath $Dir -Force
-  $uninsSrc = Join-Path $backup 'unins'
-  if (Test-Path -LiteralPath $uninsSrc) { Copy-Item -LiteralPath $uninsSrc -Destination (Join-Path $Dir 'unins') -Recurse -Force }
-  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-  Step '更新完成，正在重启…' ''
-  Log 'success'
-} catch {
-  Log ""FAILED: $_ -> rollback""
-  Step '更新失败，正在回滚到旧版本…' ""$_""
-  $failed = $_.ToString()
-  try { if ($renamed -and (Test-Path -LiteralPath $Dir)) { Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
-  if ($renamed -and (Test-Path -LiteralPath $backup)) { try { Rename-Item -LiteralPath $backup -NewName $leaf -Force; Log 'rolled back' } catch { Log ""rollback FAILED: $_"" } }
-} finally {
-  # 只有在没有存活实例时才拉起，避免拉起来的新实例撞单实例锁、变成占住目录的僵尸
-  $alive = @(Get-Process -Name 'MacroPilot' -ErrorAction SilentlyContinue)
-  if ($alive.Count -gt 0) { Log ""skip relaunch: MacroPilot already running ($($alive.Count))"" }
-  elseif (Test-Path -LiteralPath $exe) { try { Start-Process -FilePath $exe -WorkingDirectory $Dir; Log 'relaunched' } catch { Log ""relaunch FAILED: $_"" } }
-  try { Remove-Item -LiteralPath $Zip -Force -ErrorAction SilentlyContinue } catch {}
-  Log '=== done ==='
-  try { $form.Close() } catch {}
-  if ($failed) {
-    [Windows.Forms.MessageBox]::Show(""更新未成功，已回滚到原版本。`n`n原因：$failed`n`n日志：$log"", '键鼠宏助手 · 更新失败', 'OK', 'Warning') | Out-Null
-  }
-}
-";
 }

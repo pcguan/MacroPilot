@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -128,6 +128,7 @@ public static class ScreenMatch
         Bitmap shot, Bitmap template, double threshold, out double bestScore,
         System.Threading.CancellationToken ct = default, int offsetX = 0, int offsetY = 0)
     {
+        ct.ThrowIfCancellationRequested();
         bestScore = 0;
         var result = new List<(int, int, double)>();
         int tw = template.Width, th = template.Height;
@@ -135,12 +136,8 @@ public static class ScreenMatch
         if (tw <= 0 || th <= 0 || regionW < tw || regionH < th) return result;
 
         // 模板侧预处理走缓存（内容不变就不重算）；屏幕侧每次都是新画面，照常拷出
-        var prep = PrepFor(template);
-        var ds = shot.LockBits(new Rectangle(0, 0, regionW, regionH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var sbuf = new byte[ds.Stride * regionH];
-        Marshal.Copy(ds.Scan0, sbuf, 0, sbuf.Length);
-        int sStride = ds.Stride;
-        shot.UnlockBits(ds);   // shot 由调用方释放（FindMatches 用完即弃，离线验证要复用）
+        var prep = PrepFor(template, ct);
+        var sbuf = ReadPixels(shot, ct, out int sStride);
 
         var full = new Matcher(prep, sbuf, sStride, regionW, regionH);
         var raw = new List<(int x, int y, double score)>();
@@ -160,21 +157,21 @@ public static class ScreenMatch
         bool coarseUsed = false;
         if (scale > 1)
         {
-            if (!prep.Coarse.TryGetValue(scale, out var ctpl))
+            (byte[] buf, int stride, int w, int h) ctpl;
+            lock (prep.Coarse)
             {
-                // 缩略模板要从原始字节算：prep 里没存 tbuf（省内存），这里按需锁一次模板位图
-                var dt2 = template.LockBits(new Rectangle(0, 0, tw, th), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-                var tbuf2 = new byte[dt2.Stride * th];
-                Marshal.Copy(dt2.Scan0, tbuf2, 0, tbuf2.Length);
-                int tStride2 = dt2.Stride;
-                template.UnlockBits(dt2);
-                ctpl = Decimate(null, tbuf2, tStride2, tw, th, 0, 0, scale);
-                lock (prep.Coarse) prep.Coarse[scale] = ctpl;
+                ct.ThrowIfCancellationRequested();
+                if (!prep.Coarse.TryGetValue(scale, out ctpl))
+                {
+                    var tbuf2 = ReadPixels(template, ct, out int tStride2);
+                    ctpl = Decimate(null, tbuf2, tStride2, tw, th, 0, 0, scale, ct);
+                    prep.Coarse[scale] = ctpl;
+                }
             }
             var (ctb, ctStride, ctw, cth) = ctpl;
             if (ctw >= 6 && cth >= 4)
             {
-                var sat = new Sat(sbuf, sStride, regionW, regionH);
+                var sat = new Sat(sbuf, sStride, regionW, regionH, ct);
                 double coarseThr = Math.Max(0.5, threshold - CoarseSlack);
                 var candidates = new List<(int x, int y)>();
                 bool overflow = false;
@@ -182,9 +179,9 @@ public static class ScreenMatch
                     for (int px = 0; px < scale && !overflow; px++)
                     {
                         ct.ThrowIfCancellationRequested();
-                        var (cs, csStride, cw, chh) = Decimate(sat, null, 0, regionW, regionH, px, py, scale);
+                        var (cs, csStride, cw, chh) = Decimate(sat, null, 0, regionW, regionH, px, py, scale, ct);
                         if (cw < ctw || chh < cth) continue;
-                        var coarse = new Matcher(ctb, ctStride, ctw, cth, cs, csStride, cw, chh);
+                        var coarse = new Matcher(ctb, ctStride, ctw, cth, cs, csStride, cw, chh, ct);
                         var cand = coarse.Scan(0, cw - ctw, 0, chh - cth, coarseThr, coarseThr, ct, out _);
                         foreach (var c in cand)
                         {
@@ -205,6 +202,7 @@ public static class ScreenMatch
                         if (!seen.Add(((long)x0 << 32) | (uint)y0)) continue;   // 邻域重叠，去重省一次扫描
                         var hits = full.Scan(x0, x1, y0, y1, threshold, Math.Max(0, threshold - DiagSlack), ct, out double b);
                         if (b > best) best = b;
+                        if (raw.Count + hits.Count > MaxCandidateCount) throw new ImageSearchLimitException();
                         raw.AddRange(hits);
                     }
                 }
@@ -215,30 +213,74 @@ public static class ScreenMatch
 
         bestScore = best;
 
-        // 非极大值抑制：按分数降序贪心接受，抑制与已接受项中心距离在半个模板内的其它候选（同一目标的邻近位置）。
-        // 同分时再按位置排（上→下、左→右）：并行扫描回来的顺序本身不确定，只按分数排的话，
-        // 一堆同分候选进 NMS 的先后每次都可能不同 → 同一屏幕两次搜索的结果个数/位置会飘，
-        // 「点击第 N 个」就不稳。加上位置这一级比较，结果与线程调度彻底无关。
-        raw.Sort((p, q) =>
+        var kept = SuppressOverlaps(raw, tw, th, ct);
+        foreach (var k3 in kept)
+        {
+            ct.ThrowIfCancellationRequested();
+            result.Add((offsetX + k3.x + tw / 2, offsetY + k3.y + th / 2, k3.score));
+        }
+        return result;
+    }
+
+    internal const int MaxCandidateCount = 500_000;
+    internal sealed class ImageSearchLimitException : InvalidOperationException
+    {
+        public ImageSearchLimitException() : base("图像搜索命中过多，请缩小搜索区域或使用更有特征的模板。") { }
+    }
+
+    internal static void SortCancelable<T>(List<T> items, Comparison<T> compare, System.Threading.CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        int comparisons = 0;
+        try
+        {
+            items.Sort((a, b) =>
+            {
+                if ((++comparisons & 255) == 0) ct.ThrowIfCancellationRequested();
+                return compare(a, b);
+            });
+        }
+        catch (InvalidOperationException ex) when (ex.InnerException is OperationCanceledException)
+        { throw new OperationCanceledException(ct); }
+        ct.ThrowIfCancellationRequested();
+    }
+
+    // 与原贪心 NMS 保持相同全序和抑制范围；每个格子最多一个保留点，只需查相邻九格。
+    internal static List<(int x, int y, double score)> SuppressOverlaps(
+        List<(int x, int y, double score)> raw, int tw, int th, System.Threading.CancellationToken ct)
+    {
+        if (raw.Count > MaxCandidateCount) throw new ImageSearchLimitException();
+        SortCancelable(raw, (p, q) =>
         {
             int c = q.score.CompareTo(p.score);
             if (c != 0) return c;
             c = p.y.CompareTo(q.y);
             return c != 0 ? c : p.x.CompareTo(q.x);
-        });
+        }, ct);
+        return SuppressSortedOverlaps(raw, tw, th, ct);
+    }
+
+    // 输入已按相似度排序；独立枚举阶段便于逐候选取消，并保留最终阅读顺序。
+    internal static List<(int x, int y, double score)> SuppressSortedOverlaps(
+        IEnumerable<(int x, int y, double score)> sorted, int tw, int th, System.Threading.CancellationToken ct)
+    {
+        int cellW = tw / 2 + 1, cellH = th / 2 + 1;
+        var cells = new Dictionary<(int x, int y), (int x, int y)>();
         var kept = new List<(int x, int y, double score)>();
-        foreach (var c in raw)
+        foreach (var point in sorted)
         {
+            ct.ThrowIfCancellationRequested();
+            int bx = point.x / cellW, by = point.y / cellH;
             bool near = false;
-            foreach (var k2 in kept)
-                if (Math.Abs(c.x - k2.x) < tw / 2 + 1 && Math.Abs(c.y - k2.y) < th / 2 + 1) { near = true; break; }
-            if (!near) kept.Add(c);
+            for (int y = by - 1; y <= by + 1 && !near; y++)
+                for (int x = bx - 1; x <= bx + 1; x++)
+                    if (cells.TryGetValue((x, y), out var other)
+                        && Math.Abs(point.x - other.x) < cellW && Math.Abs(point.y - other.y) < cellH)
+                    { near = true; break; }
+            if (!near) { cells[(bx, by)] = (point.x, point.y); kept.Add(point); }
         }
-        // 阅读顺序（上→下、左→右）排序，供「第几个」稳定索引。
-        kept.Sort((p, q) => p.y != q.y ? p.y.CompareTo(q.y) : p.x.CompareTo(q.x));
-        foreach (var k3 in kept)
-            result.Add((offsetX + k3.x + tw / 2, offsetY + k3.y + th / 2, k3.score));
-        return result;
+        SortCancelable(kept, (p, q) => p.y != q.y ? p.y.CompareTo(q.y) : p.x.CompareTo(q.x), ct);
+        return kept;
     }
 
     // 缩略图上放宽的阈值幅度。相位对齐后，真目标在缩略图上的块均值与模板缩略图【逐块一致】，
@@ -276,12 +318,13 @@ public static class ScreenMatch
     {
         private readonly int[] _b, _g, _r;
         private readonly int _w;
-        public Sat(byte[] src, int stride, int w, int h)
+        public Sat(byte[] src, int stride, int w, int h, System.Threading.CancellationToken ct)
         {
             _w = w + 1;
             _b = new int[_w * (h + 1)]; _g = new int[_w * (h + 1)]; _r = new int[_w * (h + 1)];
             for (int y = 0; y < h; y++)
             {
+                ct.ThrowIfCancellationRequested();
                 int row = y * stride, cur = (y + 1) * _w, prev = y * _w;
                 int rb = 0, rg = 0, rr = 0;
                 for (int x = 0; x < w; x++)
@@ -307,7 +350,7 @@ public static class ScreenMatch
     /// 平均比抽样稳：轻微位移/抗锯齿差异会被抹平，粗筛才不会误杀真目标。
     /// </summary>
     private static (byte[] buf, int stride, int w, int h) Decimate(
-        Sat? sat, byte[]? src, int stride, int w, int h, int px, int py, int k)
+        Sat? sat, byte[]? src, int stride, int w, int h, int px, int py, int k, System.Threading.CancellationToken ct)
     {
         int nw = (w - px) / k, nh = (h - py) / k;
         if (nw <= 0 || nh <= 0) return (Array.Empty<byte>(), 0, 0, 0);
@@ -316,6 +359,7 @@ public static class ScreenMatch
         int m = k * k;
         for (int y = 0; y < nh; y++)
         {
+            ct.ThrowIfCancellationRequested();
             int drow = y * nstride;
             for (int x = 0; x < nw; x++)
             {
@@ -352,7 +396,7 @@ public static class ScreenMatch
         // 粗筛用的缩略模板也只与模板有关：按 (scale, 相位恒 0) 缓存
         public readonly System.Collections.Generic.Dictionary<int, (byte[] buf, int stride, int w, int h)> Coarse = new();
 
-        public TemplatePrep(byte[] tbuf, int tStride, int tw, int th)
+        public TemplatePrep(byte[] tbuf, int tStride, int tw, int th, System.Threading.CancellationToken ct)
         {
             Tw = tw; Th = th; N = tw * th;
             // 权重 = 1 + min(15, 亮度梯度/6)：梯度取与右/下邻的亮度差绝对值的较大者。
@@ -360,6 +404,7 @@ public static class ScreenMatch
             var lum = new float[N];
             for (int y = 0; y < th; y++)
             {
+                ct.ThrowIfCancellationRequested();
                 int row = y * tStride;
                 for (int x = 0; x < tw; x++)
                 {
@@ -371,6 +416,7 @@ public static class ScreenMatch
             for (int y = 0; y < th; y++)
                 for (int x = 0; x < tw; x++)
                 {
+                    if (x == 0) ct.ThrowIfCancellationRequested();
                     int i = y * tw + x;
                     float gx = x + 1 < tw ? Math.Abs(lum[i + 1] - lum[i]) : 0;
                     float gy = y + 1 < th ? Math.Abs(lum[i + tw] - lum[i]) : 0;
@@ -381,10 +427,21 @@ public static class ScreenMatch
             // 结构像素优先：按权重降序排列（同时预取排好序的模板 BGR，避免内层反查）。
             var order = new int[N];
             for (int i = 0; i < N; i++) order[i] = i;
-            Array.Sort(order, (a, b) => weight[b].CompareTo(weight[a]));
+            int comparisons = 0;
+            try
+            {
+                Array.Sort(order, (a, b) =>
+                {
+                    if ((++comparisons & 255) == 0) ct.ThrowIfCancellationRequested();
+                    return weight[b].CompareTo(weight[a]);
+                });
+            }
+            catch (InvalidOperationException ex) when (ex.InnerException is OperationCanceledException)
+            { throw new OperationCanceledException(ct); }
             WS = new int[N]; TB = new byte[N]; TG = new byte[N]; TR = new byte[N]; PX = new int[N]; PY = new int[N];
             for (int k = 0; k < N; k++)
             {
+                if ((k & 1023) == 0) ct.ThrowIfCancellationRequested();
                 int i = order[k]; int y = i / tw, x = i % tw;
                 WS[k] = weight[i]; PX[k] = x; PY[k] = y;
                 int ti = y * tStride + x * 4;
@@ -395,18 +452,40 @@ public static class ScreenMatch
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Bitmap, TemplatePrep> _prepCache = new();
 
-    private static TemplatePrep PrepFor(Bitmap template)
+    private static TemplatePrep PrepFor(Bitmap template, System.Threading.CancellationToken ct)
     {
-        return _prepCache.GetValue(template, t =>
+        // CWT 的工厂可能并发执行；同一个 GDI 位图不能同时 LockBits。
+        lock (template)
         {
-            int tw = t.Width, th = t.Height;
-            var dt = t.LockBits(new Rectangle(0, 0, tw, th), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            var tbuf = new byte[dt.Stride * th];
-            Marshal.Copy(dt.Scan0, tbuf, 0, tbuf.Length);
-            int stride = dt.Stride;
-            t.UnlockBits(dt);
-            return new TemplatePrep(tbuf, stride, tw, th);
-        });
+            ct.ThrowIfCancellationRequested();
+            return _prepCache.GetValue(template, t =>
+            {
+                var tbuf = ReadPixels(t, ct, out int stride);
+                return new TemplatePrep(tbuf, stride, t.Width, t.Height, ct);
+            });
+        }
+    }
+
+    private static byte[] ReadPixels(Bitmap bitmap, System.Threading.CancellationToken ct, out int stride)
+    {
+        lock (bitmap)
+        {
+            ct.ThrowIfCancellationRequested();
+            int width = bitmap.Width, height = bitmap.Height;
+            stride = checked(width * 4);
+            var buffer = new byte[checked(stride * height)];
+            var data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Marshal.Copy(data.Scan0 + y * data.Stride, buffer, y * stride, stride);
+                }
+                return buffer;
+            }
+            finally { bitmap.UnlockBits(data); }
+        }
     }
 
     /// <summary>
@@ -431,8 +510,8 @@ public static class ScreenMatch
             for (int k = 0; k < _n; k++) _sOff[k] = p.PY[k] * sStride + p.PX[k] * 4;   // 相对滑窗左上角的屏幕缓冲偏移
         }
 
-        public Matcher(byte[] tbuf, int tStride, int tw, int th, byte[] sbuf, int sStride, int rw, int rh)
-            : this(new TemplatePrep(tbuf, tStride, tw, th), sbuf, sStride, rw, rh) { }
+        public Matcher(byte[] tbuf, int tStride, int tw, int th, byte[] sbuf, int sStride, int rw, int rh, System.Threading.CancellationToken ct)
+            : this(new TemplatePrep(tbuf, tStride, tw, th, ct), sbuf, sStride, rw, rh) { }
 
         /// <summary>
         /// 扫描 [x0,x1]×[y0,y1] 这些左上角位置。hitThr=判为命中的阈值；diagThr=早退门槛（比 hitThr 低，
@@ -451,6 +530,7 @@ public static class ScreenMatch
             long diagBudget = (long)(_totalW * (1.0 - diagThr));
             double best = 0;
             var lk = new object();
+            int hitCount = 0;
 
             void ScanRow(int oy, List<(int x, int y, double score)> hits, ref double localBest)
             {
@@ -462,6 +542,7 @@ public static class ScreenMatch
                 int rowBase = oy * _sStride;
                 for (int ox = x0; ox <= x1; ox++)
                 {
+                    if ((ox & 63) == 0) ct.ThrowIfCancellationRequested();
                     int baseOff = rowBase + ox * 4;
                     long pen = 0;
                     bool ok = true;
@@ -479,7 +560,11 @@ public static class ScreenMatch
                     if (!ok) continue;
                     double score = 1.0 - (double)pen / total;
                     if (score > localBest) localBest = score;
-                    if (pen <= budget) hits.Add((ox, oy, score));          // 达阈值才算命中
+                    if (pen <= budget)
+                    {
+                        if (System.Threading.Interlocked.Increment(ref hitCount) > MaxCandidateCount) throw new ImageSearchLimitException();
+                        hits.Add((ox, oy, score));
+                    }          // 达阈值才算命中
                 }
             }
 
@@ -499,6 +584,7 @@ public static class ScreenMatch
                         local => { lock (lk) { raw.AddRange(local.hits); if (local.best > best) best = local.best; } });
                 }
                 catch (AggregateException ex) when (ex.InnerException is OperationCanceledException oce) { throw oce; }
+                catch (AggregateException ex) when (ex.InnerException is ImageSearchLimitException) { throw new ImageSearchLimitException(); }
             }
             bestScore = best;
             return raw;

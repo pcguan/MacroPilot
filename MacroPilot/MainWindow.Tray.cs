@@ -91,7 +91,7 @@ public partial class MainWindow
         foreach (var p in _plans)
         {
             var plan = p;
-            var mi = new MenuItem { Header = plan.Name, IsEnabled = !running && plan.Steps.Count > 0 };
+            var mi = new MenuItem { Header = plan.Name, IsEnabled = _activity.IsIdle && plan.Steps.Count > 0 };
             mi.Click += (_, _) => RunPlanFromTray(plan);
             runItem.Items.Add(mi);
         }
@@ -110,7 +110,7 @@ public partial class MainWindow
     // 从托盘运行一个方案：运行中则忽略，否则直接跑其克隆快照（不改动当前正在编辑的方案）。
     private void RunPlanFromTray(Models.MacroPlan plan)
     {
-        if (_runner is { IsRunning: true } || _startingRun) return;
+        if (!RequireIdle("启动方案")) return;
         if (plan.Steps.Count == 0) return;
         RunPlan(BuildRunPlan(plan), plan.Name);
     }

@@ -32,7 +32,7 @@ public sealed class FakeBackend : IInputBackend
     }
 
     public void MouseClick(string button, double holdMs, CancellationToken ct = default) => Rec("click:" + button);
-    public void MouseMove(int x, int y) => Rec($"move:{x},{y}");
+    public void MouseMove(int x, int y, CancellationToken ct = default) => Rec($"move:{x},{y}");
     public void MouseDown(string button) => Rec("down:" + button);
     public void MouseUp(string button) => Rec("up:" + button);
     public void MouseWheel(int amount) => Rec("wheel:" + amount);

@@ -1,5 +1,9 @@
 using System;
 using System.Windows;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.InteropServices;
+using MacroPilot.Input;
 using MacroPilot.Models;
 
 namespace MacroPilot.Services;
@@ -7,7 +11,7 @@ namespace MacroPilot.Services;
 /// <summary>
 /// 窗口几何记忆：位置 / 大小 / 最大化状态按 key 存进 settings.json，下次打开还原。
 /// **主窗口和所有对话框走同一套**（对话框由 MainWindow.MakeDialog 统一挂上，key = 标题）。
-/// 坐标单位是 WPF 的 DIP，与 SystemParameters.VirtualScreen* 同一坐标系，不用自己换算 DPI。
+/// 保存坐标使用 WPF DIP；恢复时把显示器物理工作区换算为系统 DIP 再逐屏验证。
 /// </summary>
 public static class WindowMemory
 {
@@ -38,6 +42,7 @@ public static class WindowMemory
         // 尊重窗口自己的最小尺寸；记录不合法（老数据 / 手改坏了）就当没记过。
         double minW = double.IsNaN(w.MinWidth) || w.MinWidth <= 0 ? 120 : w.MinWidth;
         double minH = double.IsNaN(w.MinHeight) || w.MinHeight <= 0 ? 80 : w.MinHeight;
+        if (!double.IsFinite(g.Left) || !double.IsFinite(g.Top) || !double.IsFinite(g.Width) || !double.IsFinite(g.Height)) return;
         bool sizeOk = g.Width >= minW && g.Height >= minH;
         var rect = new Rect(g.Left, g.Top, sizeOk ? g.Width : 0, sizeOk ? g.Height : 0);
 
@@ -75,12 +80,29 @@ public static class WindowMemory
         _persist?.Invoke();
     }
 
-    // 与虚拟桌面的交集要够大：只露出一条边（比如副屏被拔掉后残留的坐标）不算可用。
+    // 逐个实际工作区检查，不能把多屏之间的空洞当成可见桌面。
     private static bool IsUsablyOnScreen(Rect r)
     {
-        var vs = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
-                          SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
-        var hit = Rect.Intersect(r, vs);
-        return !hit.IsEmpty && hit.Width >= 160 && hit.Height >= 80;
+        double scale = 1;
+        try { scale = Math.Max(1, GetDpiForSystem()) / 96.0; } catch { }
+        return IsUsablyOnScreen(r, ScreenInfo.All().Select(m => new Rect(
+            m.WorkLeft / scale, m.WorkTop / scale,
+            (m.WorkRight - m.WorkLeft) / scale, (m.WorkBottom - m.WorkTop) / scale)));
     }
+
+    public static bool IsUsablyOnScreen(Rect window, IEnumerable<Rect> workAreas)
+    {
+        if (window.IsEmpty || window.Width < 160 || window.Height < 80) return false;
+        var title = new Rect(window.Left, window.Top, window.Width, Math.Min(32, window.Height));
+        foreach (var area in workAreas)
+        {
+            var body = Rect.Intersect(window, area);
+            var handle = Rect.Intersect(title, area);
+            if (!body.IsEmpty && body.Width >= 160 && body.Height >= 80 &&
+                !handle.IsEmpty && handle.Width >= 160 && handle.Height >= 24) return true;
+        }
+        return false;
+    }
+
+    [DllImport("user32.dll")] private static extern uint GetDpiForSystem();
 }

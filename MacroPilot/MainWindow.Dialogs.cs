@@ -167,13 +167,23 @@ public partial class MainWindow
         var parts = new List<(ScreenInfo.Monitor m, Canvas canvas, Action<double, double> update)>();
         var frame = new System.Windows.Threading.DispatcherFrame();
         System.EventHandler? onFrame = null;
+        bool done = false;
         void Done()
         {
+            if (done) return;
+            done = true;
             if (onFrame != null) { System.Windows.Media.CompositionTarget.Rendering -= onFrame; onFrame = null; }
             foreach (var w in overlays) try { w.Close(); } catch { }
             frame.Continue = false;
         }
 
+        EventHandler onOwnerClosed = (_, _) => Done();
+        EventHandler onDisplayChanged = (_, _) => Dispatcher.BeginInvoke(new Action(Done));
+        Closed += onOwnerClosed;
+        dialog.Closed += onOwnerClosed;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += onDisplayChanged;
+        try
+        {
         foreach (var mon in ScreenInfo.All())
         {
             var m = mon;
@@ -252,6 +262,7 @@ public partial class MainWindow
                 var (px, py) = ScreenInfo.CursorPos();
                 ScreenInfo.MoveCursor(px + dx * stepPx, py + dy * stepPx);
             };
+            overlay.Closed += (_, _) => Done();
             overlays.Add(overlay);
             parts.Add((m, canvas, (dipX, dipY) =>
             {
@@ -298,12 +309,22 @@ public partial class MainWindow
             }
         };
         System.Windows.Media.CompositionTarget.Rendering += onFrame;
-        System.Windows.Threading.Dispatcher.PushFrame(frame);   // 阻塞到点选/Esc（替代单窗 ShowDialog 的模态）
+        if (!done) System.Windows.Threading.Dispatcher.PushFrame(frame);   // 阻塞到点选/Esc（替代单窗 ShowDialog 的模态）
 
-        // 拾取结束：把本体与编辑窗口切回前台。
-        Services.WindowActivator.ActivateHwnd(mainH);
-        Services.WindowActivator.ActivateHwnd(dlgH);
-        ResumeIdScreens(idsSuspended);
+        }
+        finally
+        {
+            Closed -= onOwnerClosed;
+            dialog.Closed -= onOwnerClosed;
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= onDisplayChanged;
+            Done();
+            if (!_closing)
+            {
+                Services.WindowActivator.ActivateHwnd(mainH);
+                Services.WindowActivator.ActivateHwnd(dlgH);
+                ResumeIdScreens(idsSuspended);
+            }
+        }
         return result;
     }
 
@@ -1323,6 +1344,7 @@ public partial class MainWindow
                     it.Type = "TimeRange";
                     it.StartMinute = start; it.EndMinute = end;
                 }
+                if (!it.IsValid) throw new InvalidOperationException("条件配置不完整：请检查图片与限制区域。");
                 result = it;
                 win.DialogResult = true;
             }
@@ -2184,6 +2206,7 @@ public partial class MainWindow
                     result.Note = noteText.Text.Trim();
                     result.Alias = allowAlias ? RequireUniqueAlias(aliasText.Text, source) : "";
                 }
+                PlanEditing.CompleteEdit(source, result);
                 if (settingsChanged) PersistSettings(); // 持久化默认时长等设置，不提交未保存的方案修改
                 win.DialogResult = true;
             }
@@ -2404,6 +2427,7 @@ public partial class MainWindow
                 Note = noteText.Text.Trim(),
                 Alias = alias,
             };
+            PlanEditing.CompleteEdit(source, result);
             try { groupRepeat.Apply(result); groupUntil.Apply(result); }
             catch (Exception ex) { ThemedDialog.Show(ex.Message, "编辑失败", MessageBoxButton.OK, MessageBoxImage.Exclamation); return; }
             try { ApplyRunCondition(cond, result); }   // 与方案级/动作级同一份写回逻辑
@@ -3244,7 +3268,7 @@ public partial class MainWindow
         {
             if (Mode.SelectedIndex == 1)
             {
-                var valid = _items.FindAll(i => i.IsValid);
+                var valid = ConditionEditing.Validate(_items);
                 if (valid.Count == 0) throw new InvalidOperationException("重复方式已选「直到条件满足」，请至少添加一条有效的停止条件。");
                 r.RepeatUntil = true;
                 r.UntilConditions = new();

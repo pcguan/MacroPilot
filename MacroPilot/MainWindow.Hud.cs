@@ -51,8 +51,8 @@ public partial class MainWindow
     private void HudOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        int pct = (int)System.Math.Round(e.NewValue);   // 滑块单位是百分比 10..100
-        _doc.HudOpacity = System.Math.Clamp(pct / 100.0, 0.1, 1.0);
+        int pct = System.Math.Clamp((int)System.Math.Round(e.NewValue), 30, 100);
+        _doc.HudOpacity = pct / 100.0;
         HudOpacityValue.Text = pct + "%";
         _hud?.SetOpacity(_doc.HudOpacity);
         PersistSettings();

@@ -57,7 +57,7 @@ class _UninstallPageState extends State<UninstallPage> {
       color: Colors.transparent,
       child: Column(
         children: [
-          const InstallerTitleBar(title: '键鼠宏助手 卸载程序'),
+          InstallerTitleBar(title: '键鼠宏助手 卸载程序', canClose: _step != _UStep.progress),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(32, 8, 32, 0),
@@ -111,13 +111,13 @@ class _UninstallPageState extends State<UninstallPage> {
                 checked: _deleteUserData,
                 onChanged: (v) =>
                     setState(() => _deleteUserData = v ?? false),
-                content: const Text('同时删除方案和日志数据'),
+                content: const Text('同时删除方案、设置和日志数据'),
               ),
               const SizedBox(height: 6),
               Text(
                 _deleteUserData
-                    ? '将删除默认数据目录中的 plans.json、logs 和数据目录指针；若使用自定义数据目录，只删除其中的 plans.json 与 logs。'
-                    : '您保存的方案数据不在安装目录中，不会被删除。',
+                    ? '将删除默认及当前自定义数据目录中的方案、设置及其备份、条件图片、日志与轨迹；其它文件保留。'
+                    : '您保存的方案及其他数据将保留。',
                 style: t.typography.caption,
               ),
             ],
@@ -144,15 +144,15 @@ class _UninstallPageState extends State<UninstallPage> {
 
   Widget _buildDone() {
     final result = _result;
-    final hasIssues = result?.warnings.isNotEmpty == true;
+    final hasIssues = result?.hasIssues == true;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 10),
-        _centerHeader('卸载完成', '${AppMeta.appNameCn} 已从您的电脑移除'),
+        _centerHeader(result?.completed == true ? '卸载完成' : '卸载未完成', result?.completed == true ? '应用文件已移除；用户自行放入的文件已保留' : '请根据下方提示处理后重试'),
         const SizedBox(height: 28),
         InfoBar(
-          title: Text(hasIssues ? '已卸载，部分数据未能删除' : '已成功卸载'),
+          title: Text(hasIssues ? '部分操作未能完成' : '已成功卸载'),
           content: hasIssues
               ? Text(_issueSummary(result!))
               : null,
@@ -167,9 +167,9 @@ class _UninstallPageState extends State<UninstallPage> {
   String _issueSummary(UninstallResult result) {
     final lines = <String>[];
     if (result.warnings.isNotEmpty) {
-      lines.add('有 ${result.warnings.length} 个快捷方式或数据项未能立即删除。');
       lines.add(result.warnings.take(3).join('\n'));
     }
+    if (result.leftovers.isNotEmpty) lines.add(result.leftovers.take(3).join('\n'));
     return lines.join('\n');
   }
 

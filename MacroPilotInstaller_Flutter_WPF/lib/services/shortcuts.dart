@@ -10,6 +10,7 @@ class ShortcutService {
     String description = '',
   }) async {
     final icon = iconLocation ?? targetExe;
+    File(lnkPath).parent.createSync(recursive: true);
     // 用单引号包裹路径，并转义路径中的单引号。
     String q(String s) => "'${s.replaceAll("'", "''")}'";
     final script = StringBuffer()
@@ -20,7 +21,7 @@ class ShortcutService {
       ..write('\$s.IconLocation = ${q(icon)}; ')
       ..write('\$s.Description = ${q(description)}; ')
       ..write(r'$s.Save();');
-    await Process.run('powershell', [
+    final result = await Process.run('powershell', [
       '-NoProfile',
       '-NonInteractive',
       '-ExecutionPolicy',
@@ -28,6 +29,7 @@ class ShortcutService {
       '-Command',
       script.toString(),
     ]);
+    if (result.exitCode != 0 || !File(lnkPath).existsSync()) throw FileSystemException('创建快捷方式失败：${result.stderr}', lnkPath);
   }
 
   static bool delete(String lnkPath) {

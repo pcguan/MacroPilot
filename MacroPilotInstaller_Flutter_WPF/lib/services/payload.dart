@@ -1,11 +1,26 @@
 import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:path/path.dart' as p;
+import 'installation_files.dart';
 
 /// 内嵌主程序 payload（assets/payload/app.zip）解压到安装目录。
 class PayloadService {
   static const String assetPath = 'assets/payload/app.zip';
+
+  static Future<Set<String>> fileNames() async {
+    final data = await rootBundle.load(assetPath);
+    final archive = ZipDecoder().decodeBytes(data.buffer.asUint8List());
+    final files = <String>{};
+    for (final file in archive.files.where((f) => f.isFile)) {
+      final name = file.name.replaceAll(r'\', '/');
+      InstallationFiles.child(Directory.systemTemp.path, name);
+      if (!files.add(name) || name == InstallationFiles.manifestName) throw const FormatException('安装包文件重复或使用保留路径。');
+    }
+    for (final name in ['MacroPilot.exe', 'MacroPilot.dll', 'MacroPilot.runtimeconfig.json', 'MacroPilot.deps.json']) {
+      if (!files.contains(name)) throw FormatException('安装包缺少 $name');
+    }
+    return files;
+  }
 
   /// 解压 payload 到 destDir。onFile(已完成数, 总数) 上报进度。
   static Future<void> extractTo(
@@ -20,7 +35,7 @@ class PayloadService {
 
     int done = 0;
     for (final f in archive.files) {
-      final outPath = p.join(destDir, f.name);
+      final outPath = InstallationFiles.child(destDir, f.name);
       if (f.isFile) {
         final outFile = File(outPath);
         outFile.parent.createSync(recursive: true);

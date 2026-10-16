@@ -16,7 +16,9 @@ public sealed class MacroRunner
     private CancellationTokenSource? _cts;
     private readonly ManualResetEventSlim _gate = new(true); // set=运行，reset=暂停
     private Task? _task;
+    private volatile bool _running;
     private readonly Random _rng = new();
+    private readonly PausableClock _clock = new();
     private double _jitterMs;   // 拟人化：定时值的 ± 随机偏移上限（可小数，0=关闭）
 
     // 给定时值加 [-_jitterMs, +_jitterMs] 的连续随机偏移（仅对 >0 的值，避免给瞬时动作凭空加延迟；结果不为负）。
@@ -26,7 +28,7 @@ public sealed class MacroRunner
         return Math.Max(0, baseMs + (_rng.NextDouble() * 2 - 1) * _jitterMs);
     }
 
-    public bool IsRunning => _task is { IsCompleted: false };
+    public bool IsRunning => _running;
     public bool IsPaused { get; private set; }
     private bool _pauseOnFail = true;   // 方案配置：动作失败立即暂停（有「运行失败后」监听的动作除外）
 
@@ -47,9 +49,11 @@ public sealed class MacroRunner
         _cts = new CancellationTokenSource();
         _gate.Set();
         IsPaused = false;
+        _clock.Restart();
         _jitterMs = Math.Max(0, jitterMs);
         _pauseOnFail = plan.PauseOnFail;
         var ct = _cts.Token;
+        _running = true; // 后台第一条动作也可立即暂停，不依赖 Task.Run 返回赋值的时序。
         _task = Task.Run(() =>
         {
             string reason = "Done";
@@ -58,7 +62,9 @@ public sealed class MacroRunner
             PreciseTimer.BeginHighResolution();  // 执行期把系统定时器分辨率提到 1ms，配合亚毫秒自旋
             try
             {
-                if (execDelayMs > 0 && ct.WaitHandle.WaitOne(execDelayMs)) { reason = "Stopped"; return; }
+                _backend.SetExecutionContext(new InputExecutionContext(Gate, (ms, token) => Wait(ms, token), () => IsPaused,
+                    () => (long)_clock.ElapsedMilliseconds));
+                if (execDelayMs > 0) Wait(execDelayMs, ct);
                 int laps = 0;
                 bool waitingWindow = false;
                 // 方案级条件的等待参数：历来是硬编码"每秒复检、无限等"，现改由配置驱动（默认值与旧行为一致）。
@@ -67,16 +73,17 @@ public sealed class MacroRunner
                 int planWaitMax = Math.Max(0, plan.RunConditionRetryMax);
                 int planWaitTimeout = Math.Max(0, plan.RunConditionRetryTimeoutMs);
                 int planWaited = 0;
-                var planWaitClock = new System.Diagnostics.Stopwatch();
+                double planWaitStarted = 0;
                 while (!ct.IsCancellationRequested)
                 {
+                    Gate(ct);
                     // 方案级运行条件：不满足时整方案空转等待时间窗开启（每秒复检、可即时停止），不消耗循环次数。
                     if (!Evaluate(plan, out var planCond, ct))
                     {
                         // 条件类型现已不止时间段（还有图片出现），日志报【实际观测状态】而不是写死"不在时间段内"。
                         if (!waitingWindow)
                         {
-                            waitingWindow = true; planWaitClock.Restart();
+                            waitingWindow = true; planWaitStarted = _clock.ElapsedMilliseconds;
                             Log?.Invoke("Warning", $"⏸ 方案运行条件未满足（{planCond}），{RetryDesc(planWaitMs, planWaitMax, planWaitTimeout)}…");
                             Progress?.Invoke(0, "等待运行条件…");
                         }
@@ -85,16 +92,16 @@ public sealed class MacroRunner
                             Log?.Invoke("Warning", $"方案运行条件重复检查 {planWaited} 次仍未满足，结束运行。");
                             break;
                         }
-                        if (planWaitTimeout > 0 && planWaitClock.ElapsedMilliseconds >= planWaitTimeout)
+                        if (planWaitTimeout > 0 && _clock.ElapsedMilliseconds - planWaitStarted >= planWaitTimeout)
                         {
                             Log?.Invoke("Warning", $"方案运行条件重复检查已超过 {planWaitTimeout} 毫秒仍未满足，结束运行。");
                             break;
                         }
                         planWaited++;
-                        if (planWaitMs > 0 && ct.WaitHandle.WaitOne(planWaitMs)) break;
+                        if (planWaitMs > 0) Wait(planWaitMs, ct);
                         continue;
                     }
-                    if (waitingWindow) { waitingWindow = false; planWaited = 0; planWaitClock.Reset(); Log?.Invoke("Info", $"▶ 运行条件已满足（{planCond}），开始执行。"); }
+                    if (waitingWindow) { waitingWindow = false; planWaited = 0; Log?.Invoke("Info", $"▶ 运行条件已满足（{planCond}），开始执行。"); }
                     else if (RunCondition.Has(plan)) Log?.Invoke("Info", $"方案运行条件满足（{planCond}）。");
                     _lap = laps + 1;
                     PlanLoopChanged?.Invoke($"第 {_lap}{LoopTot(_planLoops)} 轮");
@@ -108,12 +115,16 @@ public sealed class MacroRunner
                 if (ct.IsCancellationRequested) reason = "Stopped";
             }
             catch (OperationCanceledException) { reason = "Stopped"; }
+            catch (InputSafetyException ex) { reason = "Stopped"; Log?.Invoke("Warning", $"输入安全停止：{ex.Message}"); }
             catch (Exception ex) { reason = "Error"; Log?.Invoke("Error", $"执行异常：{ex.Message}"); }
             finally
             {
                 PreciseTimer.EndHighResolution();
                 DisposeTemplateCache();
                 try { _backend.ReleaseAll(); } catch { }
+                try { _backend.SetExecutionContext(null); } catch { }
+                _clock.Pause();
+                _running = false;
                 Log?.Invoke(reason == "Done" ? "Success" : (reason == "Stopped" ? "Warning" : "Error"),
                     reason switch { "Done" => "✔ 方案运行完成。", "Stopped" => "⏹ 方案已停止。", _ => "方案运行出错。" });
                 Finished?.Invoke(reason);
@@ -127,20 +138,22 @@ public sealed class MacroRunner
     public void Pause()
     {
         if (!IsRunning || IsPaused) return;
-        IsPaused = true; _gate.Reset(); PausedChanged?.Invoke(true);
+        IsPaused = true; _clock.Pause(); _gate.Reset(); PausedChanged?.Invoke(true);
         Log?.Invoke("Warning", "已暂停");
     }
 
     public void Resume()
     {
         if (!IsRunning || !IsPaused) return;
-        IsPaused = false; _gate.Set(); PausedChanged?.Invoke(false);
+        IsPaused = false; _clock.Resume(); _gate.Set(); PausedChanged?.Invoke(false);
         Log?.Invoke("Info", "已继续");
     }
 
     private void Gate(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (!_gate.IsSet) _gate.Wait(ct);
+        ct.ThrowIfCancellationRequested();
     }
 
     // 状态上下文：当前轮 _lap、顶层 _si/_total、组合子项 _ci/_cn。进度条表示"当前动作"的完成度（等待=倒计时，瞬时动作=100%）。
@@ -176,15 +189,16 @@ public sealed class MacroRunner
     {
         // 高精度等待（支持小数毫秒）：粗睡分段（≤50ms，便于暂停/停止即时响应）+ 末段自旋补足亚毫秒尾巴。
         // report 时按已过时间推进进度并在状态栏显示等待百分比。
+        Gate(ct);
         if (ms <= 0) return;
         double total = ms;
         double lastReported = -100;   // 上次上报的已过毫秒：末段自旋每圈只有微秒级，不节流会在收尾几毫秒里疯狂拼串上报
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        double started = _clock.ElapsedMilliseconds;
         while (true)
         {
             // 暂停时停表、继续时重新计时——否则暂停期间秒表照走，恢复后 remain 变负、等待被"跳过"。
-            if (!_gate.IsSet) { sw.Stop(); _gate.Wait(ct); sw.Start(); }
-            double remain = total - sw.Elapsed.TotalMilliseconds;
+            Gate(ct);
+            double remain = total - (_clock.ElapsedMilliseconds - started);
             if (remain <= 0) break;
             if (remain > 2)
             {
@@ -198,7 +212,7 @@ public sealed class MacroRunner
             }
             if (report)
             {
-                double done = Math.Min(total, sw.Elapsed.TotalMilliseconds);
+                double done = Math.Min(total, _clock.ElapsedMilliseconds - started);
                 if (done - lastReported >= 16 || done >= total)   // ~一帧一报足够（UI 端 80ms 才取一次）
                 {
                     lastReported = done;
@@ -332,6 +346,8 @@ public sealed class MacroRunner
             }
             finally { StepStateChanged?.Invoke(group, false); _ci = 0; _cn = 0; }
             loops++;
+            // 有限组合保留“本轮子项完成再跳”的语义；无限本体循环必须给已生效跳转留出口。
+            if (group.LoopCount == 0 && _pendingJump != null) break;
             if (group.LoopCount == 1) break;
             if (group.LoopCount != 0 && loops >= group.LoopCount) break;
             if (group.LoopDelayMs > 0) Wait(Jitter(group.LoopDelayMs), ct);   // 重复间隔：仅在还要再跑一轮时等
@@ -403,7 +419,7 @@ public sealed class MacroRunner
         int max = Math.Max(0, step.UntilMaxCount);
         int timeout = Math.Max(0, step.UntilTimeoutMs);
         Log?.Invoke("Info", $"重复执行，直到停止条件满足（{RetryDesc(interval, max, timeout)}）…");
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        double started = _clock.ElapsedMilliseconds;
         // 日志节流与重复检查同款：间隔很小（尤其 0）时每趟都记会灌满 UI 线程。
         bool verboseLog = interval >= 200;
         var logClock = System.Diagnostics.Stopwatch.StartNew();
@@ -422,7 +438,7 @@ public sealed class MacroRunner
             }
             if (ok) { Log?.Invoke("Info", $"停止条件已满足，结束重复（共执行 {done} 趟）。"); return; }
             if (max > 0 && done >= max) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {max} 趟上限），结束重复。"); return; }
-            if (timeout > 0 && clock.ElapsedMilliseconds >= timeout) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {timeout} 毫秒时限），结束重复。"); return; }
+            if (timeout > 0 && _clock.ElapsedMilliseconds - started >= timeout) { Log?.Invoke("Warning", $"已执行 {done} 趟仍未满足停止条件（已达 {timeout} 毫秒时限），结束重复。"); return; }
             if (interval > 0) Wait(Jitter(interval), ct);
         }
     }
@@ -469,13 +485,14 @@ public sealed class MacroRunner
             }
         }
         catch (OperationCanceledException) { StepStateChanged?.Invoke(step, false); ActEnd?.Invoke("已停止", "Stopped"); throw; }
+        catch (InputSafetyException) { StepStateChanged?.Invoke(step, false); ActEnd?.Invoke("安全停止", "Stopped"); throw; }
         catch (Exception ex)
         {
             ok = false;
             StepStateChanged?.Invoke(step, false);
             ActEnd?.Invoke("执行失败", "Fail");
             Log?.Invoke("Error", $"执行失败：{ex.Message}");
-            if (step.FailAction != null)
+            if (step.FailAction is { Disabled: false })
             {
                 RunHook(step.FailAction, "运行失败后", ct);   // 设了失败监听：失败交由监听处理，不触发方案的失败暂停
             }
@@ -483,6 +500,7 @@ public sealed class MacroRunner
             {
                 Pause();   // 先置暂停再记日志：日志回调里就能看到已暂停的状态
                 Log?.Invoke("Warning", "动作执行失败，已按方案设置自动暂停（F10 继续，F11 停止）。");
+                Gate(ct);   // 最后一个动作也必须等待用户处理，不能依赖“下一步”进入暂停门。
             }
         }
         if (ok)
@@ -500,21 +518,27 @@ public sealed class MacroRunner
     // 不再是"叶子级一次性执行"的阉割版。急停(取消)要穿透；监听自身失败不影响主流程(RunLeaf 内部已处理其 FailAction/日志)。
     private void RunHook(MacroStep? hook, string kind, CancellationToken ct)
     {
-        if (hook is null) return;
+        if (hook is null || hook.Disabled) return;
+        Gate(ct);
         try
         {
             if (hook.IsGroup)
             {
-                if (GateHooks(hook, out var reason, ct)) { Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合（{hook.Children.Count} 个动作）"); RunGroup(hook, ct); }
-                else
+                RepeatCycle(hook, ct, () =>
                 {
-                    Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合条件不满足，跳过（{reason}）");
-                    CompleteHook(hook, ct);   // 条件跳过也算一次"结束"
-                }
+                    if (GateHooks(hook, out var reason, ct)) { Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合（{hook.Children.Count} 个动作）"); RunGroup(hook, ct); }
+                    else
+                    {
+                        Log?.Invoke("Info", $"    ↳ 监听（{kind}）：组合条件不满足，跳过（{reason}）");
+                        CompleteHook(hook, ct);
+                    }
+                });
             }
             else RunLeaf(hook, $"    ↳ 监听（{kind}）：{hook.Display}", ct);
         }
         catch (OperationCanceledException) { throw; }
+        catch (InputSafetyException) { throw; }
+        catch (ConditionObservationException) { throw; }
         catch { }
     }
 
@@ -575,7 +599,7 @@ public sealed class MacroRunner
             int timeout = Math.Max(0, step.RunConditionRetryTimeoutMs);
             Log?.Invoke("Info", $"条件未满足（{conditionText}），{RetryDesc(interval, max, timeout)}…");
             int tries = 0;
-            var clock = System.Diagnostics.Stopwatch.StartNew();
+            double started = _clock.ElapsedMilliseconds;
             // 日志节流：间隔很小（尤其 0=连着判）时每次都记会把 UI 线程灌满——日志刷不过来，
             // 连 F9/F11 这些要在 UI 线程上派发的热键都会被拖慢。慢速重试仍然每次都记（要看每次的相似度）。
             bool verboseLog = interval >= 200;
@@ -584,7 +608,7 @@ public sealed class MacroRunner
             while (!ok)
             {
                 if (max > 0 && tries >= max) { stopReason = $"已达 {max} 次上限"; break; }
-                if (timeout > 0 && clock.ElapsedMilliseconds >= timeout) { stopReason = $"已达 {timeout} 毫秒时限"; break; }
+                if (timeout > 0 && _clock.ElapsedMilliseconds - started >= timeout) { stopReason = $"已达 {timeout} 毫秒时限"; break; }
                 if (interval > 0) Wait(interval, ct);
                 else { Gate(ct); ct.ThrowIfCancellationRequested(); }   // 0 间隔也必须给暂停/停止留出响应点
                 tries++;
@@ -689,37 +713,14 @@ public sealed class MacroRunner
     {
         if (c.Type == "ImageMatch")
         {
-            // 与「点击图片」同一套搜索：限制区域内结构加权滑窗（v0.2.20 起不再要求图片出现在截取时的
-            // 原位置——区域内任意处出现即算满足）。旧数据的区域＝当年截图的原位置，恰好退化为只检查该处。
             var tpl = TemplateFor(c);
-            if (tpl == null) { text = "目标图片未出现（无模板）"; return c.Invert; }
-            var mon = ScreenInfo.ByDevice(c.Monitor);
-            int rx, ry, rw, rh;
-            if (c.RectW > 0 && c.RectH > 0)
-            {
-                rx = mon.Left + c.RectX; ry = mon.Top + c.RectY;
-                int right = Math.Min(rx + c.RectW, mon.Right), bottom = Math.Min(ry + c.RectH, mon.Bottom);
-                rx = Math.Max(rx, mon.Left); ry = Math.Max(ry, mon.Top);
-                rw = right - rx; rh = bottom - ry;   // 与当前屏求交集（跨主机导入/换分辨率防越界）
-                if (rw <= 0 || rh <= 0) { text = "限制区域不在当前屏幕范围内"; return c.Invert; }
-            }
-            else { rx = mon.Left; ry = mon.Top; rw = mon.Width; rh = mon.Height; }
-            double thr = Math.Clamp(c.Threshold, 0.5, 1.0);
-            // 计时含抓屏+搜索（同轮共享抓屏时第二条起自然不含抓屏——记录的就是真实开销）。
-            // 用户凭它判断"该不该缩小限制区域/换更有结构的模板"，也能直接看出上面那类慢格子。
-            var swMatch = System.Diagnostics.Stopwatch.StartNew();
-            var shot = RoundCapture(rx, ry, rw, rh);
-            if (shot == null) { text = "抓屏失败，视为未出现"; return c.Invert; }
-            var hits = ScreenMatch.FindIn(shot, tpl, thr, out double best, ct, rx, ry);
-            swMatch.Stop();
-            string cost = $"，耗时 {swMatch.ElapsedMilliseconds}ms";
-            bool found = hits.Count > 0;
-            text = found
-                ? $"目标图片已出现（命中 {hits.Count} 个，最高相似度 {best:0.00} / 阈值 {thr:0.00}{cost}）"
-                : best > 0
-                    ? $"目标图片未出现（区域内最高相似度 {best:0.00} / 阈值 {thr:0.00}{cost}）"
-                    : $"目标图片未出现（区域内最高相似度低于 {Math.Max(0, thr - 0.15):0.00}，阈值 {thr:0.00}{cost}）";
-            return c.Invert ? !found : found;
+            if (tpl == null) throw new ConditionObservationException("图片条件无法观测：模板缺失或损坏。");
+            var mon = ScreenInfo.ByDevice(c.Monitor, requirePresent: true);
+            var observed = ImageConditionEvaluator.Observe(c, tpl,
+                new System.Drawing.Rectangle(mon.Left, mon.Top, mon.Width, mon.Height),
+                rect => RoundCapture(rect.X, rect.Y, rect.Width, rect.Height), ct);
+            text = observed.Text;
+            return c.Invert ? !observed.Found : observed.Found;
         }
         if (c.Type != "TimeRange") { text = ""; return true; }
 
@@ -793,7 +794,7 @@ public sealed class MacroRunner
                     var (ex, ey) = ScreenInfo.Resolve(step.DragEndMonitor, step.DragEndNormX, step.DragEndNormY);
                     (ex, ey) = ApplyOffset(ex, ey, step.ClickOffset);   // 终点同样带偏移（起点在 MoveToStepTarget 里已偏）
                     if (step.Humanize) MoveHumanized(ex, ey, ct);
-                    else _backend.MouseMove(ex, ey);
+                    else _backend.MouseMove(ex, ey, ct);
                     Wait(60, ct);
                 }
                 finally { _backend.MouseUp(step.Button); }
@@ -835,7 +836,7 @@ public sealed class MacroRunner
                 if (step.TargetProcess == WindowActivator.DesktopSentinel)
                 {
                     WindowActivator.FocusDesktop(step.TargetTitle);
-                    Log?.Invoke("Info", string.IsNullOrEmpty(step.TargetTitle) ? "已聚焦桌面（所有应用失活）" : $"已聚焦桌面 · {ScreenInfo.ByDevice(step.TargetTitle).Label}");
+                    Log?.Invoke("Info", string.IsNullOrEmpty(step.TargetTitle) ? "已聚焦桌面（所有应用失活）" : $"已聚焦桌面 · {ScreenInfo.ByDevice(step.TargetTitle, requirePresent: true).Label}");
                     break;
                 }
                 if (!WindowActivator.Activate(step.TargetPid, step.TargetProcess, step.TargetTitle, out var matched))
@@ -853,7 +854,7 @@ public sealed class MacroRunner
             : ScreenInfo.Resolve(step.MoveMonitor, step.MoveNormX, step.MoveNormY);
         (vx, vy) = ApplyOffset(vx, vy, step.ClickOffset);               // 落点偏移（每次调用各自随机）
         if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
-        else _backend.MouseMove(vx, vy);
+        else _backend.MouseMove(vx, vy, ct);
     }
 
     // 文本输入：自动分流 —— 软件后端走 Unicode 注入（能出中文），CH9329 是真实 HID 键盘、
@@ -864,7 +865,8 @@ public sealed class MacroRunner
         if (text.Length == 0) throw new InvalidOperationException("文本输入：内容为空。");
         if (step.TextRandom)   // 正则随机：每次执行都重新生成，循环 N 次即得 N 个不同结果
         {
-            try { text = RandomText.Generate(text); }
+            try { text = RandomText.Generate(text, ct); }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex) { throw new InvalidOperationException($"文本输入：随机模式不合法（{ex.Message}）。"); }
             if (text.Length == 0) throw new InvalidOperationException("文本输入：按该模式生成的内容为空。");
             Log?.Invoke("Info", $"文本输入：随机生成「{text}」。");
@@ -887,9 +889,8 @@ public sealed class MacroRunner
         }
 
         // ---- 剪贴板路径 ----
-        // 剪贴板是 STA 独占资源：必须切到 UI 线程访问，且常被别的程序短暂占用，要重试。
-        string? backup = ClipboardGetText();
-        if (!ClipboardSetText(text)) throw new InvalidOperationException("文本输入：写入剪贴板失败（可能被其它程序占用）。");
+        // 在 STA 线程备份全部格式；仅当剪贴板仍属于本次输入时恢复，保留期间的外部复制。
+        var clipboard = new ClipboardLease(new WpfClipboardAccess(), text);
         try
         {
             Wait(60, ct);                                   // 给目标程序留出感知剪贴板变化的时间
@@ -898,39 +899,9 @@ public sealed class MacroRunner
         }
         finally
         {
-            if (backup != null) ClipboardSetText(backup);    // 尽量还原用户原有剪贴板内容
+            try { clipboard.Restore(); }
+            catch (Exception ex) { Log?.Invoke("Warning", "文本已输入，但还原剪贴板失败：" + ex.Message); }
         }
-    }
-
-    // 剪贴板读写：切 UI 线程（STA）+ 重试；失败不抛（还原失败不该影响主流程）。
-    private static string? ClipboardGetText()
-    {
-        var app = System.Windows.Application.Current;
-        if (app == null) return null;
-        string? r = null;
-        try { app.Dispatcher.Invoke(() => { try { if (System.Windows.Clipboard.ContainsText()) r = System.Windows.Clipboard.GetText(); } catch { } }); }
-        catch { }
-        return r;
-    }
-
-    private static bool ClipboardSetText(string text)
-    {
-        var app = System.Windows.Application.Current;
-        if (app == null) return false;
-        bool ok = false;
-        try
-        {
-            app.Dispatcher.Invoke(() =>
-            {
-                for (int i = 0; i < 5 && !ok; i++)
-                {
-                    try { System.Windows.Clipboard.SetText(text); ok = true; }
-                    catch { Thread.Sleep(40); }   // CLIPBRD_E_CANT_OPEN：别的程序正占着，稍后重试
-                }
-            });
-        }
-        catch { }
-        return ok;
     }
 
     /// <summary>
@@ -959,13 +930,13 @@ public sealed class MacroRunner
         int targetTop = ey - (int)Math.Round(wh * ay / 2.0);
         int tx = grabX + (targetLeft - wx), ty = grabY + (targetTop - wy);   // 抓点的位移 = 窗口左上角的位移
 
-        _backend.MouseMove(grabX, grabY);
+        _backend.MouseMove(grabX, grabY, ct);
         ct.ThrowIfCancellationRequested();
         _backend.MouseDown(step.Button);
         try
         {
             Wait(60, ct);
-            if (step.Humanize) MoveHumanized(tx, ty, ct); else _backend.MouseMove(tx, ty);
+            if (step.Humanize) MoveHumanized(tx, ty, ct); else _backend.MouseMove(tx, ty, ct);
             Wait(60, ct);
         }
         finally { _backend.MouseUp(step.Button); }
@@ -986,7 +957,7 @@ public sealed class MacroRunner
         }
         var (cx, cy) = _imageClickPt;
         ct.ThrowIfCancellationRequested();
-        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
+        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy, ct);
         ct.ThrowIfCancellationRequested();
         _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
     }
@@ -995,7 +966,7 @@ public sealed class MacroRunner
     {
         var (cx, cy) = LocateImage(step, "移动图片", ct);
         ct.ThrowIfCancellationRequested();
-        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy);
+        if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy, ct);
     }
 
     // 区域内搜模板 → 返回第 N 个命中的中心点。label 只用于日志/报错措辞。
@@ -1005,8 +976,8 @@ public sealed class MacroRunner
                   ?? throw new InvalidOperationException($"{label}：未设置模板图片。");
 
         // 限制区域：屏内相对像素 → 按该屏当前位置还原绝对区域；未设区域则搜整块绑定屏（默认主屏；
-        // 绑定屏在本机不存在时 ByDevice 已回退主屏——常见于方案导入自别的主机）。
-        var mon = ScreenInfo.ByDevice(step.ClickImageMonitor);
+        // 绑定屏在本机不存在时明确安全停止，不能向回退屏幕继续输入。
+        var mon = ScreenInfo.ByDevice(step.ClickImageMonitor, requirePresent: true);
         int rx, ry, rw, rh;
         if (step.ClickImageRectW > 0 && step.ClickImageRectH > 0)
         {
@@ -1056,7 +1027,7 @@ public sealed class MacroRunner
         double r = radius * Math.Sqrt(_rng.NextDouble());               // sqrt：使落点在圆盘内面积均匀（否则堆在圆心）
         int nx = (int)Math.Round(x + Math.Cos(ang) * r);
         int ny = (int)Math.Round(y + Math.Sin(ang) * r);
-        var m = ScreenInfo.ByDevice(ScreenInfo.FromPoint(x, y).device); // 落点所在屏，clamp 防偏出屏
+        var m = ScreenInfo.ByDevice(ScreenInfo.FromPoint(x, y).device, requirePresent: true); // 落点所在屏，clamp 防偏出屏
         return (Math.Clamp(nx, m.Left, m.Right - 1), Math.Clamp(ny, m.Top, m.Bottom - 1));
     }
 
@@ -1068,13 +1039,13 @@ public sealed class MacroRunner
     {
         var (sx, sy) = ScreenInfo.CursorPos();
         double dist = Math.Sqrt((double)(tx - sx) * (tx - sx) + (double)(ty - sy) * (ty - sy));
-        if (dist < 3) { _backend.MouseMove(tx, ty); return; }
+        if (dist < 3) { _backend.MouseMove(tx, ty, ct); return; }
 
         string tDev = ScreenInfo.FromPoint(tx, ty).device;
         string sDev = ScreenInfo.FromPoint(sx, sy).device;
 
         // 同屏。
-        if (sDev == tDev) { HumanizeWithin(sx, sy, tx, ty, ScreenInfo.ByDevice(tDev), ct); return; }
+        if (sDev == tDev) { HumanizeWithin(sx, sy, tx, ty, ScreenInfo.ByDevice(tDev, requirePresent: true), ct); return; }
 
         // 跨屏 · native/软件：整段连续拟人化（clamp 到虚拟桌面并集）。
         if (_backend.ContinuousAcrossScreens)
@@ -1084,7 +1055,7 @@ public sealed class MacroRunner
             try
             {
                 EmitStroke(sx, sy, tx, ty, MoveDuration(dist), vb.Left, vb.Top, vb.Right - 1, vb.Bottom - 1, false, ct);
-                _backend.MouseMove(tx, ty);
+                _backend.MouseMove(tx, ty, ct);
             }
             finally { _backend.EndMove(); }
             return;
@@ -1104,29 +1075,29 @@ public sealed class MacroRunner
                     string da = ScreenInfo.FromPoint(ax, ay).device, db = ScreenInfo.FromPoint(bx, by).device;
                     if (da == db)   // 同屏子段 → 逐屏拟人化
                     {
-                        var m = ScreenInfo.ByDevice(da);
+                        var m = ScreenInfo.ByDevice(da, requirePresent: true);
                         double legDist = Math.Sqrt((double)(bx - ax) * (bx - ax) + (double)(by - ay) * (by - ay));
                         EmitStroke(ax, ay, bx, by, MoveDuration(legDist), m.Left, m.Top, m.Right - 1, m.Bottom - 1, true, ct);
                     }
                     else            // 跨缝：会话内一次相对收敛越过共享边（短、无法平滑）
                     {
                         ct.ThrowIfCancellationRequested(); Gate(ct);
-                        _backend.MouseMove(bx, by);
+                        _backend.MouseMove(bx, by, ct);
                     }
                 }
-                _backend.MouseMove(tx, ty);   // 精确到位
+                _backend.MouseMove(tx, ty, ct);   // 精确到位
             }
             finally { _backend.EndMove(); }
             return;
         }
 
         // 兜底（拓扑不连通/异常）：老路——0x04 转移到目标屏入口点 + 屏内拟人化收尾。
-        var tMon = ScreenInfo.ByDevice(tDev);
+        var tMon = ScreenInfo.ByDevice(tDev, requirePresent: true);
         double ux = (sx - tx) / dist, uy = (sy - ty) / dist;
         double L = Math.Clamp(Math.Min(tMon.Width, tMon.Height) * 0.35, 120, 260);
         int ex = Math.Clamp((int)Math.Round(tx + ux * L), tMon.Left + 4, tMon.Right - 5);
         int ey = Math.Clamp((int)Math.Round(ty + uy * L), tMon.Top + 4, tMon.Bottom - 5);
-        _backend.MouseMove(ex, ey);
+        _backend.MouseMove(ex, ey, ct);
         HumanizeWithin(ex, ey, tx, ty, tMon, ct);
     }
 
@@ -1139,7 +1110,7 @@ public sealed class MacroRunner
     private void HumanizeWithin(int sx, int sy, int tx, int ty, ScreenInfo.Monitor mon, CancellationToken ct)
     {
         double dist = Math.Sqrt((double)(tx - sx) * (tx - sx) + (double)(ty - sy) * (ty - sy));
-        if (dist < 3) { _backend.MouseMove(tx, ty); return; }
+        if (dist < 3) { _backend.MouseMove(tx, ty, ct); return; }
         int L = mon.Left, T = mon.Top, R = mon.Right - 1, B = mon.Bottom - 1;
         bool ch9329 = _backend is Ch9329Device;
 
@@ -1165,7 +1136,7 @@ public sealed class MacroRunner
                 Wait(40 + _rng.NextDouble() * 70, ct);                       // 冲过后短暂迟疑
                 EmitStroke(ex, ey, tx, ty, 90 + _rng.NextDouble() * 90, L, T, R, B, ch9329, ct); // 收手回正（短、近乎直线）
             }
-            _backend.MouseMove(Math.Clamp(tx, L, R), Math.Clamp(ty, T, B)); // 精确到位
+            _backend.MouseMove(Math.Clamp(tx, L, R), Math.Clamp(ty, T, B), ct); // 精确到位
         }
         finally { _backend.EndMove(); }
     }
@@ -1187,7 +1158,7 @@ public sealed class MacroRunner
                             int L, int T, int R, int B, bool ch9329, CancellationToken ct)
     {
         double D = Math.Sqrt((ex - sx) * (ex - sx) + (ey - sy) * (ey - sy));
-        if (D < 1.5) { _backend.MouseMove(Math.Clamp((int)Math.Round(ex), L, R), Math.Clamp((int)Math.Round(ey), T, B)); return; }
+        if (D < 1.5) { _backend.MouseMove(Math.Clamp((int)Math.Round(ex), L, R), Math.Clamp((int)Math.Round(ey), T, B), ct); return; }
         double ux = (ex - sx) / D, uy = (ey - sy) / D, pxn = -uy, pyn = ux;  // 沿/垂直单位向量
 
         // ④ 控制点：沿轴约 1/3、2/3 处，各自独立的垂直偏移（同号=C 形弧，异号=S 形）→ 每次轨迹不同。
@@ -1227,7 +1198,7 @@ public sealed class MacroRunner
         void Emit(double fx, double fy)
         {
             ct.ThrowIfCancellationRequested(); Gate(ct);
-            _backend.MouseMove(Math.Clamp((int)Math.Round(fx), L, R), Math.Clamp((int)Math.Round(fy), T, B));
+            _backend.MouseMove(Math.Clamp((int)Math.Round(fx), L, R), Math.Clamp((int)Math.Round(fy), T, B), ct);
         }
 
         if (ch9329)

@@ -17,6 +17,19 @@ public sealed class Ch9329Device : IInputBackend
     private readonly string _port;
     private readonly int _baud;
     private SerialPort? _sp;
+    private InputExecutionContext? _execution;
+    private RelativeMoveController? _moveController;
+    public void SetExecutionContext(InputExecutionContext? context) => _execution = context;
+    private void Checkpoint(CancellationToken ct) { ct.ThrowIfCancellationRequested(); _execution?.Checkpoint(ct); }
+    private RelativeMoveController CreateMoveController()
+    {
+        var context = _execution;
+        return new(ScreenInfo.CursorPos,
+            (dx, dy) => Send(0x05, new byte[] { 0x01, _held, Signed(dx), Signed(dy), 0 }), Checkpoint,
+            clock: context == null ? null : () => context.ActiveMilliseconds,
+            clockExcludesPauses: context?.HasActiveClock == true);
+    }
+
 
     public Ch9329Device(string port, int baud) { _port = port; _baud = baud; }
 
@@ -46,6 +59,7 @@ public sealed class Ch9329Device : IInputBackend
 
     public void Close()
     {
+        try { EndMove(); RestoreMouseAccel(); } catch { }
         try { if (_sp is { IsOpen: true }) { ReleaseAll(); _sp.Close(); } } catch { }
         _sp?.Dispose();
         _sp = null;
@@ -62,11 +76,9 @@ public sealed class Ch9329Device : IInputBackend
         return frame;
     }
 
-    private int _sendFails;
-    private const int MaxConsecutiveSendFails = 3;
     private void Send(byte cmd, byte[] data)
     {
-        if (_sp is not { IsOpen: true }) return;
+        if (_sp is not { IsOpen: true }) throw new InputSafetyException("CH9329 串口未连接，已停止方案。");
         try
         {
             // 发送前清收缓冲即可顺带丢弃上一帧应答，避免堆积；不再等 ACK——
@@ -74,17 +86,10 @@ public sealed class Ch9329Device : IInputBackend
             _sp.DiscardInBuffer();
             var p = Packet(cmd, data);
             _sp.Write(p, 0, p.Length);
-            _sendFails = 0;
         }
         catch (Exception ex)
         {
-            // 单次抖动容忍；连续多次写失败＝设备大概率已掉，抛出让 Runner 以 Error 结束，
-            // 别再对所有后续动作"静默假装成功"。（ReleaseAll/Close 里的 Send 在其各自 try 内，抛出会被吞掉，无碍）
-            if (++_sendFails >= MaxConsecutiveSendFails)
-            {
-                _sendFails = 0;
-                throw new System.IO.IOException($"CH9329 串口连续写入失败（设备可能已断开）：{ex.Message}", ex);
-            }
+            throw new InputSafetyException($"CH9329 串口写入失败，已安全停止方案：{ex.Message}", ex);
         }
     }
 
@@ -95,9 +100,8 @@ public sealed class Ch9329Device : IInputBackend
     {
         byte code = KeyMap.TryHid(key, out var c) ? c : (byte)0;
         if (code == 0 && modifier == 0) return; // 未知键名：不发只含修饰键的空报文
-        Keyboard(modifier, code);
-        Sleep(holdMs, ct);
-        Keyboard(0, 0); // 全松
+        InputExecutionContext.Hold(holdMs, () => Keyboard(modifier, code),
+            () => Keyboard(0, 0), _execution, ct);
     }
 
     private static byte ButtonBit(string button) => button switch
@@ -124,9 +128,9 @@ public sealed class Ch9329Device : IInputBackend
     public void MouseClick(string button, double holdMs, CancellationToken ct = default)
     {
         byte b = ButtonBit(button);
-        Send(0x05, new byte[] { 0x01, (byte)(_held | b), 0, 0, 0 });   // 按下
-        Sleep(holdMs, ct);
-        Send(0x05, new byte[] { 0x01, _held, 0, 0, 0 });               // 松开（保留拖动按住的键）
+        InputExecutionContext.Hold(holdMs,
+            () => Send(0x05, new byte[] { 0x01, (byte)(_held | b), 0, 0, 0 }),
+            () => Send(0x05, new byte[] { 0x01, _held, 0, 0, 0 }), _execution, ct);
     }
 
     // 参数为"虚拟桌面像素"。CH9329 的 0x04 绝对坐标 0–4096 只映射【主屏】，副屏只能靠相对移动跨过去：
@@ -140,19 +144,23 @@ public sealed class Ch9329Device : IInputBackend
     public void BeginMove()
     {
         if (_inMoveSession) return;
-        _inMoveSession = true;
-        DisableMouseAccel();   // 整段只关一次，会话内相对移动即 1:1
+        DisableMouseAccel();
+        try { _moveController = CreateMoveController(); _inMoveSession = true; }
+        catch { RestoreMouseAccel(); throw; }
     }
     public void EndMove()
     {
         if (!_inMoveSession) return;
         _inMoveSession = false;
+        _moveController = null;
         RestoreMouseAccel();
         if (TimingDiag) FlushTiming();
     }
 
-    public void MouseMove(int vx, int vy)
+    public void MouseMove(int vx, int vy, CancellationToken ct = default)
     {
+        Checkpoint(ct);
+        if (!_inMoveSession) _moveController = null;
         // 移动会话中（拟人化）：调用方保证同屏，直接相对收敛——不判主屏 0x04、不 BFS、不逐点开关加速。
         if (_inMoveSession)
         {
@@ -160,12 +168,13 @@ public sealed class Ch9329Device : IInputBackend
             {
                 var (bx, by) = ScreenInfo.CursorPos();
                 var tsw = System.Diagnostics.Stopwatch.StartNew();
-                RelativeConverge(vx, vy, null, "会话");
+                RelativeConverge(vx, vy, null, "会话", ct);
                 tsw.Stop();
                 double td = Math.Sqrt((double)(vx - bx) * (vx - bx) + (double)(vy - by) * (vy - by));
-                lock (_tLock) _tbuf.Append($"{tsw.Elapsed.TotalMilliseconds:F1},{_lastFrames},{td:F0}\n");
+                lock (_tLock) _tbuf.Append(FormattableString.Invariant($"{tsw.Elapsed.TotalMilliseconds:F1},{_lastFrames},{td:F0}\n"));
             }
-            else RelativeConverge(vx, vy, null, "会话");
+            else RelativeConverge(vx, vy, null, "会话", ct);
+            EnsureArrived(vx, vy);
             return;
         }
 
@@ -179,7 +188,7 @@ public sealed class Ch9329Device : IInputBackend
         primary ??= (mons.Count > 0 ? mons[0] : new ScreenInfo.Monitor("", 0, 0, 1920, 1080, true));
 
         // 目标在主屏 → 0x04 一发精确到位。
-        if (primary.Contains(vx, vy)) { SendAbs04(primary, vx, vy, "主屏"); EnsureArrived(vx, vy); return; }
+        if (primary.Contains(vx, vy)) { SendAbs04(primary, vx, vy, "主屏", ct); EnsureArrived(vx, vy); return; }
 
         target ??= NearestMonitor(vx, vy, mons, primary);
         var (cx, cy) = ScreenInfo.CursorPos();
@@ -191,7 +200,7 @@ public sealed class Ch9329Device : IInputBackend
             sb?.Append($"MOVE(屏内相对·屏{target.Number}) 目标=({vx},{vy}) 起点=({cx},{cy})\n");
             bool a0 = DisableMouseAccel();
             sb?.Append($"  强制1:1: 加速已关={a0} 原指针速度={_savedSpeed}(移动期临时设为10)\n");
-            try { RelativeConverge(vx, vy, sb, "定位"); } finally { RestoreMouseAccel(); }
+            try { RelativeConverge(vx, vy, sb, "定位", ct); } finally { RestoreMouseAccel(); }
             FlushMove(sb, vx, vy);
             EnsureArrived(vx, vy);
             return;
@@ -203,10 +212,10 @@ public sealed class Ch9329Device : IInputBackend
         {
             sb?.Append($"MOVE(降级·与主屏不连通) 目标=({vx},{vy})\n");
             int ex = Math.Clamp(vx, primary.Left, primary.Right - 1), ey = Math.Clamp(vy, primary.Top, primary.Bottom - 1);
-            SendAbs04(primary, ex, ey, "降级入口");   // 内部已轮询等到位
+            SendAbs04(primary, ex, ey, "降级入口", ct);   // 内部已轮询等到位
             bool a1 = DisableMouseAccel();
             sb?.Append($"  强制1:1: 加速已关={a1}\n");
-            try { RelativeConverge(vx, vy, sb, "定位"); } finally { RestoreMouseAccel(); }
+            try { RelativeConverge(vx, vy, sb, "定位", ct); } finally { RestoreMouseAccel(); }
             FlushMove(sb, vx, vy);
             EnsureArrived(vx, vy);
             return;
@@ -217,7 +226,7 @@ public sealed class Ch9329Device : IInputBackend
         if (path.Count > 1) { var e = CrossPoint(path[1], primary); entryX = e.x; entryY = e.y; }
         else { entryX = Math.Clamp(vx, primary.Left, primary.Right - 1); entryY = Math.Clamp(vy, primary.Top, primary.Bottom - 1); }
         sb?.Append($"MOVE(路径 {PathText(path)}) 目标=({vx},{vy}) 起点=({cx},{cy})\n");
-        SendAbs04(primary, entryX, entryY, "枢纽");   // 内部已轮询等到位
+        SendAbs04(primary, entryX, entryY, "枢纽", ct);   // 内部已轮询等到位
 
         // 整段相对行走期间统一把系统指针置 1:1（比逐跳开关更省），最后精确落到目标点。
         bool accelOff = DisableMouseAccel();
@@ -227,9 +236,9 @@ public sealed class Ch9329Device : IInputBackend
             for (int i = 1; i < path.Count; i++)
             {
                 var cp = CrossPoint(path[i - 1], path[i]);
-                if (!RelativeConverge(cp.x, cp.y, sb, $"跨入屏{path[i].Number}")) { sb?.Append("  跨屏卡住，停止后续路径\n"); break; }   // 止损，别白等后续跳
+                RelativeConverge(cp.x, cp.y, sb, $"跨入屏{path[i].Number}", ct);
             }
-            RelativeConverge(vx, vy, sb, "定位");
+            RelativeConverge(vx, vy, sb, "定位", ct);
         }
         finally { RestoreMouseAccel(); }
         FlushMove(sb, vx, vy);
@@ -237,14 +246,16 @@ public sealed class Ch9329Device : IInputBackend
     }
 
     // 用 0x04 绝对定位把光标送到主屏上的 (px,py)（须在主屏范围内）。tag 仅用于日志。
-    private void SendAbs04(ScreenInfo.Monitor primary, int px, int py, string tag)
+    private void SendAbs04(ScreenInfo.Monitor primary, int px, int py, string tag, CancellationToken ct)
     {
+        Checkpoint(ct);
         int ax = Math.Clamp((int)Math.Round(4096.0 * (px - primary.Left) / primary.Width), 0, 4095);
         int ay = Math.Clamp((int)Math.Round(4096.0 * (py - primary.Top) / primary.Height), 0, 4095);
         // 0x04 绝对鼠标帧：data = [0x02, 按键, X低, X高, Y低, Y高, 滚轮]，X/Y 为 0–4096 绝对坐标(小端)。
         Send(0x04, new byte[] { 0x02, _held, (byte)(ax & 0xFF), (byte)((ax >> 8) & 0xFF), (byte)(ay & 0xFF), (byte)((ay >> 8) & 0xFF), 0x00 });
         // 轮询等光标真到锚点附近再返回（替代固定 sleep）：避免 0x04 尚未生效就走相对，导致首帧读到旧位置、冲过头。
-        bool arrived = WaitCursorNear(px, py, 4, 150);
+        bool arrived = WaitCursorNear(px, py, 4, 150, ct);
+        if (!arrived) throw new InputSafetyException("鼠标绝对定位未到达目标，已安全停止方案。");
         if (MoveDiag)
         {
             var (fx, fy) = ScreenInfo.CursorPos();
@@ -252,47 +263,14 @@ public sealed class Ch9329Device : IInputBackend
         }
     }
 
-    // 相对闭环收敛到 (tx,ty)：逐帧读光标→发残差(截 ±127)→等真位移，直到 ≤1px。
-    // 调用方须已把系统指针置 1:1（DisableMouseAccel）。返回是否到位。
+    // 相对闭环须处于 1:1；异常位移、未到位和取消直接穿透调用方，不再静默返回 false。
     private int _lastFrames;   // 上次 RelativeConverge 的收敛帧数（供收敛耗时测量用）
-    private bool RelativeConverge(int tx, int ty, System.Text.StringBuilder? sb, string tag)
+    private void RelativeConverge(int tx, int ty, System.Text.StringBuilder? sb, string tag, CancellationToken ct)
     {
-        const int MaxIter = 200, FrameWaitMs = 150;
-        int stuck = 0, prevDx = 0, prevDy = 0, dampX = 1, dampY = 1;
-        int best = int.MaxValue, noGain = 0;   // 发散检测：距离长期不缩小＝有外力在拽指针（如游戏鼠标捕获）
-        for (int i = 0; i < MaxIter; i++)
-        {
-            var (cx, cy) = ScreenInfo.CursorPos();
-            int dx = tx - cx, dy = ty - cy;
-            if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1) { _lastFrames = i; sb?.Append($"  [{tag}] 到位@帧{i} ({cx},{cy})\n"); return true; }
-            // 发散快速失败：正常收敛（含阻尼振荡）几帧内距离必创新低；连续 12 帧毫无进展只能是
-            // 前台应用在不停重置/圈禁指针（全屏游戏的鼠标捕获），再跑下去就是肉眼可见的"乱转圈"。
-            int dist = Math.Max(Math.Abs(dx), Math.Abs(dy));
-            if (dist < best) { best = dist; noGain = 0; }
-            else if (++noGain >= 12) { _lastFrames = i; sb?.Append($"  [{tag}] 发散(连续 12 帧未接近目标，指针疑似被前台应用干预)@帧{i}\n"); return false; }
-            // 冲过头（残差符号翻转）→ 该轴发送量减半、自带阻尼：即便系统加速没关成功(增益>1)也能收敛，不会在目标两侧永久振荡到 200 帧。
-            if (prevDx != 0 && Math.Sign(dx) != Math.Sign(prevDx)) dampX = Math.Min(dampX * 2, 64); else if (prevDx != 0) dampX = Math.Max(1, dampX / 2);
-            if (prevDy != 0 && Math.Sign(dy) != Math.Sign(prevDy)) dampY = Math.Min(dampY * 2, 64); else if (prevDy != 0) dampY = Math.Max(1, dampY / 2);
-            int sendX = DampStep(dx, dampX), sendY = DampStep(dy, dampY);
-            Send(0x05, new byte[] { 0x01, _held, Signed(sendX), Signed(sendY), 0x00 });
-            bool moved = WaitCursorMoved(cx, cy, FrameWaitMs);
-            var (ncx, ncy) = ScreenInfo.CursorPos();
-            sb?.Append($"  [{tag}]帧{i}: ({cx},{cy}) 残差({dx},{dy}) 发({sendX},{sendY}) 阻尼({dampX},{dampY}) → ({ncx},{ncy}) 位移=({ncx - cx},{ncy - cy}) moved={moved}\n");
-            if (!moved) { if (++stuck >= 4) { _lastFrames = i + 1; sb?.Append($"  [{tag}] 卡住(连续无位移)@帧{i}\n"); return false; } }
-            else stuck = 0;
-            prevDx = dx; prevDy = dy;
-        }
-        _lastFrames = MaxIter;
-        sb?.Append($"  [{tag}] 到迭代上限\n");
-        return false;
-    }
-
-    // 阻尼后的单轴发送量：残差截 ±127 再按阻尼因子缩小，但残差非 0 时至少发 ±1，避免缩成 0 卡死。
-    private static int DampStep(int d, int damp)
-    {
-        if (d == 0) return 0;
-        int m = Clamp127(d) / damp;
-        return m != 0 ? m : (d > 0 ? 1 : -1);
+        _moveController ??= CreateMoveController();
+        _moveController.MoveTo(tx, ty, ct);
+        _lastFrames = _moveController.Frames;
+        sb?.Append($"  [{tag}] 到位，帧数={_lastFrames}\n");
     }
 
     // 两块屏是否相邻（共享一段正长度的公共边）。左右挨着看竖边、上下挨着看横边，且投影有重叠。
@@ -402,13 +380,13 @@ public sealed class Ch9329Device : IInputBackend
     }
 
     // 移动收尾校验：光标没落到目标附近就抛错——静默返回会让紧随其后的点击点在错误位置上，
-    // 宁可本步「执行失败」（走失败监听 / 失败暂停）。典型诱因：前台全屏游戏捕获并不断重置指针。
+    // 输入位置不再可信时停止整份方案，不能走失败监听继续输入。
     private static void EnsureArrived(int vx, int vy)
     {
         var (fx, fy) = ScreenInfo.CursorPos();
         if (Math.Abs(vx - fx) <= 6 && Math.Abs(vy - fy) <= 6) return;
-        throw new InvalidOperationException(
-            $"鼠标未能移动到目标位置（目标 ({vx},{vy})，实际 ({fx},{fy})）。前台应用可能锁定或不断重置指针（如游戏的鼠标捕获），已中止本动作；可先激活目标所在屏幕的窗口再执行本动作。");
+        throw new InputSafetyException(
+            $"鼠标未能移动到目标位置（目标 ({vx},{vy})，实际 ({fx},{fy})）。前台应用可能锁定或不断重置指针（如游戏的鼠标捕获），已安全停止方案；请确认目标窗口后重新运行。");
     }
 
     private static void FlushMove(System.Text.StringBuilder? sb, int vx, int vy)
@@ -419,30 +397,20 @@ public sealed class Ch9329Device : IInputBackend
         Diag(sb.ToString());
     }
 
-    private static int Clamp127(int v) => v > 127 ? 127 : (v < -127 ? -127 : v);
-
-    // 相对报文异步生效：轮询到光标真位移即返回 true；等满超时仍无位移返回 false。
-    private static bool WaitCursorMoved(int px, int py, int timeoutMs)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.Elapsed.TotalMilliseconds < timeoutMs)
-        {
-            var (cx, cy) = ScreenInfo.CursorPos();
-            if (cx != px || cy != py) return true;
-            System.Threading.Thread.Sleep(1);
-        }
-        return false;
-    }
-
     // 轮询等光标进入 (px,py) 的 ±tol 方块内（0x04 绝对帧异步生效）；到达返回 true，超时返回 false。
-    private static bool WaitCursorNear(int px, int py, int tol, int timeoutMs)
+    private bool WaitCursorNear(int px, int py, int tol, int timeoutMs, CancellationToken ct)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.Elapsed.TotalMilliseconds < timeoutMs)
+        var context = _execution;
+        long Now() => context?.ActiveMilliseconds ?? Environment.TickCount64;
+        long started = Now(), blockedTime = 0;
+        while (Now() - started - blockedTime < timeoutMs)
         {
+            long before = Now();
+            Checkpoint(ct);
+            if (context?.HasActiveClock != true) blockedTime += Now() - before;
             var (cx, cy) = ScreenInfo.CursorPos();
             if (Math.Abs(cx - px) <= tol && Math.Abs(cy - py) <= tol) return true;
-            System.Threading.Thread.Sleep(1);
+            if (ct.WaitHandle.WaitOne(1)) ct.ThrowIfCancellationRequested();
         }
         return false;
     }
@@ -455,72 +423,87 @@ public sealed class Ch9329Device : IInputBackend
     private const uint SPI_GETMOUSE = 0x0003, SPI_SETMOUSE = 0x0004, SPI_GETMOUSESPEED = 0x0070, SPI_SETMOUSESPEED = 0x0071;
     private bool DisableMouseAccel()
     {
-        bool ok = false;
-        try
+        string backup = MouseBackupPath();
+        if (System.IO.File.Exists(backup) && !RestoreBackup(backup,
+            m => SystemParametersInfo(SPI_SETMOUSE, 0, m, 0),
+            speed => SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(speed), 0)))
+            throw new InputSafetyException("上次鼠标设置尚未恢复，已停止移动，恢复备份仍保留。");
+        var mouse = new int[3];
+        if (!SystemParametersInfo(SPI_GETMOUSE, 0, mouse, 0) ||
+            !SystemParametersInfoGet(SPI_GETMOUSESPEED, 0, out int speed, 0))
+            throw new InputSafetyException("无法读取系统鼠标设置，已停止移动。");
+        try { SaveMouseBackup(backup, mouse, speed); }
+        catch (Exception ex) { throw new InputSafetyException("无法保存鼠标恢复设置，未修改系统参数。", ex); }
+        _savedMouse = mouse; _savedSpeed = speed;
+        bool accel = SystemParametersInfo(SPI_SETMOUSE, 0, new int[] { 0, 0, 0 }, 0);
+        bool linear = SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(10), 0);
+        if (!accel || !linear)
         {
-            var cur = new int[3];
-            if (SystemParametersInfo(SPI_GETMOUSE, 0, cur, 0))
-            {
-                _savedMouse = cur;
-                ok = SystemParametersInfo(SPI_SETMOUSE, 0, new int[] { 0, 0, 0 }, 0);   // 关加速
-            }
+            RestoreMouseAccel();
+            throw new InputSafetyException("无法启用精确鼠标移动，已停止方案并恢复原设置。");
         }
-        catch { }
-        try
-        {
-            if (SystemParametersInfoGet(SPI_GETMOUSESPEED, 0, out int sp, 0))
-            {
-                _savedSpeed = sp;
-                SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(10), 0);        // 速度设 1:1
-            }
-        }
-        catch { }
-        WriteMouseBackup();   // 原值落盘：进程若被杀/崩溃没走到 Restore，下次启动据此还原，不永久改用户设置
-        return ok;
+        return true;
     }
+
     private void RestoreMouseAccel()
     {
-        try { if (_savedMouse != null) { SystemParametersInfo(SPI_SETMOUSE, 0, _savedMouse, 0); _savedMouse = null; } } catch { }
-        try { if (_savedSpeed > 0) { SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(_savedSpeed), 0); _savedSpeed = -1; } } catch { }
-        try { System.IO.File.Delete(MouseBackupPath()); } catch { }   // 正常还原后删备份
+        if (_savedMouse == null && _savedSpeed <= 0) return;
+        if (!RestoreBackup(MouseBackupPath(),
+            m => SystemParametersInfo(SPI_SETMOUSE, 0, m, 0),
+            speed => SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(speed), 0)))
+            throw new InputSafetyException("鼠标系统设置恢复失败，备份已保留，下次启动将重试恢复。");
+        _savedMouse = null; _savedSpeed = -1;
     }
 
-    // 系统鼠标设置的崩溃恢复备份（关加速期间存原值；正常还原后删除）。
     private static string MouseBackupPath() => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MacroPilot", "mouse_backup.json");
-    private void WriteMouseBackup()
+
+    internal static void SaveMouseBackup(string path, int[] mouse, int speed)
     {
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+        var data = System.Text.Json.JsonSerializer.Serialize(new { m = mouse, s = speed });
+        string temp = path + ".tmp";
         try
         {
-            if (_savedMouse == null && _savedSpeed <= 0) return;
-            var m = _savedMouse ?? new[] { -1, -1, -1 };
-            var p = MouseBackupPath();
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(p)!);
-            System.IO.File.WriteAllText(p, $"{{\"m\":[{m[0]},{m[1]},{m[2]}],\"s\":{_savedSpeed}}}");
+            using (var stream = new System.IO.FileStream(temp, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(data);
+                stream.Write(bytes); stream.Flush(flushToDisk: true);
+            }
+            System.IO.File.Move(temp, path, overwrite: true);
         }
-        catch { }
+        finally { if (System.IO.File.Exists(temp)) System.IO.File.Delete(temp); }
     }
 
-    // 程序启动时调用：上次运行若异常退出、没来得及还原被临时改成 1:1 的系统鼠标设置，据备份还原并删除备份。
-    public static void RecoverMouseSettingsOnStartup()
+    internal static bool RestoreBackup(string path, Func<int[], bool> setMouse, Func<int, bool> setSpeed)
     {
-        var p = MouseBackupPath();
         try
         {
-            if (!System.IO.File.Exists(p)) return;
-            using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(p));
+            if (!System.IO.File.Exists(path)) return true;
+            using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(path));
             var root = doc.RootElement;
-            if (root.TryGetProperty("m", out var mEl) && mEl.ValueKind == System.Text.Json.JsonValueKind.Array && mEl.GetArrayLength() == 3)
-            {
-                var m = new[] { mEl[0].GetInt32(), mEl[1].GetInt32(), mEl[2].GetInt32() };
-                if (m[0] >= 0 || m[1] >= 0 || m[2] >= 0) SystemParametersInfo(SPI_SETMOUSE, 0, m, 0);
-            }
-            if (root.TryGetProperty("s", out var sEl) && sEl.TryGetInt32(out int s) && s > 0)
-                SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(s), 0);
+            if (!root.TryGetProperty("m", out var m) || m.GetArrayLength() != 3 ||
+                !root.TryGetProperty("s", out var sp) || !sp.TryGetInt32(out int speed))
+                return false;
+            var mouse = new[] { m[0].GetInt32(), m[1].GetInt32(), m[2].GetInt32() };
+            bool hasMouse = Array.TrueForAll(mouse, v => v >= 0);
+            bool hasSpeed = speed >= 1 && speed <= 20;
+            // 兼容旧版只读到一部分原值的备份；-1 表示该项当时没有被读取/修改。
+            if ((!hasMouse && !Array.TrueForAll(mouse, v => v == -1)) ||
+                (!hasSpeed && speed != -1) || (!hasMouse && !hasSpeed)) return false;
+            // 两项均尝试恢复；只有全部成功才允许丢弃恢复记录。
+            bool mouseOk = !hasMouse || setMouse(mouse);
+            bool speedOk = !hasSpeed || setSpeed(speed);
+            if (!mouseOk || !speedOk) return false;
+            System.IO.File.Delete(path);
+            return true;
         }
-        catch { }
-        try { System.IO.File.Delete(p); } catch { }
+        catch { return false; }
     }
+
+    public static void RecoverMouseSettingsOnStartup() => RestoreBackup(MouseBackupPath(),
+        m => SystemParametersInfo(SPI_SETMOUSE, 0, m, 0),
+        speed => SystemParametersInfoSet(SPI_SETMOUSESPEED, 0, new IntPtr(speed), 0));
     [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW", SetLastError = true)]
     private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, int[] pvParam, uint fWinIni);
     [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW", SetLastError = true)]
@@ -535,7 +518,7 @@ public sealed class Ch9329Device : IInputBackend
 
     // ---- 临时：CH9329 单路点收敛耗时测量（调优拟人化路点数用；每移动会话攒一批、EndMove 落 ch9329_timing.log）----
     // 缓冲期间不做逐点文件 IO，避免扰动被测的收敛时序。调优定稿后置 false 或删除。
-    public static bool TimingDiag = true;
+    public static bool TimingDiag = false;
     private static readonly System.Text.StringBuilder _tbuf = new();
     private static readonly object _tLock = new();
     private static void FlushTiming()
@@ -547,7 +530,11 @@ public sealed class Ch9329Device : IInputBackend
             var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MacroPilot");
             System.IO.Directory.CreateDirectory(dir);
             var path = System.IO.Path.Combine(dir, "ch9329_timing.log");
-            lock (_diagLock) System.IO.File.AppendAllText(path, $"# session {DateTime.Now:HH:mm:ss}  elapsed_ms,frames,dist_px\n{data}");
+            lock (_diagLock)
+            {
+                if (new System.IO.FileInfo(path) is { Exists: true, Length: > 1_000_000 }) System.IO.File.Delete(path);
+                System.IO.File.AppendAllText(path, $"# session {DateTime.Now:HH:mm:ss}  elapsed_ms,frames,dist_px\n{data}");
+            }
         }
         catch { }
     }
@@ -574,8 +561,8 @@ public sealed class Ch9329Device : IInputBackend
     public void ReleaseAll()
     {
         _held = 0;
-        Keyboard(0, 0);
-        Send(0x05, new byte[] { 0x01, 0, 0, 0, 0 });
+        try { Keyboard(0, 0); }
+        finally { Send(0x05, new byte[] { 0x01, 0, 0, 0, 0 }); }
     }
 
     private static byte Signed(int v)
@@ -585,7 +572,6 @@ public sealed class Ch9329Device : IInputBackend
         return (byte)(v < 0 ? v + 256 : v);
     }
 
-    private static void Sleep(double ms, CancellationToken ct) => Services.PreciseTimer.Sleep(ms, ct);
 
     public void Dispose() => Close();
 

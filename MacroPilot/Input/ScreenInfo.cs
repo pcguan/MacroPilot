@@ -65,12 +65,14 @@ public static class ScreenInfo
         return new Monitor("", 0, 0, pw, ph, true) { WorkRight = pw, WorkBottom = ph };
     }
 
-    public static Monitor ByDevice(string device)
+    public static Monitor ByDevice(string device, bool requirePresent = false)
     {
         if (!string.IsNullOrEmpty(device))
             foreach (var m in All())
                 if (string.Equals(m.Device, device, StringComparison.OrdinalIgnoreCase)) return m;
-        return Primary(); // 找不到（如显示器被拔）→ 回退主屏
+        if (requirePresent && !string.IsNullOrEmpty(device))
+            throw new InputSafetyException($"目标显示器 {device} 已断开或不存在，请重新绑定后运行。");
+        return Primary(); // 编辑界面可回退显示；执行入口要求显式目标存在。
     }
 
     /// <summary>虚拟桌面像素点 → (显示器设备名, 归一化 nx,ny)。点不在任何屏内则归到主屏。</summary>
@@ -86,9 +88,15 @@ public static class ScreenInfo
     /// <summary>(显示器, nx, ny) → 虚拟桌面像素。</summary>
     public static (int vx, int vy) Resolve(string device, double nx, double ny)
     {
-        var m = ByDevice(device);
-        int vx = m.Left + (int)Math.Round(Clamp01(nx) * m.Width);
-        int vy = m.Top + (int)Math.Round(Clamp01(ny) * m.Height);
+        return ResolveOnMonitor(ByDevice(device, requirePresent: true), nx, ny);
+    }
+
+    internal static (int vx, int vy) ResolveOnMonitor(Monitor m, double nx, double ny)
+    {
+        if (!double.IsFinite(nx) || !double.IsFinite(ny))
+            throw new InputSafetyException("鼠标坐标无效，请重新设置目标位置。");
+        int vx = m.Left + Math.Clamp((int)Math.Round(Clamp01(nx) * m.Width), 0, m.Width - 1);
+        int vy = m.Top + Math.Clamp((int)Math.Round(Clamp01(ny) * m.Height), 0, m.Height - 1);
         return (vx, vy);
     }
 

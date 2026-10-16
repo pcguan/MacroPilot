@@ -4,9 +4,11 @@
 发布说明取自 MacroPilot/changelog.json 当前版本的条目 —— 与概况页「本次更新」同一份数据，
 避免程序里写一套、release 页面写另一套。版本号取自 MacroPilot/MacroPilot.csproj 的 <Version>。
 
-用法：python3 tools/make_release_meta.py <产物目录>
+用法：python3 tools/make_release_meta.py <产物目录> [--installer-only]
 产物目录需含 MacroPilot-app.zip 与 MacroPilotInstaller_Flutter.exe，输出 version.json 到同目录。
+升级安装器/卸载器时使用 --installer-only，清单只声明 exe，ZIP 仍作为手动下载资产发布。
 """
+import argparse
 import hashlib
 import json
 import os
@@ -49,9 +51,11 @@ def describe(directory: str, name: str) -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    outdir = sys.argv[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("directory")
+    parser.add_argument("--installer-only", action="store_true")
+    args = parser.parse_args()
+    outdir = args.directory
     version = current_version()
     meta = {
         "version": version,
@@ -59,10 +63,14 @@ def main() -> None:
         "zip": describe(outdir, ZIP_NAME),
         "exe": describe(outdir, EXE_NAME),
     }
+    if args.installer_only:
+        # 旧客户端不理解新字段，只要没有 zip 项便会走既有的 EXE 更新路径。
+        del meta["zip"]
     dest = os.path.join(outdir, "version.json")
-    with open(dest, "w", encoding="utf-8") as f:
+    with open(dest + ".tmp", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
         f.write("\n")
+    os.replace(dest + ".tmp", dest)
     print(dest)
     print(json.dumps(meta, ensure_ascii=False, indent=2))
 

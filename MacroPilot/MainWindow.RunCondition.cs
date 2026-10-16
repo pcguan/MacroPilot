@@ -69,7 +69,7 @@ public partial class MainWindow
         RunCondition.Clear(dst);
         if (ed.Enabled.IsChecked != true) return;
 
-        var valid = ed.Items.FindAll(i => i.IsValid);
+        var valid = ConditionEditing.Validate(ed.Items);
         if (valid.Count == 0) throw new InvalidOperationException("运行条件已启用，请至少添加一条有效的条件。");
         foreach (var it in valid) dst.RunConditions.Add(it.Clone());
         dst.RunConditionLogic = ResolveLogic(ed.LogicCombo, ed.Expr, ed.Items);

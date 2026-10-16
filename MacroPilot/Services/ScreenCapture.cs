@@ -43,6 +43,15 @@ public static class ScreenCapture
         public int Left, Top, Width, Height;   // 该输出在虚拟桌面上的矩形（物理像素）
         public bool HasFrame;                  // staging 里是否已有一帧（超时=画面没变，直接复用）
         public bool Broken;                    // 建复制失败（旋转屏等）：本输出恒走 GDI
+        public string DeviceName = "";
+        public ModeRotation Rotation;
+
+        public void Reset()
+        {
+            Dup?.Dispose(); Dup = null;
+            Staging?.Dispose(); Staging = null;
+            HasFrame = false; Broken = false;
+        }
     }
 
     /// <summary>
@@ -113,9 +122,13 @@ public static class ScreenCapture
     private static Bitmap Legacy(int vx, int vy, int w, int h)
     {
         var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(bmp);
-        g.CopyFromScreen(vx, vy, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
-        return bmp;
+        try
+        {
+            using var g = Graphics.FromImage(bmp);
+            g.CopyFromScreen(vx, vy, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
+            return bmp;
+        }
+        catch { bmp.Dispose(); throw; }
     }
 
     private static Bitmap? TryModern(int vx, int vy, int w, int h)
@@ -128,22 +141,28 @@ public static class ScreenCapture
 
         // 排空到最新帧：每帧 CopyResource 进 staging（staging 因此始终保有最近一帧）
         bool got = DrainFrames(sess);
+        if (sess.Dup == null) return null;  // AccessLost：本次回退，下次用最新输出信息重建。
         if (!got && !sess.HasFrame)
         {
             // 刚建会话还没拿到过帧：稍等一帧的时间再试一次，仍没有就 GDI（比如安全桌面期间）
             got = DrainFrames(sess, 100);
+            if (sess.Dup == null) return null;
             if (!got && !sess.HasFrame) return null;
         }
 
         // 从 staging 拷出请求的区域
+        if (!TrySourceRegion(new Rectangle(sess.Left, sess.Top, sess.Width, sess.Height),
+            new Rectangle(vx, vy, w, h), out var source)) return null;
         var mapped = _context.Map(sess.Staging!, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        Bitmap? bmp = null;
         try
         {
-            var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            if ((long)source.Right * 4 > mapped.RowPitch) return null;
+            bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
             var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             try
             {
-                int srcX = vx - sess.Left, srcY = vy - sess.Top;
+                int srcX = source.X, srcY = source.Y;
                 for (int row = 0; row < h; row++)
                 {
                     IntPtr src = mapped.DataPointer + (srcY + row) * (int)mapped.RowPitch + srcX * 4;
@@ -153,7 +172,18 @@ public static class ScreenCapture
             finally { bmp.UnlockBits(bd); }
             return bmp;
         }
+        catch { bmp?.Dispose(); throw; }
         finally { _context.Unmap(sess.Staging!, 0); }
+    }
+
+    internal static bool TrySourceRegion(Rectangle output, Rectangle requested, out Rectangle source)
+    {
+        source = default;
+        long x = (long)requested.X - output.X, y = (long)requested.Y - output.Y;
+        if (output.Width <= 0 || output.Height <= 0 || requested.Width <= 0 || requested.Height <= 0
+            || x < 0 || y < 0 || x + requested.Width > output.Width || y + requested.Height > output.Height) return false;
+        source = new Rectangle((int)x, (int)y, requested.Width, requested.Height);
+        return true;
     }
 
     // 找到完整包含请求区域的输出；跨屏/屏外 → -1（走 GDI）。
@@ -166,13 +196,23 @@ public static class ScreenCapture
             if (_adapter.EnumOutputs((uint)i, out var output).Failure || output == null) break;
             using (output)
             {
-                var rc = output.Description.DesktopCoordinates;
-                if (vx >= rc.Left && vy >= rc.Top && vx + w <= rc.Right && vy + h <= rc.Bottom)
+                var desc = output.Description;
+                var rc = desc.DesktopCoordinates;
+                if (vx >= rc.Left && vy >= rc.Top && (long)vx + w <= rc.Right && (long)vy + h <= rc.Bottom)
                 {
                     if (!_sessions.TryGetValue(i, out var s))
                     {
-                        s = new OutputSession { Left = rc.Left, Top = rc.Top, Width = rc.Right - rc.Left, Height = rc.Bottom - rc.Top };
+                        s = new OutputSession();
                         _sessions[i] = s;
+                    }
+                    // 输出索引可能被热插拔复用；位置/尺寸/旋转变化也必须丢弃旧映射。
+                    int width = rc.Right - rc.Left, height = rc.Bottom - rc.Top;
+                    if (s.DeviceName != desc.DeviceName || s.Left != rc.Left || s.Top != rc.Top
+                        || s.Width != width || s.Height != height || s.Rotation != desc.Rotation)
+                    {
+                        s.Reset();
+                        s.DeviceName = desc.DeviceName; s.Rotation = desc.Rotation;
+                        s.Left = rc.Left; s.Top = rc.Top; s.Width = width; s.Height = height;
                     }
                     sess = s;
                     return i;
@@ -186,7 +226,7 @@ public static class ScreenCapture
     {
         try
         {
-            if (_adapter == null || _adapter.EnumOutputs((uint)idx, out var output).Failure || output == null) { sess.Broken = true; return false; }
+            if (_device == null || _adapter == null || _adapter.EnumOutputs((uint)idx, out var output).Failure || output == null) { sess.Broken = true; return false; }
             using (output)
             using (var o1 = output.QueryInterface<IDXGIOutput1>())
             {
@@ -194,6 +234,8 @@ public static class ScreenCapture
                 // 竖屏/旋转输出的帧数据是转过的，拷出来还要转回去——不值得，这类输出恒走 GDI
                 if (dup.Description.Rotation != ModeRotation.Identity)
                 { dup.Dispose(); sess.Broken = true; return false; }
+                if (dup.Description.ModeDescription.Width != sess.Width || dup.Description.ModeDescription.Height != sess.Height)
+                { dup.Dispose(); return false; } // 查找与创建之间发生模式变化，本次回退，下一次刷新几何。
                 sess.Dup = dup;
             }
             sess.Staging?.Dispose();
@@ -207,7 +249,7 @@ public static class ScreenCapture
             sess.HasFrame = false;
             return true;
         }
-        catch { sess.Broken = true; return false; }
+        catch { sess.Reset(); return false; }
     }
 
     // 把可用帧全部取出、最后一帧留在 staging；返回是否取到过新帧。AccessLost（换分辨率/安全桌面）时重建一次会话。
@@ -221,10 +263,19 @@ public static class ScreenCapture
             timeout = 0;
             if (r.Success && res != null)
             {
-                using (res)
-                using (var tex = res.QueryInterface<ID3D11Texture2D>())
-                    _context!.CopyResource(sess.Staging!, tex);
-                sess.Dup.ReleaseFrame();
+                try
+                {
+                    using (res)
+                    using (var tex = res.QueryInterface<ID3D11Texture2D>())
+                    {
+                        var desc = tex.Description;
+                        if (desc.Width != sess.Width || desc.Height != sess.Height)
+                            throw new InvalidOperationException("桌面帧尺寸已变化。");
+                        _context!.CopyResource(sess.Staging!, tex);
+                    }
+                }
+                catch { sess.HasFrame = false; throw; }
+                finally { sess.Dup.ReleaseFrame(); }
                 sess.HasFrame = true; got = true;
                 continue;
             }

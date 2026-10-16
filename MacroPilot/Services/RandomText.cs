@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 
 namespace MacroPilot.Services;
 
@@ -18,33 +19,52 @@ public static class RandomText
     private const int MaxLength = 4096;     // 结果总长上限，防 {1000}{1000} 之类组合爆炸
 
     /// <summary>按模式生成一个随机串。模式非法时抛 <see cref="FormatException"/>。</summary>
-    public static string Generate(string pattern)
+    public static string Generate(string pattern, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrEmpty(pattern)) return "";
-        var node = new Parser(pattern).ParseAll();
+        if (pattern.Length > 8192) throw new FormatException("随机模式过长（最多 8192 字符）。");
+        var budget = new GenerationBudget(ct);
+        var node = new Parser(pattern, budget).ParseAll();
         var sb = new StringBuilder();
-        node.Emit(sb, Random.Shared);
+        node.Emit(sb, Random.Shared, budget);
         return sb.ToString();
     }
 
+    private sealed class GenerationBudget
+    {
+        private int _remaining = 100_000;
+        private readonly CancellationToken _ct;
+        public GenerationBudget(CancellationToken ct) => _ct = ct;
+        public void Step()
+        {
+            _ct.ThrowIfCancellationRequested();
+            if (--_remaining < 0) throw new FormatException("随机模式超过计算上限，请减少嵌套或重复次数。");
+        }
+    }
+
     // ---------- 语法树 ----------
-    private abstract class Node { public abstract void Emit(StringBuilder sb, Random rng); }
+    private abstract class Node { public abstract void Emit(StringBuilder sb, Random rng, GenerationBudget budget); }
 
     private sealed class LiteralNode : Node
     {
         public string Text = "";
-        public override void Emit(StringBuilder sb, Random rng)
+        public override void Emit(StringBuilder sb, Random rng, GenerationBudget budget)
         {
-            if (sb.Length + Text.Length <= MaxLength) sb.Append(Text);
+            budget.Step();
+            if (sb.Length + Text.Length > MaxLength) throw new FormatException("生成内容超过 4096 字符上限。");
+            sb.Append(Text);
         }
     }
 
     private sealed class SetNode : Node
     {
         public char[] Chars = Array.Empty<char>();
-        public override void Emit(StringBuilder sb, Random rng)
+        public override void Emit(StringBuilder sb, Random rng, GenerationBudget budget)
         {
-            if (Chars.Length == 0 || sb.Length >= MaxLength) return;
+            budget.Step();
+            if (Chars.Length == 0) return;
+            if (sb.Length >= MaxLength) throw new FormatException("生成内容超过 4096 字符上限。");
             sb.Append(Chars[rng.Next(Chars.Length)]);
         }
     }
@@ -52,19 +72,21 @@ public static class RandomText
     private sealed class SeqNode : Node
     {
         public List<Node> Items = new();
-        public override void Emit(StringBuilder sb, Random rng)
+        public override void Emit(StringBuilder sb, Random rng, GenerationBudget budget)
         {
-            foreach (var n in Items) { if (sb.Length >= MaxLength) return; n.Emit(sb, rng); }
+            budget.Step();
+            foreach (var n in Items) n.Emit(sb, rng, budget);
         }
     }
 
     private sealed class AltNode : Node
     {
         public List<Node> Options = new();
-        public override void Emit(StringBuilder sb, Random rng)
+        public override void Emit(StringBuilder sb, Random rng, GenerationBudget budget)
         {
+            budget.Step();
             if (Options.Count == 0) return;
-            Options[rng.Next(Options.Count)].Emit(sb, rng);   // 随机选一个分支
+            Options[rng.Next(Options.Count)].Emit(sb, rng, budget);   // 随机选一个分支
         }
     }
 
@@ -72,10 +94,11 @@ public static class RandomText
     {
         public Node Inner = null!;
         public int Min, Max;
-        public override void Emit(StringBuilder sb, Random rng)
+        public override void Emit(StringBuilder sb, Random rng, GenerationBudget budget)
         {
+            budget.Step();
             int n = Max <= Min ? Min : rng.Next(Min, Max + 1);
-            for (int i = 0; i < n; i++) { if (sb.Length >= MaxLength) return; Inner.Emit(sb, rng); }
+            for (int i = 0; i < n; i++) Inner.Emit(sb, rng, budget);
         }
     }
 
@@ -85,8 +108,9 @@ public static class RandomText
     private sealed class Parser
     {
         private readonly string _p;
-        private int _i;
-        public Parser(string pattern) { _p = pattern; }
+        private int _i, _depth;
+        private readonly GenerationBudget _budget;
+        public Parser(string pattern, GenerationBudget budget) { _p = pattern; _budget = budget; }
 
         public Node ParseAll()
         {
@@ -135,6 +159,7 @@ public static class RandomText
                             : (int.TryParse(parts[1], out var hi) ? hi : throw new FormatException($"量词 {{{body}}} 不合法"));
                     }
                     else throw new FormatException($"量词 {{{body}}} 不合法");
+                    if (min > MaxLength || max > MaxLength) throw new FormatException("单个量词最多重复 4096 次。");
                     if (min < 0 || max < min) throw new FormatException($"量词 {{{body}}} 范围不合法");
                     _i = close + 1;
                     break;
@@ -146,13 +171,20 @@ public static class RandomText
 
         private Node ParseAtom()
         {
+            _budget.Step();
             char c = _p[_i];
             switch (c)
             {
                 case '(':
                     _i++;
-                    if (_i + 1 < _p.Length && _p[_i] == '?' && (_p[_i + 1] == ':' || _p[_i + 1] == '=' || _p[_i + 1] == '!')) _i += 2;   // (?: 等前缀
+                    if (++_depth > 64) throw new FormatException("分组嵌套最多 64 层。");
+                    if (_i < _p.Length && _p[_i] == '?')
+                    {
+                        if (_i + 1 < _p.Length && _p[_i + 1] == ':') _i += 2;
+                        else throw new FormatException("不支持断言、命名分组或内联选项；请使用普通分组或 (?:...)。");
+                    }
                     var inner = ParseAlternation();
+                    _depth--;
                     if (_i >= _p.Length || _p[_i] != ')') throw new FormatException("缺少右括号 ')'");
                     _i++;
                     return inner;
@@ -192,7 +224,7 @@ public static class RandomText
                 {
                     char lo = c, hi = _p[_i + 2];
                     if (hi < lo) throw new FormatException($"字符区间 {lo}-{hi} 顺序颠倒");
-                    for (char x = lo; x <= hi; x++) chars.Add(x);
+                    for (int x = lo; x <= hi; x++) { _budget.Step(); chars.Add((char)x); }
                     _i += 3;
                     continue;
                 }
@@ -215,6 +247,8 @@ public static class RandomText
             _i++;                                    // 跳过 '\'
             if (_i >= _p.Length) throw new FormatException("末尾的 '\\' 后面缺少字符");
             char c = _p[_i++];
+            if (char.IsDigit(c) || "bBAZzGkpPux".Contains(c))
+                throw new FormatException($"不支持转义 \\{c}（断言、反向引用或编码转义）。");
             var cls = PredefinedClass(c);
             return cls != null ? new SetNode { Chars = cls } : new LiteralNode { Text = Unescape(c).ToString() };
         }

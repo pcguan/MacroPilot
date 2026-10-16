@@ -5,7 +5,8 @@ import '../theme.dart';
 /// 沉浸式自定义标题栏：与窗口背景一致（透出 Mica），左侧品牌+标题可拖动，右侧最小化/关闭。
 class InstallerTitleBar extends StatelessWidget {
   final String title;
-  const InstallerTitleBar({super.key, required this.title});
+  final bool canClose;
+  const InstallerTitleBar({super.key, required this.title, this.canClose = true});
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +47,7 @@ class InstallerTitleBar extends StatelessWidget {
           _CaptionButton(
             icon: FluentIcons.chrome_close,
             danger: true,
-            onPressed: () => windowManager.close(),
+            onPressed: () { if (canClose) windowManager.close(); },
           ),
         ],
       ),

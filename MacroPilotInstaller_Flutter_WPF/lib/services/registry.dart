@@ -5,9 +5,23 @@ import '../app_meta.dart';
 /// 控制面板「程序和功能」卸载项。经 reg.exe 读写 HKCU（per-user，无需管理员）。
 class RegistryService {
   static Future<void> _add(String name, String type, String data) async {
-    await Process.run('reg', [
+    final result = await Process.run('reg', [
       'add', AppMeta.uninstallKey, '/v', name, '/t', type, '/d', data, '/f',
     ]);
+    if (result.exitCode != 0) throw FileSystemException('登记卸载信息失败：${result.stderr}');
+  }
+
+  static const _types = {'DisplayName':'REG_SZ','DisplayVersion':'REG_SZ','Publisher':'REG_SZ',
+    'DisplayIcon':'REG_SZ','InstallLocation':'REG_SZ','UninstallString':'REG_SZ',
+    'QuietUninstallString':'REG_SZ','NoModify':'REG_DWORD','NoRepair':'REG_DWORD','EstimatedSize':'REG_DWORD'};
+  static Future<Map<String,String>> capture() async {
+    final result = <String,String>{};
+    for (final name in _types.keys) { final value = await readValue(name); if (value != null) result[name] = value; }
+    return result;
+  }
+  static Future<void> restore(Map<String,String> values) async {
+    await Process.run('reg', ['delete', AppMeta.uninstallKey, '/f']);
+    for (final entry in values.entries) { await _add(entry.key, _types[entry.key]!, entry.value); }
   }
 
   static Future<String?> readValue(String name) async {
@@ -51,6 +65,8 @@ class RegistryService {
   }
 
   static Future<void> removeUninstallEntry() async {
-    await Process.run('reg', ['delete', AppMeta.uninstallKey, '/f']);
+    if (await readInstallLocation() == null) return;
+    final result = await Process.run('reg', ['delete', AppMeta.uninstallKey, '/f']);
+    if (result.exitCode != 0) throw FileSystemException('移除卸载信息失败：${result.stderr}');
   }
 }
