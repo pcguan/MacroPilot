@@ -54,7 +54,7 @@ internal sealed class RelativeMoveController
                 throw Interference();
             int dx = (int)Math.Clamp((long)x - p.X, -127, 127);
             int dy = (int)Math.Clamp((long)y - p.Y, -127, 127);
-            if (Math.Abs((long)x - p.X) <= 1 && Math.Abs((long)y - p.Y) <= 1) { _expected = p; return; }
+            if (x == p.X && y == p.Y) { _expected = p; return; }
             Check(ct);
             // Check 可能等待暂停恢复；恢复后不能按暂停前的位置发送旧残差。
             if (_cursor() != p) throw Interference();
@@ -77,7 +77,9 @@ internal sealed class RelativeMoveController
             if (mx < Math.Min(0, dx) - 3L || mx > Math.Max(0, dx) + 3L ||
                 my < Math.Min(0, dy) - 3L || my > Math.Max(0, dy) + 3L)
                 throw Interference();
-            bool arrived = Math.Abs(mx - dx) <= 1 && Math.Abs(my - dy) <= 1 && p != from;
+            // With 1:1 relative input the complete integer packet must arrive. Accepting a
+            // one-pixel shortfall can skip a narrow screen exit or leave input in flight.
+            bool arrived = mx == dx && my == dy && p != from;
             if (arrived)
             {
                 if (p != last || settledAt < 0) settledAt = ActiveNow;

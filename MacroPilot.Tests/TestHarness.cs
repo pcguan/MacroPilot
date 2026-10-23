@@ -17,6 +17,9 @@ public sealed class FakeBackend : IInputBackend
     public readonly List<string> Calls = new();
     /// <summary>让指定按键抛异常，用来构造"动作执行失败"的分支。</summary>
     public string? FailOnKey;
+    public bool InterfereAfterMouseDown;
+    public bool RejectPositionVerification;
+    private bool _mouseHeld;
 
     private void Rec(string s) { lock (Calls) Calls.Add(s); }
 
@@ -33,8 +36,13 @@ public sealed class FakeBackend : IInputBackend
 
     public void MouseClick(string button, double holdMs, CancellationToken ct = default) => Rec("click:" + button);
     public void MouseMove(int x, int y, CancellationToken ct = default) => Rec($"move:{x},{y}");
-    public void MouseDown(string button) => Rec("down:" + button);
-    public void MouseUp(string button) => Rec("up:" + button);
+    public void MouseDown(string button) { _mouseHeld = true; Rec("down:" + button); }
+    public void MouseUp(string button) { _mouseHeld = false; Rec("up:" + button); }
+    public void VerifyMousePosition(int x, int y)
+    {
+        if (RejectPositionVerification || InterfereAfterMouseDown && _mouseHeld)
+            throw new InputSafetyException("模拟鼠标位置在动作间隔中改变。");
+    }
     public void MouseWheel(int amount) => Rec("wheel:" + amount);
     public void ReleaseAll() { }
     public void Dispose() { }

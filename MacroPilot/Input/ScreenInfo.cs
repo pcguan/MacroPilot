@@ -102,7 +102,8 @@ public static class ScreenInfo
 
     public static bool IsOnPrimary(int vx, int vy) => Primary().Contains(vx, vy);
 
-    public static (int vx, int vy) CursorPos() => GetCursorPos(out var p) ? (p.X, p.Y) : (0, 0);
+    public static (int vx, int vy) CursorPos() => GetCursorPos(out var p) ? (p.X, p.Y) :
+        throw new InputSafetyException("无法读取当前桌面的鼠标位置，已停止输入，请检查桌面是否已锁定或切换。");
 
     /// <summary>把光标移到虚拟像素点（点选覆盖层的方向键微调用；不是宏执行路径）。</summary>
     public static void MoveCursor(int vx, int vy) => SetCursorPos(vx, vy);

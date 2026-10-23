@@ -25,7 +25,12 @@ public sealed class Ch9329Device : IInputBackend
     {
         var context = _execution;
         return new(ScreenInfo.CursorPos,
-            (dx, dy) => Send(0x05, new byte[] { 0x01, _held, Signed(dx), Signed(dy), 0 }), Checkpoint,
+            (dx, dy) =>
+            {
+                if (_moveScreens == null || !MouseRoutePlanner.SameTopology(_moveScreens, ScreenInfo.All()))
+                    throw new InputSafetyException("移动过程中显示器布局发生变化，已安全停止方案。");
+                Send(0x05, new byte[] { 0x01, _held, Signed(dx), Signed(dy), 0 });
+            }, Checkpoint,
             clock: context == null ? null : () => context.ActiveMilliseconds,
             clockExcludesPauses: context?.HasActiveClock == true);
     }
@@ -133,116 +138,73 @@ public sealed class Ch9329Device : IInputBackend
             () => Send(0x05, new byte[] { 0x01, _held, 0, 0, 0 }), _execution, ct);
     }
 
-    // 参数为"虚拟桌面像素"。CH9329 的 0x04 绝对坐标 0–4096 只映射【主屏】，副屏只能靠相对移动跨过去：
-    // - 目标在主屏 → 0x04 一帧精确到位，不受指针加速。
-    // - 光标已在目标副屏内 → 直接屏内相对收敛（小移动不绕路）。
-    // - 否则 → 0x04 重锚到主屏，再沿【相邻屏 BFS 路径】逐段跨共享边走到目标屏。
-    //   屏幕拓扑全部运行时读取(ScreenInfo.All → EnumDisplayMonitors)，任意布局通用、非硬编码，
-    //   不假设"主屏与每块副屏都相邻"——两屏只要在扩展桌面里连通就能走到。
-    // ---- 移动会话（拟人化用）：一串连续【同屏】移动前后各调一次，只关一次系统加速、会话内走轻量相对收敛 ----
+    // A session owns one topology snapshot, one interference controller and one settings backup.
     private bool _inMoveSession;
+    private List<ScreenInfo.Monitor>? _moveScreens;
     public void BeginMove()
     {
-        if (_inMoveSession) return;
+        if (_inMoveSession) throw new InvalidOperationException("鼠标移动会话不能嵌套。");
+        _moveScreens = ScreenInfo.All();
         DisableMouseAccel();
         try { _moveController = CreateMoveController(); _inMoveSession = true; }
-        catch { RestoreMouseAccel(); throw; }
+        catch { _moveScreens = null; RestoreMouseAccel(); throw; }
     }
     public void EndMove()
     {
         if (!_inMoveSession) return;
         _inMoveSession = false;
         _moveController = null;
+        _moveScreens = null;
         RestoreMouseAccel();
         if (TimingDiag) FlushTiming();
     }
 
+    public void VerifyMousePosition(int x, int y) => MouseRoutePlanner.VerifyPosition(x, y);
+
     public void MouseMove(int vx, int vy, CancellationToken ct = default)
     {
         Checkpoint(ct);
-        if (!_inMoveSession) _moveController = null;
-        // 移动会话中（拟人化）：调用方保证同屏，直接相对收敛——不判主屏 0x04、不 BFS、不逐点开关加速。
+        var screens = ScreenInfo.All();
+        var target = MouseRoutePlanner.RequireScreen(screens, new(vx, vy));
         if (_inMoveSession)
         {
-            if (TimingDiag)   // 临时：测每个相对闭环路点的真实收敛耗时（调优 CH9329 拟人化路点数）
+            if (_moveScreens == null || !MouseRoutePlanner.SameTopology(_moveScreens, screens))
+                throw new InputSafetyException("移动过程中显示器布局发生变化，已安全停止方案。");
+            var before = ScreenInfo.CursorPos();
+            var watch = TimingDiag ? System.Diagnostics.Stopwatch.StartNew() : null;
+            RelativeConverge(vx, vy, null, "会话", ct);
+            if (watch != null)
             {
-                var (bx, by) = ScreenInfo.CursorPos();
-                var tsw = System.Diagnostics.Stopwatch.StartNew();
-                RelativeConverge(vx, vy, null, "会话", ct);
-                tsw.Stop();
-                double td = Math.Sqrt((double)(vx - bx) * (vx - bx) + (double)(vy - by) * (vy - by));
-                lock (_tLock) _tbuf.Append(FormattableString.Invariant($"{tsw.Elapsed.TotalMilliseconds:F1},{_lastFrames},{td:F0}\n"));
+                double distance = Math.Sqrt(Math.Pow((double)vx - before.vx, 2) + Math.Pow((double)vy - before.vy, 2));
+                lock (_tLock) _tbuf.Append(FormattableString.Invariant($"{watch.Elapsed.TotalMilliseconds:F1},{_lastFrames},{distance:F0}\n"));
             }
-            else RelativeConverge(vx, vy, null, "会话", ct);
             EnsureArrived(vx, vy);
             return;
         }
-
-        var mons = ScreenInfo.All();
-        ScreenInfo.Monitor? primary = null, target = null;
-        foreach (var m in mons)
+        // A non-drag ordinary move may use the primary monitor's absolute report.
+        if (target.Primary && _held == 0)
         {
-            if (m.Primary) primary = m;
-            if (target == null && m.Contains(vx, vy)) target = m;
-        }
-        primary ??= (mons.Count > 0 ? mons[0] : new ScreenInfo.Monitor("", 0, 0, 1920, 1080, true));
-
-        // 目标在主屏 → 0x04 一发精确到位。
-        if (primary.Contains(vx, vy)) { SendAbs04(primary, vx, vy, "主屏", ct); EnsureArrived(vx, vy); return; }
-
-        target ??= NearestMonitor(vx, vy, mons, primary);
-        var (cx, cy) = ScreenInfo.CursorPos();
-        var sb = MoveDiag ? new System.Text.StringBuilder() : null;
-
-        // 光标已在目标副屏内 → 直接屏内相对收敛，不绕主屏。
-        if (target.Contains(cx, cy))
-        {
-            sb?.Append($"MOVE(屏内相对·屏{target.Number}) 目标=({vx},{vy}) 起点=({cx},{cy})\n");
-            bool a0 = DisableMouseAccel();
-            sb?.Append($"  强制1:1: 加速已关={a0} 原指针速度={_savedSpeed}(移动期临时设为10)\n");
-            try { RelativeConverge(vx, vy, sb, "定位", ct); } finally { RestoreMouseAccel(); }
-            FlushMove(sb, vx, vy);
+            SendAbs04(target, vx, vy, "主屏", ct);
             EnsureArrived(vx, vy);
             return;
         }
-
-        // 求主屏→目标屏的相邻屏链（BFS）。正常扩展桌面必连通；不连通才走降级。
-        var path = MonitorPath(primary, target, mons);
-        if (path == null)
-        {
-            sb?.Append($"MOVE(降级·与主屏不连通) 目标=({vx},{vy})\n");
-            int ex = Math.Clamp(vx, primary.Left, primary.Right - 1), ey = Math.Clamp(vy, primary.Top, primary.Bottom - 1);
-            SendAbs04(primary, ex, ey, "降级入口", ct);   // 内部已轮询等到位
-            bool a1 = DisableMouseAccel();
-            sb?.Append($"  强制1:1: 加速已关={a1}\n");
-            try { RelativeConverge(vx, vy, sb, "定位", ct); } finally { RestoreMouseAccel(); }
-            FlushMove(sb, vx, vy);
-            EnsureArrived(vx, vy);
-            return;
-        }
-
-        // 0x04 落到主屏上贴近第一段共享边的点，缩短首跳；随后逐段跨屏。
-        int entryX, entryY;
-        if (path.Count > 1) { var e = CrossPoint(path[1], primary); entryX = e.x; entryY = e.y; }
-        else { entryX = Math.Clamp(vx, primary.Left, primary.Right - 1); entryY = Math.Clamp(vy, primary.Top, primary.Bottom - 1); }
-        sb?.Append($"MOVE(路径 {PathText(path)}) 目标=({vx},{vy}) 起点=({cx},{cy})\n");
-        SendAbs04(primary, entryX, entryY, "枢纽", ct);   // 内部已轮询等到位
-
-        // 整段相对行走期间统一把系统指针置 1:1（比逐跳开关更省），最后精确落到目标点。
-        bool accelOff = DisableMouseAccel();
-        sb?.Append($"  强制1:1: 加速已关={accelOff} 原指针速度={_savedSpeed}(移动期临时设为10)\n");
+        var start = ScreenInfo.CursorPos();
+        var route = MouseRoutePlanner.Plan(screens, new(start.vx, start.vy), new(vx, vy));
+        BeginMove();
         try
         {
-            for (int i = 1; i < path.Count; i++)
+            MouseRoutePlanner.VerifyStart(new(start.vx, start.vy));
+            if (!MouseRoutePlanner.SameTopology(screens, _moveScreens!))
+                throw new InputSafetyException("规划后显示器布局发生变化，已停止移动。");
+            foreach (var leg in route)
             {
-                var cp = CrossPoint(path[i - 1], path[i]);
-                RelativeConverge(cp.x, cp.y, sb, $"跨入屏{path[i].Number}", ct);
+                try { MouseMove(leg.To.X, leg.To.Y, ct); }
+                catch (InputSafetyException ex) when (leg.Screen == null)
+                { throw MouseRoutePlanner.CrossingFailed(leg, ex); }
             }
-            RelativeConverge(vx, vy, sb, "定位", ct);
+            EnsureArrived(vx, vy);
         }
-        finally { RestoreMouseAccel(); }
-        FlushMove(sb, vx, vy);
-        EnsureArrived(vx, vy);
+        finally { EndMove(); }
     }
 
     // 用 0x04 绝对定位把光标送到主屏上的 (px,py)（须在主屏范围内）。tag 仅用于日志。
@@ -271,112 +233,6 @@ public sealed class Ch9329Device : IInputBackend
         _moveController.MoveTo(tx, ty, ct);
         _lastFrames = _moveController.Frames;
         sb?.Append($"  [{tag}] 到位，帧数={_lastFrames}\n");
-    }
-
-    // 两块屏是否相邻（共享一段正长度的公共边）。左右挨着看竖边、上下挨着看横边，且投影有重叠。
-    private static bool Adjacent(ScreenInfo.Monitor a, ScreenInfo.Monitor b)
-    {
-        bool vShare = (a.Right == b.Left || a.Left == b.Right)
-                      && Math.Min(a.Bottom, b.Bottom) > Math.Max(a.Top, b.Top);
-        bool hShare = (a.Bottom == b.Top || a.Top == b.Bottom)
-                      && Math.Min(a.Right, b.Right) > Math.Max(a.Left, b.Left);
-        return vShare || hShare;
-    }
-
-    // BFS 求 src→dst 的相邻屏链（含首尾）；不连通返回 null。屏幕拓扑由 ScreenInfo.All() 运行时读取，非硬编码。
-    // 用引用相等（同一 mons 列表里的对象）比对，避免 record 值相等把重编号字段也算进去。
-    private static List<ScreenInfo.Monitor>? MonitorPath(ScreenInfo.Monitor src, ScreenInfo.Monitor dst, List<ScreenInfo.Monitor> mons)
-    {
-        if (ReferenceEquals(src, dst)) return new List<ScreenInfo.Monitor> { src };
-        var prev = new Dictionary<ScreenInfo.Monitor, ScreenInfo.Monitor>(ReferenceEqualityComparer.Instance);
-        var seen = new HashSet<ScreenInfo.Monitor>(ReferenceEqualityComparer.Instance) { src };
-        var q = new Queue<ScreenInfo.Monitor>();
-        q.Enqueue(src);
-        while (q.Count > 0)
-        {
-            var cur = q.Dequeue();
-            foreach (var m in mons)
-            {
-                if (seen.Contains(m) || !Adjacent(cur, m)) continue;
-                prev[m] = cur;
-                if (ReferenceEquals(m, dst))
-                {
-                    var path = new List<ScreenInfo.Monitor> { m };
-                    for (var p = cur; ; p = prev[p]) { path.Add(p); if (ReferenceEquals(p, src)) break; }
-                    path.Reverse();
-                    return path;
-                }
-                seen.Add(m);
-                q.Enqueue(m);
-            }
-        }
-        return null;
-    }
-
-    // 供拟人化跨屏【逐屏分段】用：把从 (sx,sy) 到 (tx,ty) 的相邻屏路径拆成锚点序列。
-    // 返回 pts：pts[0]=起点、pts[末]=目标，中间每个跨屏 hop 插入一对"出口点(留在前屏、贴共享边) + 入口点(落在后屏、贴共享边)"。
-    // 于是相邻两锚点要么【同屏】(调用方对其 EmitStroke 拟人化)、要么【一次跨缝】(调用方会话内一次相对收敛越过、仅相邻屏)。
-    // 不跨屏/找不到屏/拓扑不连通 → 返回 null（调用方走 0x04 兜底）。从【当前光标所在屏】BFS，不再强制 0x04 重锚主屏，
-    // 这样起手那一屏的子段也能被拟人化（而非被瞬移吞掉）。
-    public List<(int x, int y)>? PlanCrossAnchors(int sx, int sy, int tx, int ty)
-    {
-        var mons = ScreenInfo.All();
-        ScreenInfo.Monitor? src = null, dst = null;
-        foreach (var m in mons)
-        {
-            if (src == null && m.Contains(sx, sy)) src = m;
-            if (dst == null && m.Contains(tx, ty)) dst = m;
-        }
-        if (src == null || dst == null || ReferenceEquals(src, dst)) return null;   // 同屏/越界 → 交上层处理
-        var path = MonitorPath(src, dst, mons);
-        if (path == null || path.Count < 2) return null;                            // 不连通 → 0x04 兜底
-        var pts = new List<(int x, int y)> { (sx, sy) };
-        for (int i = 0; i + 1 < path.Count; i++)
-        {
-            pts.Add(CrossPoint(path[i + 1], path[i]));   // 出口点：留在 path[i] 内、贴与 path[i+1] 的共享边
-            pts.Add(CrossPoint(path[i], path[i + 1]));   // 入口点：落在 path[i+1] 内、贴同一条共享边
-        }
-        pts.Add((tx, ty));
-        return pts;
-    }
-
-    // 从屏 a 跨入屏 b 时，b 内紧贴共享边中点的落点（严格在 b 内）。
-    private static (int x, int y) CrossPoint(ScreenInfo.Monitor a, ScreenInfo.Monitor b)
-    {
-        int x, y;
-        if (a.Right == b.Left || a.Left == b.Right)   // 左右相邻，跨竖边：y 取重叠段中点
-        {
-            int lo = Math.Max(a.Top, b.Top), hi = Math.Min(a.Bottom, b.Bottom);
-            y = (lo + hi) / 2;
-            x = a.Right == b.Left ? b.Left + 1 : b.Right - 2;
-        }
-        else                                          // 上下相邻，跨横边：x 取重叠段中点
-        {
-            int lo = Math.Max(a.Left, b.Left), hi = Math.Min(a.Right, b.Right);
-            x = (lo + hi) / 2;
-            y = a.Bottom == b.Top ? b.Top + 1 : b.Bottom - 2;
-        }
-        return (Math.Clamp(x, b.Left, b.Right - 1), Math.Clamp(y, b.Top, b.Bottom - 1));
-    }
-
-    // 点不在任何屏内时，取欧氏距离最近的屏。
-    private static ScreenInfo.Monitor NearestMonitor(int vx, int vy, List<ScreenInfo.Monitor> mons, ScreenInfo.Monitor fallback)
-    {
-        ScreenInfo.Monitor? best = null; long bestD = long.MaxValue;
-        foreach (var m in mons)
-        {
-            int cx = Math.Clamp(vx, m.Left, m.Right - 1), cy = Math.Clamp(vy, m.Top, m.Bottom - 1);
-            long d = (long)(vx - cx) * (vx - cx) + (long)(vy - cy) * (vy - cy);
-            if (d < bestD) { bestD = d; best = m; }
-        }
-        return best ?? fallback;
-    }
-
-    private static string PathText(List<ScreenInfo.Monitor> path)
-    {
-        var parts = new List<string>();
-        foreach (var m in path) parts.Add(m.Primary ? $"主屏{m.Number}" : $"屏{m.Number}");
-        return string.Join("→", parts);
     }
 
     // 移动收尾校验：光标没落到目标附近就抛错——静默返回会让紧随其后的点击点在错误位置上，

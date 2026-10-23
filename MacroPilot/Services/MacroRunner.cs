@@ -857,24 +857,28 @@ public sealed class MacroRunner
                 DragWindow(step, ct);
                 break;
             case "MouseDrag":
-                MoveToStepTarget(step, ct);          // 起点（MoveMonitor/MoveNormX/Y）
+                var dragStart = MoveToStepTarget(step, ct); // 起点（MoveMonitor/MoveNormX/Y）
                 ct.ThrowIfCancellationRequested();
+                _backend.VerifyMousePosition(dragStart.vx, dragStart.vy);
                 _backend.MouseDown(step.Button);
                 try
                 {
                     Wait(60, ct);
+                    _backend.VerifyMousePosition(dragStart.vx, dragStart.vy);
                     var (ex, ey) = ScreenInfo.Resolve(step.DragEndMonitor, step.DragEndNormX, step.DragEndNormY);
                     (ex, ey) = ApplyOffset(ex, ey, step.ClickOffset);   // 终点同样带偏移（起点在 MoveToStepTarget 里已偏）
                     if (step.Humanize) MoveHumanized(ex, ey, ct);
                     else _backend.MouseMove(ex, ey, ct);
                     Wait(60, ct);
+                    _backend.VerifyMousePosition(ex, ey);
                 }
                 finally { _backend.MouseUp(step.Button); }
                 break;
             // 点击坐标 = 移动 + 点击。移动段与 MouseMove 完全一致（含拟人化），到位后再按 MouseClick 那套点。
             case "MouseClickAt":
-                MoveToStepTarget(step, ct);
+                var clickAt = MoveToStepTarget(step, ct);
                 ct.ThrowIfCancellationRequested();
+                _backend.VerifyMousePosition(clickAt.vx, clickAt.vy);
                 _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
                 break;
             // 点击图片 = 在限制区域内搜模板 → 取第 N 个命中 → 移到其中心 → 点击。找不到/不足 N 个则本步失败（走失败监听、不中断方案）。
@@ -919,7 +923,7 @@ public sealed class MacroRunner
     }
 
     // 把光标移到该动作配置的目标点（MouseMove / MouseClickAt 共用）。
-    private void MoveToStepTarget(MacroStep step, CancellationToken ct)
+    private (int vx, int vy) MoveToStepTarget(MacroStep step, CancellationToken ct)
     {
         var (vx, vy) = string.IsNullOrEmpty(step.MoveMonitor)
             ? (step.X, step.Y)                                            // 旧数据：主屏像素
@@ -927,6 +931,7 @@ public sealed class MacroRunner
         (vx, vy) = ApplyOffset(vx, vy, step.ClickOffset);               // 落点偏移（每次调用各自随机）
         if (step.Humanize) MoveHumanized(vx, vy, ct);   // 动作级：每个移动动作各自决定
         else _backend.MouseMove(vx, vy, ct);
+        return (vx, vy);
     }
 
     // 文本输入：自动分流 —— 软件后端走 Unicode 注入（能出中文），CH9329 是真实 HID 键盘、
@@ -1004,12 +1009,15 @@ public sealed class MacroRunner
 
         _backend.MouseMove(grabX, grabY, ct);
         ct.ThrowIfCancellationRequested();
+        _backend.VerifyMousePosition(grabX, grabY);
         _backend.MouseDown(step.Button);
         try
         {
             Wait(60, ct);
+            _backend.VerifyMousePosition(grabX, grabY);
             if (step.Humanize) MoveHumanized(tx, ty, ct); else _backend.MouseMove(tx, ty, ct);
             Wait(60, ct);
+            _backend.VerifyMousePosition(tx, ty);
         }
         finally { _backend.MouseUp(step.Button); }
         Log?.Invoke("Info", $"拖动窗口：左上角 ({wx}, {wy}) → ({targetLeft}, {targetTop})（{MacroStep.AnchorCn(step.DragAnchor)}对齐到 {ex}, {ey}）。");
@@ -1031,6 +1039,7 @@ public sealed class MacroRunner
         ct.ThrowIfCancellationRequested();
         if (step.Humanize) MoveHumanized(cx, cy, ct); else _backend.MouseMove(cx, cy, ct);
         ct.ThrowIfCancellationRequested();
+        _backend.VerifyMousePosition(cx, cy);
         _backend.MouseClick(step.Button, Jitter(step.HoldMs), ct);
     }
 
@@ -1103,74 +1112,43 @@ public sealed class MacroRunner
         return (Math.Clamp(nx, m.Left, m.Right - 1), Math.Clamp(ny, m.Top, m.Bottom - 1));
     }
 
-    // 拟人化移动。同屏：直接 HumanizeWithin。跨屏按后端能力分流：
-    //  · native（VIRTUALDESK 绝对，可一次落到虚拟桌面任意处）→ 整段【连续】拟人化，路点 clamp 到虚拟桌面并集；
-    //  · CH9329（0x04 只映主屏、屏间靠相邻相对路由）→ 把相邻屏路径拆成【逐屏子段】各自拟人化，子段之间会话内
-    //    一次相对收敛越过共享边（仅相邻屏可越）。这样跨屏也是逐屏可见轨迹，而非"整段瞬移只剩一小截收尾"。
+    // Both backends use physical-screen corridors. A virtual desktop bounding box can contain gaps.
     private void MoveHumanized(int tx, int ty, CancellationToken ct)
     {
+        var screens = ScreenInfo.All();
         var (sx, sy) = ScreenInfo.CursorPos();
-        double dist = Math.Sqrt((double)(tx - sx) * (tx - sx) + (double)(ty - sy) * (ty - sy));
-        if (dist < 3) { _backend.MouseMove(tx, ty, ct); return; }
-
-        string tDev = ScreenInfo.FromPoint(tx, ty).device;
-        string sDev = ScreenInfo.FromPoint(sx, sy).device;
-
-        // 同屏。
-        if (sDev == tDev) { HumanizeWithin(sx, sy, tx, ty, ScreenInfo.ByDevice(tDev, requirePresent: true), ct); return; }
-
-        // 跨屏 · native/软件：整段连续拟人化（clamp 到虚拟桌面并集）。
-        if (_backend.ContinuousAcrossScreens)
+        var route = MouseRoutePlanner.Plan(screens, new(sx, sy), new(tx, ty));
+        var source = MouseRoutePlanner.RequireScreen(screens, new(sx, sy));
+        var target = MouseRoutePlanner.RequireScreen(screens, new(tx, ty));
+        if (ReferenceEquals(source, target))
         {
-            var vb = ScreenInfo.VirtualBounds();
-            _backend.BeginMove();
-            try
-            {
-                EmitStroke(sx, sy, tx, ty, MoveDuration(dist), vb.Left, vb.Top, vb.Right - 1, vb.Bottom - 1, false, ct);
-                _backend.MouseMove(tx, ty, ct);
-            }
-            finally { _backend.EndMove(); }
+            HumanizeWithin(sx, sy, tx, ty, target, ct);
             return;
         }
-
-        // 跨屏 · CH9329：逐屏分段拟人化。锚点序列相邻两点要么同屏（EmitStroke）、要么一次跨缝（相对收敛越过共享边）。
-        var anchors = (_backend as Ch9329Device)?.PlanCrossAnchors(sx, sy, tx, ty);
-        if (anchors is { Count: >= 2 })
+        _backend.BeginMove();
+        try
         {
-            _backend.BeginMove();
-            try
+            MouseRoutePlanner.VerifyStart(new(sx, sy));
+            foreach (var leg in route)
             {
-                for (int i = 0; i + 1 < anchors.Count; i++)
+                ct.ThrowIfCancellationRequested(); Gate(ct);
+                if (!MouseRoutePlanner.SameTopology(screens, ScreenInfo.All()))
+                    throw new InputSafetyException("移动过程中显示器布局发生变化，已安全停止方案。");
+                if (leg.Screen is { } m)
                 {
-                    var (ax, ay) = anchors[i];
-                    var (bx, by) = anchors[i + 1];
-                    string da = ScreenInfo.FromPoint(ax, ay).device, db = ScreenInfo.FromPoint(bx, by).device;
-                    if (da == db)   // 同屏子段 → 逐屏拟人化
-                    {
-                        var m = ScreenInfo.ByDevice(da, requirePresent: true);
-                        double legDist = Math.Sqrt((double)(bx - ax) * (bx - ax) + (double)(by - ay) * (by - ay));
-                        EmitStroke(ax, ay, bx, by, MoveDuration(legDist), m.Left, m.Top, m.Right - 1, m.Bottom - 1, true, ct);
-                    }
-                    else            // 跨缝：会话内一次相对收敛越过共享边（短、无法平滑）
-                    {
-                        ct.ThrowIfCancellationRequested(); Gate(ct);
-                        _backend.MouseMove(bx, by, ct);
-                    }
+                    double distance = Math.Sqrt(Math.Pow((double)leg.To.X - leg.From.X, 2) + Math.Pow((double)leg.To.Y - leg.From.Y, 2));
+                    EmitStroke(leg.From.X, leg.From.Y, leg.To.X, leg.To.Y, MoveDuration(distance),
+                        m.Left, m.Top, m.Right - 1, m.Bottom - 1, _backend is Ch9329Device, ct);
                 }
-                _backend.MouseMove(tx, ty, ct);   // 精确到位
+                else
+                {
+                    try { _backend.MouseMove(leg.To.X, leg.To.Y, ct); }
+                    catch (InputSafetyException ex) { throw MouseRoutePlanner.CrossingFailed(leg, ex); }
+                }
             }
-            finally { _backend.EndMove(); }
-            return;
+            _backend.MouseMove(tx, ty, ct);
         }
-
-        // 兜底（拓扑不连通/异常）：老路——0x04 转移到目标屏入口点 + 屏内拟人化收尾。
-        var tMon = ScreenInfo.ByDevice(tDev, requirePresent: true);
-        double ux = (sx - tx) / dist, uy = (sy - ty) / dist;
-        double L = Math.Clamp(Math.Min(tMon.Width, tMon.Height) * 0.35, 120, 260);
-        int ex = Math.Clamp((int)Math.Round(tx + ux * L), tMon.Left + 4, tMon.Right - 5);
-        int ey = Math.Clamp((int)Math.Round(ty + uy * L), tMon.Top + 4, tMon.Bottom - 5);
-        _backend.MouseMove(ex, ey, ct);
-        HumanizeWithin(ex, ey, tx, ty, tMon, ct);
+        finally { _backend.EndMove(); }
     }
 
     // 单块屏 mon 内从 (sx,sy) 拟人化移动到 (tx,ty)。数据驱动（实测真人轨迹 CSV 得出，见 [[project_ch9329_closed_loop_move]]）：
@@ -1202,6 +1180,7 @@ public sealed class MacroRunner
         _backend.BeginMove();
         try
         {
+            MouseRoutePlanner.VerifyStart(new(sx, sy));
             EmitStroke(sx, sy, ex, ey, dur, L, T, R, B, ch9329, ct);
             if (overshoot)
             {
@@ -1275,26 +1254,29 @@ public sealed class MacroRunner
 
         if (ch9329)
         {
-            // 硬件后端：每个路点=一次相对闭环收敛（阻塞、每点数十 ms），物理上做不到 120Hz。
-            // 但仍让它带【前快后慢】手感——按【时间均匀】取 K 个路点（不是按位移均匀），
-            // 于是路点在空间上【前疏后密】：起手大跳、末段小步逼近，收敛次数≈D/18 不变（速度不退化）。
+            // Keep bounded hardware waypoints; schedule against active elapsed time.
+            // Transport latency may exceed the requested duration, but must not add one full delay per late frame.
             int steps = Math.Clamp((int)Math.Round(D / 18.0), 4, 64);
+            double started = _clock.ElapsedMilliseconds;
             for (int k = 1; k <= steps; k++)
             {
                 var (fx, fy) = At(CdfLerp(cdf, K, (double)k / steps));
                 Emit(fx, fy);
+                double remaining = started + dur * k / steps - _clock.ElapsedMilliseconds;
+                if (remaining > 0) Wait(remaining, ct);
             }
         }
         else
         {
             // 软件后端：~8ms/帧即时发点（~120Hz 连续，不打点），每帧等待合计≈dur。
             int N = Math.Max(8, (int)Math.Round(dur / 8.0));
-            double dtNative = dur / N;
+            double started = _clock.ElapsedMilliseconds;
             for (int i = 1; i <= N; i++)
             {
                 var (fx, fy) = At(CdfLerp(cdf, K, (double)i / N));
                 Emit(fx, fy);
-                Wait(dtNative, ct);
+                double remaining = started + dur * i / N - _clock.ElapsedMilliseconds;
+                if (remaining > 0) Wait(remaining, ct);
             }
         }
     }

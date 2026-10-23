@@ -9,7 +9,7 @@ public interface IInputBackend : IDisposable
     string Describe { get; }
 
     /// <summary>能否一次调用把光标放到整个虚拟桌面的任意位置（native 绝对 VIRTUALDESK 可；CH9329 只能主屏 0x04 + 相邻屏相对路由，不可）。
-    /// true → 跨屏也整段连续拟人化；false → 跨屏须逐屏分段拟人化。</summary>
+    /// 表达绝对定位能力；拟人化路径仍须避开虚拟桌面的无屏区域。</summary>
     bool ContinuousAcrossScreens => false;
 
     /// <summary>打开/连接，成功返回 true。</summary>
@@ -39,12 +39,15 @@ public interface IInputBackend : IDisposable
     /// <summary>移动鼠标到屏幕绝对坐标。</summary>
     void MouseMove(int x, int y, System.Threading.CancellationToken ct = default);
 
+    /// <summary>坐标点击/拖动在移动后及等待后复核落点，防止把人工改动的位置当成新起点。</summary>
+    void VerifyMousePosition(int x, int y) { }
+
     /// <summary>按下鼠标键并保持（拖动用）：期间的 MouseMove 均处于按住状态，直到 MouseUp。</summary>
     void MouseDown(string button);
     void MouseUp(string button);
 
     /// <summary>移动会话：拟人化等"一串连续移动"前后各调一次。硬件后端借此只关一次系统加速、跳过逐点判屏/路由；
-    /// 软件后端无需实现（默认空）。会话内 MouseMove 由调用方保证落在同屏，或落在【相邻屏】（逐屏分段拟人化跨屏时，
+    /// 软件后端也在会话中检查路点间的非预期位移。会话内 MouseMove 由调用方保证落在同屏，或落在【相邻屏】（逐屏分段拟人化跨屏时，
     /// 段与段之间用一次相对收敛越过共享边——仅相邻屏可越）。</summary>
     void BeginMove() { }
     void EndMove() { }

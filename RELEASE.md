@@ -92,7 +92,7 @@ git push origin HEAD
 python3 tools/make_release_meta.py ../release
 ```
 
-**0.6.24 继续加 `--installer-only`。** ZIP 更新会保留旧卸载器；低于 0.6.23 的客户端可能直接升级到最新版本，跳过安装器迁移。因此即使本次只改本体，清单仍只声明 EXE，让跨版本升级也能获得按文件归属清单卸载的新安装器。三个资产仍全部发布，ZIP 可供手动下载。后续须先解决旧客户端跨版本迁移，再恢复普通 ZIP 清单；不能仅因本版未改安装器就恢复。
+**0.6.25 继续加 `--installer-only`。** ZIP 更新会保留旧卸载器；低于 0.6.23 的客户端可能直接升级到最新版本，跳过安装器迁移。因此即使本次只改本体，清单仍只声明 EXE，让跨版本升级也能获得按文件归属清单卸载的新安装器。三个资产仍全部发布，ZIP 可供手动下载。后续须先解决旧客户端跨版本迁移，再恢复普通 ZIP 清单；不能仅因本版未改安装器就恢复。
 
 `release/` 目录里应有**三个文件**：`version.json`、`MacroPilot-app.zip`、`MacroPilotInstaller_Flutter.exe`。
 

@@ -26,11 +26,12 @@ public sealed class NativeInputDevice : IInputBackend
 
     public bool IsOpen => true;
     public string Describe => $"软件模拟（{(_scanCode ? "ScanCode" : "VirtualKey")}）";
-    // SendInput 绝对坐标带 VIRTUALDESK，一次调用即可落到整个虚拟桌面任意处 → 跨屏也整段连续拟人化。
+    // SendInput 支持虚拟桌面绝对坐标；拟人化仍沿物理屏幕的可达路径移动。
     public bool ContinuousAcrossScreens => true;
+    private NativeMouseObserver? _mouseObserver;
     public bool Open() => true;
-    public void Close() { }
-    public void Dispose() { }
+    public void Close() { EndMove(); _mouseObserver?.Dispose(); _mouseObserver = null; }
+    public void Dispose() { Close(); }
 
     public void KeyTap(string key, byte modifier, double holdMs, CancellationToken ct = default)
     {
@@ -79,9 +80,41 @@ public sealed class NativeInputDevice : IInputBackend
     }
 
     // 参数为"虚拟桌面像素"(可跨屏、可负)。
-    public void MouseMove(int vx, int vy, CancellationToken ct = default) { Checkpoint(ct); MoveVirtual(vx, vy); }
+    private AbsoluteMoveController? _moveController;
+    private List<ScreenInfo.Monitor>? _moveScreens;
+    private AbsoluteMoveController CreateMoveController()
+    {
+        var context = _execution;
+        var observer = _mouseObserver ??= new NativeMouseObserver();
+        return new(ScreenInfo.CursorPos, (x, y) =>
+            {
+                if (_moveScreens != null && !MouseRoutePlanner.SameTopology(_moveScreens, ScreenInfo.All()))
+                    throw new InputSafetyException("移动过程中显示器布局发生变化，已安全停止方案。");
+                MoveVirtual(x, y);
+            }, Checkpoint,
+            clock: context == null ? null : () => context.ActiveMilliseconds,
+            clockExcludesPauses: context?.HasActiveClock == true, externalEpoch: () => observer.Epoch);
+    }
+    public void BeginMove()
+    {
+        if (_moveController != null) throw new InvalidOperationException("鼠标移动会话不能嵌套。");
+        _moveScreens = ScreenInfo.All();
+        try { _moveController = CreateMoveController(); }
+        catch { _moveScreens = null; throw; }
+    }
+    public void EndMove() { _moveController = null; _moveScreens = null; }
+    public void VerifyMousePosition(int x, int y) => MouseRoutePlanner.VerifyPosition(x, y);
+    public void MouseMove(int vx, int vy, CancellationToken ct = default)
+    {
+        Checkpoint(ct);
+        var screens = ScreenInfo.All();
+        MouseRoutePlanner.RequireScreen(screens, new(vx, vy));
+        if (_moveScreens != null && !MouseRoutePlanner.SameTopology(_moveScreens, screens))
+            throw new InputSafetyException("移动过程中显示器布局发生变化，已安全停止方案。");
+        (_moveController ?? CreateMoveController()).MoveTo(vx, vy, ct);
+    }
 
-    /// <summary>把光标移到虚拟桌面绝对像素 (vx,vy)——覆盖全部显示器。CH9329 副屏降级也复用它。</summary>
+    /// <summary>把光标移到虚拟桌面绝对像素 (vx,vy)——覆盖全部显示器。</summary>
     public static void MoveVirtual(int vx, int vy)
     {
         int ox = GetSystemMetrics(SM_XVIRTUALSCREEN), oy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -194,6 +227,7 @@ public sealed class NativeInputDevice : IInputBackend
     {
         var inp = new INPUT { type = INPUT_MOUSE };
         inp.U.mi.dx = dx; inp.U.mi.dy = dy; inp.U.mi.mouseData = (uint)data; inp.U.mi.dwFlags = flags;
+        inp.U.mi.dwExtraInfo = NativeMouseObserver.OwnInputTag;
         ValidateSent(SendInput(1, new[] { inp }, Marshal.SizeOf<INPUT>()), 1);
     }
 
